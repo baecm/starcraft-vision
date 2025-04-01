@@ -1,0 +1,13 @@
+services:
+  pytorch-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: starcraft-vision:dev
+    container_name: starcraft-dev
+    volumes:
+      - ./data:/workspace/data
+      - ./src:/workspace/src
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
