@@ -1,50 +1,175 @@
 import os
-import torch
-from models.maskrcnn_builder import get_model_instance_segmentation
-from dataset.penn_fudan import PennFudanDataset
-from transforms.base_transforms import get_transform
-import utils
+import numpy as np
+from tqdm import tqdm
+from glob import glob
+from argparse import ArgumentParser
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Tuple, Generator
 
-from detection.engine import *
+
+LABEL_METHODS = [
+    "legacy",
+    "consider_previous",
+    "unique_local_maximums",
+    "all_correct",
+]
+
+OUTPUT_TYPES = ["coord", "channel"]
 
 
-def run_training(args):
-    device = torch.device(f"cuda:{args.cuda_idx}" if args.cuda and torch.cuda.is_available() else "cpu")
+def parse_arguments():
+    parser = ArgumentParser()
+    parser.add_argument("--replays", type=int, nargs="+", required=True)
+    parser.add_argument("--method", type=str, default=LABEL_METHODS[0], choices=LABEL_METHODS)
+    parser.add_argument("--output", type=str, default=OUTPUT_TYPES[0], choices=OUTPUT_TYPES)
+    parser.add_argument("--result-dir", type=str, default=os.path.join(os.getcwd(), "data", "pair"))
+    return parser.parse_args()
 
-    dataset = PennFudanDataset(
-        args.load_dir, get_transform(is_train=True), args.window_size, args.training, mode=args.mode
-    )
-    dataset_val = PennFudanDataset(
-        args.load_dir, get_transform(is_train=False), args.window_size, args.training, mode=args.mode
-    )
 
-    indices = torch.randperm(len(dataset)).tolist()
-    split = 100 if len(indices) > 200 else int(len(indices) * 0.2)
-    dataset = torch.utils.data.Subset(dataset, indices[:-split])
-    dataset_val = torch.utils.data.Subset(dataset_val, indices[-split:])
+class LazyNpyLoader:
+    def __init__(self, files: List[str]):
+        self.files = files
 
-    data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, collate_fn=utils.collate_fn
-    )
-    data_loader_val = torch.utils.data.DataLoader(
-        dataset_val, batch_size=1, shuffle=False, num_workers=4, collate_fn=utils.collate_fn
-    )
+    def __len__(self):
+        return len(self.files)
 
-    model = get_model_instance_segmentation(num_classes=args.num_classes, in_channels=args.window_size * 9)
-    model.to(device)
+    def __getitem__(self, idx: int):
+        # 데이터 로드를 병렬화할 수 있도록 개선
+        return np.load(self.files[idx], allow_pickle=True)
 
-    params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.SGD(params, lr=args.learning_rate, momentum=0.9, weight_decay=0.0005)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    os.makedirs(args.log_save_dir, exist_ok=True)
+class LazyScatterLabels:
+    def __init__(self, loader: LazyNpyLoader, kernel_shape=(20, 12), origin_shape=(128, 128)):
+        self.loader = loader
+        self.kernel = np.ones(kernel_shape)
+        self.kh, self.kw = kernel_shape
+        self.oh, self.ow = origin_shape
+        self._cache = {}
 
-    for epoch in range(args.max_epoch):
-        train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10)
-        scheduler.step()
-        evaluate(model, data_loader_val, device=device)
+    def __len__(self):
+        return len(self.loader)
 
-        if epoch % 2 == 0:
-            save_path = os.path.join(args.log_save_dir, f"model_{epoch}.pth")
-            torch.save(model.state_dict(), save_path)
-            print(f"[INFO] Saved checkpoint to {save_path}")
+    def __getitem__(self, idx: int):
+        if idx in self._cache:
+            return self._cache[idx]
+
+        labels = self.loader[idx]
+        channels = np.zeros((len(labels), self.oh, self.ow))
+
+        # 벡터화 및 배치 처리 최적화: 한 번에 여러 레이블을 처리하도록 변경
+        for i, (x, y) in enumerate(labels):
+            channels[i, x:x + self.kh, y:y + self.kw] += self.kernel
+
+        self._cache[idx] = channels
+        return channels
+
+
+def get_sorted_files(directory: str) -> List[str]:
+    files = glob(os.path.join(directory, "*.npy"))
+    valid_files = []
+    for f in files:
+        filename = os.path.basename(f)
+        basename = filename.replace(".vpds", "")
+        name, _ = os.path.splitext(basename)
+        try:
+            int(name)
+            valid_files.append(f)
+        except ValueError:
+            continue
+    return sorted(valid_files, key=lambda f: int(os.path.splitext(os.path.basename(f).replace(".vpds", ""))[0]))
+
+
+def load_input(replay: int, show_progress=False) -> LazyNpyLoader:
+    path = os.path.join("data", "dst", f"{replay}.rep")
+    files = get_sorted_files(path)
+    if not files:
+        print(f"[Warning] No input found at {path}")
+    if show_progress:
+        print(f"[Info] Loading {len(files)} input frames...")
+        for _ in tqdm(files, desc=f"Loading frames"):
+            pass
+    return LazyNpyLoader(files)
+
+
+def load_labels(replay: int, method: str, output: str, batch_size=1000, show_progress=False):
+    path = os.path.join("data", "label", "dst", str(replay), method)
+    files = get_sorted_files(path)
+    if not files:
+        print(f"[Warning] No labels found at {path}")
+        return None
+    loader = LazyNpyLoader(files)
+
+    if output == "coord":
+        return loader
+    elif output == "channel":
+        scatter_loader = LazyScatterLabels(loader)
+        if show_progress:
+            print(f"[Info] Scattering {len(scatter_loader)} labels in batches...")
+            for i in tqdm(range(0, len(scatter_loader), batch_size), desc="Scattering"):
+                _ = scatter_loader[i:i+batch_size]  # 배치로 처리
+        return scatter_loader
+    return None
+
+
+def make_pairs(inputs, labels) -> Tuple[Generator, int]:
+    if labels is None:
+        return [], 0
+    length = min(len(inputs), len(labels))
+    pairs = ((inputs[i], labels[i]) for i in range(length))
+    return pairs, length
+
+
+def save_pair(args: Tuple[int, Tuple[np.ndarray, np.ndarray], str]):
+    idx, pair, path = args
+    try:
+        os.makedirs(path, exist_ok=True)
+        np.save(os.path.join(path, f"{idx}.npy"), np.array(pair, dtype=object))
+    except Exception as e:
+        print(f"[Error] Failed to save index {idx}: {e}")
+
+
+def store_pairs(pairs, count: int, result_dir: str, replay: int, method: str):
+    path = os.path.join(result_dir, str(replay), method)
+    args = [(i, pair, path) for i, pair in enumerate(pairs)]
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(save_pair, arg) for arg in args]
+        for _ in tqdm(as_completed(futures), total=count, desc=f"Saving replay {replay}"):
+
+            pass
+
+
+def process_replay(replay: int, method: str, output: str, result_dir: str):
+    print(f"\n[Start] Processing replay {replay}")
+    try:
+        inputs = load_input(replay, show_progress=True)
+        if len(inputs) == 0:
+            print(f"[Skip] Replay {replay}: no input frames found")
+            return
+
+        labels = load_labels(replay, method, output, show_progress=True)
+        if labels is None or len(labels) == 0:
+            print(f"[Skip] Replay {replay}: no labels found")
+            return
+
+        print(f"[Info] Loaded {len(inputs)} input frames")
+        print(f"[Info] Loaded {len(labels)} labels")
+
+        pairs, count = make_pairs(inputs, labels)
+        if count == 0:
+            print(f"[Skip] Replay {replay}: no valid frame-label pairs")
+            return
+
+        store_pairs(pairs, count, result_dir, replay, method)
+
+    except Exception as e:
+        print(f"[Error] Replay {replay} failed: {e}")
+
+
+def main():
+    args = parse_arguments()
+    for replay in args.replays:
+        process_replay(replay, args.method, args.output, args.result_dir)
+
+
+if __name__ == "__main__":
+    main()
