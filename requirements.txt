@@ -1,3 +1,6 @@
 
 matplotlib
 pycocotools
+numpy
+pandas
+tqdm
