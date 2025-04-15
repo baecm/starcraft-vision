@@ -1,33 +1,52 @@
-from training.train_loop import run_training
-
+import os
 import argparse
+
+from train import run_training
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Unified training entry for Mask R-CNN experiments")
 
-    parser.add_argument("--log_save_dir", type=str, default="./saved_models/", help="Directory to save models")
-    parser.add_argument("--load_model", type=bool, default=False, help="Whether to load pretrained model")
-    parser.add_argument("--load_dir", type=str, required=True, help="Path to the dataset directory")
-    parser.add_argument("--training", type=int, nargs="+", required=True, help="Training directory indices")
+    parser.add_argument("--train", "--training", action="store_true", dest="train", help="Training mode")
+    parser.add_argument("--evaluate", "--eval", action="store_true", dest="evaluate", help="Evaluation only mode")
+    
+    parser.add_argument("--load-model", action="store_true", help="Whether to load pretrained model")
+    parser.add_argument("--load-dir", type=str, help="Path to the dataset directory")
+    parser.add_argument("--replays", type=int, nargs="+", help="Replay indices for training")
 
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
-    parser.add_argument("--window_size", type=int, default=4, help="Window size for temporal input")
-    parser.add_argument("--learning_rate", type=float, default=0.005, help="Learning rate")
+    parser.add_argument("--train-replays", type=int, nargs="+", default=None, help="Replay indices for training")
+    parser.add_argument("--test-replays", type=int, nargs="+", default=None, help="Replay indices for testing")
+
     parser.add_argument("--cuda", type=bool, default=True, help="Use CUDA")
-    parser.add_argument("--cuda_idx", type=int, default=0, help="CUDA device index")
-    parser.add_argument("--max_epoch", type=int, default=30, help="Max training epochs")
+    parser.add_argument("--max-epoch", type=int, default=100, help="Max training epochs (default: 100)")
+    parser.add_argument("--batch-size", type=int, default=64, help="Batch size (default: 64)")
+    parser.add_argument("--window-size", type=int, default=1, help="Window size for temporal input (default: 1)")
+    parser.add_argument("--learning-rate", type=float, default=0.0001, help="Learning rate (default: 0.0001)")
 
-    parser.add_argument("--id_string", type=str, default="", help="Custom string for run identification")
-    parser.add_argument("--eval", type=bool, default=False, help="Evaluation only mode")
-    parser.add_argument("--mode", type=str, default="default", help="Dataset label mode: default/one/point/point2_labels/six")
-    parser.add_argument("--num_classes", type=int, default=2, help="Number of classes for segmentation")
+    parser.add_argument("--log", action="store_true", help="Enable logging")
+    parser.add_argument("--log-interval", type=int, default=10, help="Logging interval (default: 10)")
+    parser.add_argument("--log-root-dir", type=str, default=os.path.join(os.getcwd(), "models"), help="Directory to save models")
+    parser.add_argument("--id-string", type=str, default="", help="Custom string for run identification")
 
     args = parser.parse_args()
     return args
 
 
-if __name__ == "__main__":
+def main():
     args = parse_arguments()
 
-    print(f"[INFO] Training mode={args.mode}, num_classes={args.num_classes}, save_dir={args.log_save_dir}")
-    run_training(args)
+    if args.train and args.evaluate:
+        raise ValueError("Cannot specify both --train and --eval. Choose one.")
+    
+    print("\n[INFO] Arguments:")
+    for arg, value in vars(args).items():
+        print(f" - {arg}: {value}")
+    
+    if args.train:
+        run_training(args)
+        
+    elif args.evaluate:
+        pass
+    
+
+if __name__ == "__main__":
+    main()

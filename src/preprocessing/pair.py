@@ -22,7 +22,7 @@ def parse_arguments():
     parser.add_argument("--replays", type=int, nargs="+", required=True)
     parser.add_argument("--method", type=str, default=LABEL_METHODS[0], choices=LABEL_METHODS)
     parser.add_argument("--output", type=str, default=OUTPUT_TYPES[1], choices=OUTPUT_TYPES)
-    parser.add_argument("--result-dir", type=str, default=os.path.join(os.getcwd(), 'data', 'pair'))
+    parser.add_argument("--result-dir", type=str, default=os.path.join(os.getcwd(), "data", "pair"))
     return parser.parse_args()
 
 

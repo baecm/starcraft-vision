@@ -21,9 +21,9 @@ INTERVAL = 1
 
 class Viewport:
     def __init__(self, replay_id):
-        base_path = os.path.join(os.getcwd(), 'data', 'label')
-        self.viewport_root = os.path.join(base_path, 'src')
-        self.result_root = os.path.join(base_path, 'dst')
+        base_path = os.path.join(os.getcwd(), "data", "label")
+        self.viewport_root = os.path.join(base_path, "src")
+        self.result_root = os.path.join(base_path, "dst")
         self.replay_id = replay_id
         self.method = None
         self.vpds = []
@@ -46,7 +46,7 @@ class Viewport:
             traceback.print_exc()
 
     def load(self):
-        vpds_paths = glob.glob(os.path.join(self.viewport_root, '*', f'{self.replay_id}.rep.vpd'))
+        vpds_paths = glob.glob(os.path.join(self.viewport_root, "*", f"{self.replay_id}.rep.vpd"))
         try:
             with Pool(cpu_count() // 2) as pool:
                 self.vpds = list(pool.map(read_single_csv, vpds_paths))
@@ -76,7 +76,7 @@ class Viewport:
         try:
             num = len(dataframes)
             df = pd.concat(dataframes, axis=1).ffill().astype(int)
-            df.columns = [f'vp{x}_{i + 1}' for i in range(num) for x in ('x', 'y')]
+            df.columns = [f"vp{x}_{i + 1}" for i in range(num) for x in ("x", "y")]
             df = (df / TILE_SIZE).astype(int).reset_index()
             return df, num
         except Exception as e:
@@ -121,8 +121,8 @@ class Viewport:
                 channel = np.zeros(ORIGIN_SHAPE)
                 kernel = np.ones(KERNEL_SHAPE)
                 for i in range(num_vpds):
-                    x = int(df_t[f'vpx_{i + 1}'])
-                    y = int(df_t[f'vpy_{i + 1}'])
+                    x = int(df_t[f"vpx_{i + 1}"])
+                    y = int(df_t[f"vpy_{i + 1}"])
                     channel[x:x + KERNEL_SHAPE[0], y:y + KERNEL_SHAPE[1]] += kernel
                 channel = channel.T
 

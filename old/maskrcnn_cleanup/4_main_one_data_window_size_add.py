@@ -19,9 +19,7 @@ import time
 
 
 class PennFudanDataset(object):
-    def __init__(self, path, transforms, window_size, training):
-        self.root = path
-        self.transforms = transforms
+    def __init__(self, path, window_size, training):
         pth = os.listdir(path)
         self.label_sequences = []
         self.tr_replay = training
@@ -46,7 +44,6 @@ class PennFudanDataset(object):
         # print(33)
         # print(torch.cuda.is_available())
 
-
     def __len__(self):
         return self.seq_indexs[-1][-1]
 
@@ -66,60 +63,26 @@ class PennFudanDataset(object):
                 data3 = entire_data3[0]
                 data4 = entire_data4[0]
 
-                masks = entire_data4[1]
-
-                coor_label = np.load("/home/joo/Downloads/argmax_kernel_sum_vpds/" + self.dir_paths[i].split("/")[-2] + "/argmax_kernel_sum/" +  str(int(real_idx) + 150) + ".vpds.npy")
-                # yyy[coor_label[0]:coor_label[0] + 12, coor_label[1]:coor_label[1] + 20] = 1
+                masks = entire_data4[1][i%5:i%5+1]
 
                 break
 
         masks = np.array(masks)
         input_data = self.preprocessing(data1, data2, data3, data4)
 
-        if masks[5].max() == 1:
-            num_objs = 6
-            li = [1, 1, 1, 1, 1, 2]
-            li = np.asarray(li)
-            labels = torch.LongTensor(li)
-        else:
-            num_objs = 5
-            labels = torch.ones((num_objs,), dtype=torch.int64)
-
-        num_objs = 6
-        li = [1, 1, 1, 1, 1, 2]
-        li = np.asarray(li)
-        labels = torch.LongTensor(li)
+        num_objs = 1
         boxes = []
-        # print(num_objs)
         for i in range(num_objs):
-            #print(i)
             pos = np.where(masks[i])
-            #print(len(pos[0]))
-            if i == 5:
-                # kk = np.randint(5)
-                boxes.append([coor_label[1], coor_label[0], coor_label[1]+19, coor_label[0] + 11])
-                # boxes.append([boxes[kk][0], boxes[kk][1], boxes[kk][2], boxes[kk][3]])
-            # elif len(pos[0]) == 240:
-            #     xmin = np.min(pos[1])
-            #     xmax = np.max(pos[1])
-            #     ymin = np.min(pos[0])
-            #     ymax = np.max(pos[0])
-            #     boxes.append([xmin, ymin, xmax, ymax])
-            else:
-                xmin = np.min(pos[1])
-                xmax = np.max(pos[1])
-                ymin = np.min(pos[0])
-                ymax = np.max(pos[0])
-                boxes.append([xmin, ymin, xmax, ymax])
-        # print(len(boxes), boxes)
-
-
-
-            # print(boxes[-1])
+            xmin = np.min(pos[1])
+            xmax = np.max(pos[1])
+            ymin = np.min(pos[0])
+            ymax = np.max(pos[0])
+            boxes.append([xmin, ymin, xmax, ymax])
 
         boxes = torch.as_tensor(boxes, dtype=torch.float32)
         # there is only one class
-
+        labels = torch.ones((num_objs,), dtype=torch.int64)
         masks = torch.as_tensor(masks, dtype=torch.uint8)
 
         image_id = torch.tensor([idx])
@@ -201,7 +164,7 @@ def main(args):
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
     # our dataset has two classes only - background and person
-    num_classes = 3
+    num_classes = 2
     # use our dataset and defined transformations
     dataset = PennFudanDataset(data_path, get_transform(train=False), window_size=args.window_size, training=args.training)
     dataset_test = PennFudanDataset(data_path, get_transform(train=False),window_size=args.window_size , training=args.training)
@@ -213,7 +176,7 @@ def main(args):
 
     # define training and validation data loaders
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=4, shuffle=True, num_workers=4,
+        dataset, batch_size=1, shuffle=True, num_workers=1,
         collate_fn=utils.collate_fn)
 
     data_loader_test = torch.utils.data.DataLoader(
@@ -237,9 +200,9 @@ def main(args):
 
     # let's train it for 10 epochs
     num_epochs = 22
-    data_path_test = "./saved_models/jht_six_point/"
+    data_path_test = "./saved_models/jht_one/"
     os.makedirs(data_path_test, exist_ok=True)
-    # torch.load("./saved_models/jht_one/model_20.pth")
+    # torch.load("./saved_models/model_0.pth")
     for epoch in range(num_epochs):
         # train for one epoch, printing every 10 iterations
         train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10)
@@ -261,8 +224,7 @@ if __name__ == "__main__":
     parser.add_argument("--training", type=int, nargs="+")
     # parser.add_argument("--testing", type=int, nargs="+")
     # parser.add_argument("--load-dir", type=str, default=f"../data/training_data/")
-    parser.add_argument("--load-dir", type=str, default=f"../result2/")
-    # parser.add_argument("--load-dir", type=str, default=f"/media/joo/Data/argmax/result/")
+    parser.add_argument("--load-dir", type=str, default=f"../result/")
     parser.add_argument("--batch-size", type=int, default=64) #256
     parser.add_argument("--window-size", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=0.0001)

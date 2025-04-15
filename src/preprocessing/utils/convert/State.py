@@ -13,7 +13,7 @@ def worker(queue, temp_dir, progress_queue, height, width, players):
             return np.zeros((height, width), dtype=int)
         
         result = np.zeros((height, width), dtype=int)
-        y_tile, x_tile = df['y_tile'].astype(int).values, df['x_tile'].astype(int).values
+        y_tile, x_tile = df["y_tile"].astype(int).values, df["x_tile"].astype(int).values
         valid_indices = (y_tile < height) & (x_tile < width)
         y_tile, x_tile = y_tile[valid_indices], x_tile[valid_indices]
         
@@ -27,15 +27,15 @@ def worker(queue, temp_dir, progress_queue, height, width, players):
         def get_unit_type(name):
             return UnitType[name] if name in UnitType.__members__ else None
         
-        if player_id == 'neutral':
+        if player_id == "neutral":
             pivot_matrices = np.zeros((1, height, width), dtype=int)
             categories = [Category.RESOURCE]
             
-            df['unit_type'] = df['name'].apply(get_unit_type)
-            df = df.dropna(subset=['unit_type'])
+            df["unit_type"] = df["name"].apply(get_unit_type)
+            df = df.dropna(subset=["unit_type"])
             
             unit_masks = {
-                Category.RESOURCE: df['unit_type'].apply(lambda unit: unit.belongs_to(Category.RESOURCE)),
+                Category.RESOURCE: df["unit_type"].apply(lambda unit: unit.belongs_to(Category.RESOURCE)),
             }
             
             for idx, category in enumerate(categories):
@@ -46,14 +46,14 @@ def worker(queue, temp_dir, progress_queue, height, width, players):
             pivot_matrices = np.zeros((4, height, width), dtype=int) if df.empty else np.zeros((4, height, width), dtype=int)
             categories = [Category.WORKER, Category.GROUND, Category.AIR, Category.BUILDING]
             
-            df['unit_type'] = df['name'].apply(get_unit_type)
-            df = df.dropna(subset=['unit_type'])
+            df["unit_type"] = df["name"].apply(get_unit_type)
+            df = df.dropna(subset=["unit_type"])
             
             unit_masks = {
-                Category.WORKER: df['unit_type'].apply(lambda unit: unit.belongs_to(Category.WORKER)),
-                Category.GROUND: df['unit_type'].apply(lambda unit: unit.belongs_to(Category.GROUND) and not unit.belongs_to(Category.WORKER, Category.TRIVIAL)),
-                Category.AIR: df['unit_type'].apply(lambda unit: unit.belongs_to(Category.AIR) and not unit.belongs_to(Category.WORKER, Category.TRIVIAL)),
-                Category.BUILDING: df['unit_type'].apply(lambda unit: unit.belongs_to(Category.BUILDING) and not unit.belongs_to(Category.ADDON)),
+                Category.WORKER: df["unit_type"].apply(lambda unit: unit.belongs_to(Category.WORKER)),
+                Category.GROUND: df["unit_type"].apply(lambda unit: unit.belongs_to(Category.GROUND) and not unit.belongs_to(Category.WORKER, Category.TRIVIAL)),
+                Category.AIR: df["unit_type"].apply(lambda unit: unit.belongs_to(Category.AIR) and not unit.belongs_to(Category.WORKER, Category.TRIVIAL)),
+                Category.BUILDING: df["unit_type"].apply(lambda unit: unit.belongs_to(Category.BUILDING) and not unit.belongs_to(Category.ADDON)),
             }
             
             for idx, category in enumerate(categories):
@@ -72,7 +72,7 @@ def worker(queue, temp_dir, progress_queue, height, width, players):
             progress_queue.put(1)
             continue
         
-        with open(frame_file, 'rb') as f:
+        with open(frame_file, "rb") as f:
             frame_df = pd.DataFrame(pickle.load(f))
         
         grouped = frame_df.groupby("player")
@@ -86,12 +86,12 @@ def worker(queue, temp_dir, progress_queue, height, width, players):
 class State:
     def __init__(self, data):
         self.data = data
-        self.temp_dir = data['temp_dir']
+        self.temp_dir = data["temp_dir"]
         self.queue = Queue()
         self.num_workers = max(1, cpu_count() // 2)
         self.workers = []
         
-        self.players = {v['name']: k  for k, v in data['players_data'].items()}
+        self.players = {v["name"]: k  for k, v in data["players_data"].items()}
         
     def __enter__(self):
         return self
@@ -101,7 +101,7 @@ class State:
     
     def start_workers(self, progress_queue):
         self.workers = [
-            Process(target=worker, args=(self.queue, self.temp_dir, progress_queue, self.data['height'], self.data['width'], self.players))
+            Process(target=worker, args=(self.queue, self.temp_dir, progress_queue, self.data["height"], self.data["width"], self.players))
             for _ in range(self.num_workers)
         ]
         for p in self.workers:
@@ -114,7 +114,7 @@ class State:
             p.join()
     
     def process(self, interval=1):
-        frames = list(range(0, self.data['resolution_frame'], interval))
+        frames = list(range(0, self.data["resolution_frame"], interval))
         
         with Manager() as manager:
             progress_queue = manager.Queue()

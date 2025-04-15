@@ -5,6 +5,7 @@ import torch.nn as nn
 
 def get_model_instance_segmentation(num_classes: int, in_channels: int = 36):
     model = torchvision.models.detection.maskrcnn_resnet50_fpn(pretrained=True)
+    
     model.backbone.body.conv1 = nn.Conv2d(
         in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
     )
@@ -16,6 +17,16 @@ def get_model_instance_segmentation(num_classes: int, in_channels: int = 36):
     hidden_layer = 256
     model.roi_heads.mask_predictor = MaskRCNNPredictor(
         in_features_mask, hidden_layer, num_classes
+    )
+
+    image_mean = [0.485, 0.456, 0.406]
+    image_std = [0.229, 0.224, 0.225]
+    model.transform = CustomRCNNTransform(
+        min_size=800,
+        max_size=1333,
+        image_mean=image_mean,
+        image_std=image_std,
+        do_normalize=do_normalize
     )
 
     return model

@@ -25,28 +25,28 @@ def worker(queue, result_queue, temp_dir, progress_queue):
         frame_data = np.load(frame_file_npy, allow_pickle=True)
         frame_df = pd.DataFrame(frame_data)
         
-        frame_df['x_tile'] = frame_df['x'] // TILE_SIZE
-        frame_df['y_tile'] = frame_df['y'] // TILE_SIZE
-        frame_df['left_tile'] = frame_df['left'] // TILE_SIZE
-        frame_df['right_tile'] = frame_df['right'] // TILE_SIZE
-        frame_df['top_tile'] = frame_df['top'] // TILE_SIZE
-        frame_df['bottom_tile'] = frame_df['bottom'] // TILE_SIZE
-        frame_df['width_tile'] = frame_df['right_tile'] - frame_df['left_tile']
-        frame_df['height_tile'] = frame_df['bottom_tile'] - frame_df['top_tile']
+        frame_df["x_tile"] = frame_df["x"] // TILE_SIZE
+        frame_df["y_tile"] = frame_df["y"] // TILE_SIZE
+        frame_df["left_tile"] = frame_df["left"] // TILE_SIZE
+        frame_df["right_tile"] = frame_df["right"] // TILE_SIZE
+        frame_df["top_tile"] = frame_df["top"] // TILE_SIZE
+        frame_df["bottom_tile"] = frame_df["bottom"] // TILE_SIZE
+        frame_df["width_tile"] = frame_df["right_tile"] - frame_df["left_tile"]
+        frame_df["height_tile"] = frame_df["bottom_tile"] - frame_df["top_tile"]
         
-        frame_df.loc[frame_df['player'] == 'Neutral', ['race', 'player_color']] = ['None', 'Cyan']
+        frame_df.loc[frame_df["player"] == "Neutral", ["race", "player_color"]] = ["None", "Cyan"]
         
         os.remove(frame_file_npy)
         frame_df.to_pickle(frame_file_pkl)
         
-        result_queue.put(frame_df.to_dict(orient='records'))
+        result_queue.put(frame_df.to_dict(orient="records"))
         progress_queue.put(1)
 
 
 class State:
     def __init__(self, data):
         self.data = data
-        self.temp_dir = data['temp_dir']
+        self.temp_dir = data["temp_dir"]
         
         self.save_frames()
         
@@ -62,7 +62,7 @@ class State:
         pass
     
     def save_frames(self):
-        grouped = pd.DataFrame(self.data['state_raw']).groupby("frame")
+        grouped = pd.DataFrame(self.data["state_raw"]).groupby("frame")
         for frame, frame_df in grouped:
             np.save(os.path.join(self.temp_dir, f"state_{frame}.npy"), frame_df.to_records(index=False))
     
@@ -81,17 +81,17 @@ class State:
             p.join()
     
     def process(self):
-        if not self.data['state_raw']:
+        if not self.data["state_raw"]:
             return
         
-        last_frame = min(self.data['state_raw'][-1]['frame'], self.data['game_length'])
+        last_frame = min(self.data["state_raw"][-1]["frame"], self.data["game_length"])
         frames = list(range(0, last_frame + 1))
         
         with Manager() as manager:
             progress_queue = manager.Queue()
             self.start_workers(progress_queue)
             
-            progress_bar = tqdm(total=len(frames), desc='Processing state...')
+            progress_bar = tqdm(total=len(frames), desc="Processing state...")
             for frame in frames:
                 self.queue.put(frame)
             for _ in frames:
@@ -102,7 +102,7 @@ class State:
             
             self.stop_workers()
         
-        del self.data['state_raw']
+        del self.data["state_raw"]
     
     def run(self):
         self.process()

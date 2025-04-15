@@ -15,8 +15,8 @@ def process_single_frame_argmax(args):
         channel = np.zeros(origin_shape)
         kernel = np.ones(kernel_shape)
         for i in range(num_vpds):
-            x = int(df_row[f'vpx_{i + 1}'])
-            y = int(df_row[f'vpy_{i + 1}'])
+            x = int(df_row[f"vpx_{i + 1}"])
+            y = int(df_row[f"vpy_{i + 1}"])
             channel[x:x + kernel_shape[0], y:y + kernel_shape[1]] += kernel
         channel = channel.T
 
@@ -54,8 +54,8 @@ def process_local_max_frame(args):
         channel = np.zeros(origin_shape)
         kernel = np.ones(kernel_shape)
         for i in range(num_vpds):
-            x = int(df_row[f'vpx_{i + 1}'])
-            y = int(df_row[f'vpy_{i + 1}'])
+            x = int(df_row[f"vpx_{i + 1}"])
+            y = int(df_row[f"vpy_{i + 1}"])
             channel[x:x + kernel_shape[0], y:y + kernel_shape[1]] += kernel
         channel = channel.T
 
@@ -90,7 +90,7 @@ def preprocess_unique_local_maximums_parallel(dataframe: pd.DataFrame, num_vpds:
 
 def process_all_correct_frame(args):
     t, df_t, num_vpds = args
-    labels = np.split(np.asarray(df_t.set_index('frame')).squeeze(), num_vpds)
+    labels = np.split(np.asarray(df_t.set_index("frame")).squeeze(), num_vpds)
     return t, labels
 
 def preprocess_all_correct_parallel(dataframe: pd.DataFrame, num_vpds: int, interval: int):

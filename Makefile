@@ -1,32 +1,31 @@
+COMPOSE_FILE=infra/docker-compose.yml
+
 build:
-	docker compose build
+	docker compose -f $(COMPOSE_FILE) build
 
 rebuild:
-	docker compose build --no-cache
+	docker compose -f $(COMPOSE_FILE) build --no-cache
 
-exec:
-	docker compose exec pytorch-app bash
-
-up: 
-	docker compose up -d pytorch-app
+up:
+	docker compose -f $(COMPOSE_FILE) up -d
 
 down:
-	docker compose down --remove-orphans
-
-preprocess_input:
-	docker compose run --rm preprocess_input $(ARGS)
-
-preprocess_label:
-	docker compose run --rm preprocess_label $(ARGS)
-
-preprocess_pair:
-	docker compose run --rm preprocess_pair $(ARGS)
+	docker compose -f $(COMPOSE_FILE) down --remove-orphans
 
 run:
-	docker compose run --rm pytorch-app
+	docker compose -f $(COMPOSE_FILE) run --rm dispatcher $(CMD) $(ARGS)
 
-preprocess_all:
-	$(foreach replay,$(ARGS),\
-		make preprocess_input ARGS="--replays $(replay)" && \
-		make preprocess_label ARGS="--replays $(replay)" && \
-		make preprocess_pair ARGS="--replays $(replay)";)
+preprocess_input:
+	make run CMD=preprocess_input ARGS="$(ARGS)"
+
+preprocess_label:
+	make run CMD=preprocess_label ARGS="$(ARGS)"
+
+preprocess_pair:
+	make run CMD=preprocess_pair ARGS="$(ARGS)"
+
+train:
+	make run CMD=train ARGS="$(ARGS)"
+
+evaluate:
+	make run CMD=evaluate ARGS="$(ARGS)"

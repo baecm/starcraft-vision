@@ -71,9 +71,7 @@ def get_model_instance_segmentation(num_classes):
 
 
 class PennFudanDataset(object):
-    def __init__(self, path, transforms, window_size):
-        self.root = path
-        self.transforms = transforms
+    def __init__(self, path, window_size):
         pth = os.listdir(path)
         self.label_sequences = []
 

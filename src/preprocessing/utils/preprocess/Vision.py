@@ -18,7 +18,7 @@ class Vision:
         """
         Decode run-length encoded vision data.
         """
-        parts = data.split(',')
+        parts = data.split(",")
         frame = int(parts[0])
         first_val = int(parts[1])
         counts = list(map(int, parts[2].split()))
@@ -37,14 +37,14 @@ class Vision:
         assert self.pivot < frame, f"Frame {frame} is out of order. Current pivot: {self.pivot}"
         
         for i in range(self.pivot, frame):
-            vision = np.array(vision).reshape((self.data['height'], self.data['width']))
+            vision = np.array(vision).reshape((self.data["height"], self.data["width"]))
             
-            np.save(os.path.join(self.data['temp_dir'], f"vision_{i}.npy"), vision)
+            np.save(os.path.join(self.data["temp_dir"], f"vision_{i}.npy"), vision)
             
         self.pivot = frame
         
 
     def run(self):
-        [self.run_length_decode(line) for line in tqdm.tqdm(self.data['vision_raw'], desc='Decode vision...')]
+        [self.run_length_decode(line) for line in tqdm.tqdm(self.data["vision_raw"], desc="Decode vision...")]
         
-        del self.data['vision_raw']
+        del self.data["vision_raw"]

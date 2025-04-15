@@ -19,9 +19,7 @@ import time
 
 
 class PennFudanDataset(object):
-    def __init__(self, path, transforms, window_size, training):
-        self.root = path
-        self.transforms = transforms
+    def __init__(self, path, window_size, training):
         pth = os.listdir(path)
         self.label_sequences = []
         self.tr_replay = training
@@ -73,8 +71,9 @@ class PennFudanDataset(object):
         masks = np.array(masks)
         input_data = self.preprocessing(data1, data2, data3, data4)
 
-        num_objs = 6
+        num_objs = len(masks)
         boxes = []
+        # print(self.dir_paths[i] + '/' + str(int(real_idx) + 150) + ".npy",)
         for i in range(num_objs):
             pos = np.where(masks[i])
             xmin = np.min(pos[1])
@@ -169,13 +168,15 @@ def main(args):
     # our dataset has two classes only - background and person
     num_classes = 2
     # use our dataset and defined transformations
-    dataset = PennFudanDataset(data_path, get_transform(train=False), window_size=args.window_size, training=args.training)
-    dataset_test = PennFudanDataset(data_path, get_transform(train=False),window_size=args.window_size , training=args.training)
+    dataset = PennFudanDataset(data_path, get_transform(train=False), window_size=args.window_size,
+                               training=args.training)
+    dataset_val = PennFudanDataset(data_path, get_transform(train=False), window_size=args.window_size,
+                               training=args.training)
 
     # split the dataset in train and test set
     indices = torch.randperm(len(dataset)).tolist()
-    dataset = torch.utils.data.Subset(dataset, indices[:-50])
-    dataset_test = torch.utils.data.Subset(dataset_test, indices[-200:-150])
+    dataset = torch.utils.data.Subset(dataset, indices[:-1000])
+    dataset_val = torch.utils.data.Subset(dataset_val, indices[-1000:])
 
     # define training and validation data loaders
     data_loader = torch.utils.data.DataLoader(
@@ -183,7 +184,7 @@ def main(args):
         collate_fn=utils.collate_fn)
 
     data_loader_test = torch.utils.data.DataLoader(
-        dataset_test, batch_size=1, shuffle=False, num_workers=4,
+        dataset_val, batch_size=1, shuffle=False, num_workers=4,
         collate_fn=utils.collate_fn)
 
     # get the model using our helper function
@@ -202,8 +203,8 @@ def main(args):
                                                    gamma=0.1)
 
     # let's train it for 10 epochs
-    num_epochs = 22
-    data_path_test = "./saved_models/jht_six/"
+    num_epochs = 30
+    data_path_test = "./saved_models/five_plus_n_total_replay/"
     os.makedirs(data_path_test, exist_ok=True)
     # torch.load("./saved_models/jht_one/model_20.pth")
     for epoch in range(num_epochs):
@@ -227,7 +228,8 @@ if __name__ == "__main__":
     parser.add_argument("--training", type=int, nargs="+")
     # parser.add_argument("--testing", type=int, nargs="+")
     # parser.add_argument("--load-dir", type=str, default=f"../data/training_data/")
-    parser.add_argument("--load-dir", type=str, default=f"/media/joo/Data/argmax/result/")
+    # parser.add_argument("--load-dir", type=str, default=f"../result/")
+    parser.add_argument("--load-dir", type=str, default=f"/media/joo/Data/arg/")
     parser.add_argument("--batch-size", type=int, default=64) #256
     parser.add_argument("--window-size", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=0.0001)
@@ -236,7 +238,6 @@ if __name__ == "__main__":
     parser.add_argument("--id-string", type=str, default="")
     parser.add_argument("--cuda-idx", type=int, default=0)
     parser.add_argument("--eval", type=bool, default=False)
-
     args = parser.parse_args()
 
     main(args)

@@ -19,9 +19,7 @@ import time
 
 
 class PennFudanDataset(object):
-    def __init__(self, path, transforms, window_size, training):
-        self.root = path
-        self.transforms = transforms
+    def __init__(self, path, window_size, training):
         pth = os.listdir(path)
         self.label_sequences = []
         self.tr_replay = training
@@ -50,29 +48,6 @@ class PennFudanDataset(object):
     def __len__(self):
         return self.seq_indexs[-1][-1]
 
-    def zero(self, i, real_idx):
-        entire_data4 = np.load(self.dir_paths[i] + '/' + str(int(real_idx) + 150) + ".npy",
-                               allow_pickle=True)
-        if len(entire_data4[2]) == 0:
-            self.zero(i,real_idx+3)
-            print(real_idx+3)
-        else:
-            entire_data1 = np.load(self.dir_paths[i] + '/' + str(int(real_idx) + 147) + ".npy",
-                                   allow_pickle=True)
-            entire_data2 = np.load(self.dir_paths[i] + '/' + str(int(real_idx) + 148) + ".npy",
-                                   allow_pickle=True)
-            entire_data3 = np.load(self.dir_paths[i] + '/' + str(int(real_idx) + 149) + ".npy",
-                                   allow_pickle=True)
-            data1 = entire_data1[0]
-            data2 = entire_data2[0]
-            data3 = entire_data3[0]
-            data4 = entire_data4[0]
-
-            masks = entire_data4[1]
-            boxes = entire_data4[2]
-
-            return data1, data2, data3, data4, masks, boxes
-
     def __getitem__(self, idx):
         # load images and masks
         for i, start, end in self.seq_indexs:
@@ -90,82 +65,29 @@ class PennFudanDataset(object):
                 data4 = entire_data4[0]
 
                 masks = entire_data4[1]
-                boxes = entire_data4[2]
-                # print("len(boxes): ",len(boxes))
-                # if len(boxes) == 0:
-                #     for i, start, end in self.seq_indexs:
-                #         if idx >= start and idx < end:
-                #             real_idx = idx - start - 3
-                #             data1, data2, data3, data4, masks, boxes = self.zero(i, real_idx)
 
                 break
 
         masks = np.array(masks)
         input_data = self.preprocessing(data1, data2, data3, data4)
 
-        # if masks[5].max() == 1:
-        #     li = [1, 1, 1, 1, 1, 2]
-        #     li = np.asarray(li)
-        #     labels = torch.LongTensor(li)
-        # else:
-        #     num_objs = 5
-        #     labels = torch.ones((num_objs,), dtype=torch.int64)
-
-        num_objs = len(boxes)
-        # if num_objs == 0:
-        #     break
-        labels = torch.ones((num_objs,), dtype=torch.int64)
-
-        # li = [1, 1, 1, 1, 1, 2]
-        # li = np.asarray(li)
-        # labels = torch.LongTensor(li)
-        # boxes = []
-        # # print(num_objs)
-        # for i in range(num_objs):
-        #     #print(i)
-        #     pos = np.where(masks[i])
-        #     #print(len(pos[0]))
-        #     if i == 5:
-        #         # kk = np.randint(5)
-        #         boxes.append([coor_label[1], coor_label[0], coor_label[1]+19, coor_label[0] + 11])
-        #         # boxes.append([boxes[kk][0], boxes[kk][1], boxes[kk][2], boxes[kk][3]])
-        #     # elif len(pos[0]) == 240:
-        #     #     xmin = np.min(pos[1])
-        #     #     xmax = np.max(pos[1])
-        #     #     ymin = np.min(pos[0])
-        #     #     ymax = np.max(pos[0])
-        #     #     boxes.append([xmin, ymin, xmax, ymax])
-        #     else:
-        #         xmin = np.min(pos[1])
-        #         xmax = np.max(pos[1])
-        #         ymin = np.min(pos[0])
-        #         ymax = np.max(pos[0])
-        #         boxes.append([xmin, ymin, xmax, ymax])
-        # print(len(boxes), boxes)
-        # print(boxes[-1])
-
-        masks = torch.as_tensor(masks, dtype=torch.uint8)
-        image_id = torch.tensor([idx])
-
-
-        # print(len(boxes))
-        # print(boxes)
-        # print(boxes[:, 3])
+        num_objs = 6
+        boxes = []
+        for i in range(num_objs):
+            pos = np.where(masks[i])
+            xmin = np.min(pos[1])
+            xmax = np.max(pos[1])
+            ymin = np.min(pos[0])
+            ymax = np.max(pos[0])
+            boxes.append([xmin, ymin, xmax, ymax])
 
         boxes = torch.as_tensor(boxes, dtype=torch.float32)
-        # print(boxes)
-        # if len(boxes) == 0:
-        #     area = torch.tensor([0.])
-        #     break
-        # else:
-        # print(boxes)
-#        area = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
-#         try:
-#             area = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
-#         except:  # 예외가 발생했을 때 실행됨
-#             pass
+        # there is only one class
+        labels = torch.ones((num_objs,), dtype=torch.int64)
+        masks = torch.as_tensor(masks, dtype=torch.uint8)
+
+        image_id = torch.tensor([idx])
         area = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
-        # print(boxes)
         # suppose all instances are not crowd
         iscrowd = torch.zeros((num_objs,), dtype=torch.int64)
 
@@ -279,7 +201,7 @@ def main(args):
 
     # let's train it for 10 epochs
     num_epochs = 22
-    data_path_test = "./saved_models/jht_six_point_labels/"
+    data_path_test = "./saved_models/jht_six/"
     os.makedirs(data_path_test, exist_ok=True)
     # torch.load("./saved_models/jht_one/model_20.pth")
     for epoch in range(num_epochs):
@@ -303,9 +225,7 @@ if __name__ == "__main__":
     parser.add_argument("--training", type=int, nargs="+")
     # parser.add_argument("--testing", type=int, nargs="+")
     # parser.add_argument("--load-dir", type=str, default=f"../data/training_data/")
-    #parser.add_argument("--load-dir", type=str, default=f"../result2/")
-    parser.add_argument("--load-dir", type=str, default=f"/media/joo/Data/ten_label4/")
-    # parser.add_argument("--load-dir", type=str, default=f"/media/joo/Data/argmax/result/")
+    parser.add_argument("--load-dir", type=str, default=f"/media/joo/Data/argmax/result/")
     parser.add_argument("--batch-size", type=int, default=64) #256
     parser.add_argument("--window-size", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=0.0001)

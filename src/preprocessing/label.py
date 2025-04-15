@@ -35,5 +35,5 @@ def main():
             viewport.run(method=args.method)
             viewport.save()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

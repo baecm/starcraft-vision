@@ -1,0 +1,19 @@
+services:
+  dispatcher:
+    build:
+      context: ../
+      dockerfile: infra/docker/Dockerfile
+    image: starcraft-vision:dev
+    volumes:
+      - ../data:/workspace/data
+      - ../src:/workspace/src
+      - ../models:/workspace/models
+      - ./entrypoint.sh:/workspace/entrypoint.sh
+    user: "${UID}:${GID}"
+    working_dir: /workspace
+    environment:
+      - PYTHONPATH=/workspace/src
+    stdin_open: true
+    tty: true
+    runtime: nvidia
+    entrypoint: ["bash", "entrypoint.sh"]
