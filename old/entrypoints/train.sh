@@ -1,8 +1,8 @@
-#!/bin/bash
-set -e  # fail fast
+# #!/bin/bash
+# set -e  # fail fast
 
-echo "Training model..."
+# echo "Training model..."
 
-python src/main.py --train --replays "$@"
+# python src/train.py "$@"
 
-echo "Training completed."
+# echo "Training completed."
