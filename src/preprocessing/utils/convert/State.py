@@ -2,7 +2,7 @@ import os
 import pickle
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+import tqdm
 from multiprocessing import Process, Queue, cpu_count, Manager
 from ..starcraft import UnitType, Category
 
@@ -90,15 +90,14 @@ class State:
         self.queue = Queue()
         self.num_workers = max(1, cpu_count() // 2)
         self.workers = []
-        
-        self.players = {v["name"]: k  for k, v in data["players_data"].items()}
-        
+        self.players = {v["name"]: k for k, v in data["players_data"].items()}
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, exc_type, exc_value, traceback):
         pass
-    
+
     def start_workers(self, progress_queue):
         self.workers = [
             Process(target=worker, args=(self.queue, self.temp_dir, progress_queue, self.data["height"], self.data["width"], self.players))
@@ -106,29 +105,34 @@ class State:
         ]
         for p in self.workers:
             p.start()
-    
+
     def stop_workers(self):
         for _ in self.workers:
             self.queue.put(None)
         for p in self.workers:
             p.join()
-    
+
     def process(self, interval=1):
         frames = list(range(0, self.data["resolution_frame"], interval))
-        
+
         with Manager() as manager:
             progress_queue = manager.Queue()
             self.start_workers(progress_queue)
-            
-            progress_bar = tqdm(total=len(frames), desc="Converting State...")
+
+            progress_bar = tqdm.tqdm(
+                total=len(frames),
+                desc="Converting State...",
+                miniters=max(1, len(frames) // 20)
+            )
+
             for frame in frames:
                 self.queue.put(frame)
             for _ in frames:
                 progress_queue.get()
                 progress_bar.update(1)
             progress_bar.close()
-            
+
             self.stop_workers()
-    
+
     def run(self, interval=1):
         self.process(interval=interval)

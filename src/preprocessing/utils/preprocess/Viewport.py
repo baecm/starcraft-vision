@@ -2,7 +2,7 @@ import os
 import glob
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+import tqdm
 from multiprocessing import Pool, cpu_count
 from .viewport_parallel_utils import (
     preprocess_argmax_kernel_sum_parallel,
@@ -42,7 +42,6 @@ class Viewport:
             save_all_results(results=self.results, path=result_path)
         except Exception as e:
             print("[Save Error]", e)
-            import traceback
             traceback.print_exc()
 
     def load(self):
@@ -115,7 +114,12 @@ class Viewport:
         result = []
         previous_viewport = None
 
-        for t in tqdm(range(0, len(dataframe), INTERVAL), desc="Processing viewport(consider previous)"):
+        total_frames = range(0, len(dataframe), INTERVAL)
+        for t in tqdm.tqdm(
+            total_frames,
+            desc="Processing viewport(consider previous)",
+            miniters=max(1, len(total_frames) // 20)
+        ):
             try:
                 df_t = dataframe.loc[dataframe["frame"] == t].squeeze()
                 channel = np.zeros(ORIGIN_SHAPE)

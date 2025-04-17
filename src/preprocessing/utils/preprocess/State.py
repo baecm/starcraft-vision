@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+import tqdm
 from multiprocessing import Process, Queue, cpu_count, Manager
 
 
@@ -47,25 +47,25 @@ class State:
     def __init__(self, data):
         self.data = data
         self.temp_dir = data["temp_dir"]
-        
+
         self.save_frames()
-        
+
         self.queue = Queue()
         self.result_queue = Queue()
         self.num_workers = max(1, cpu_count() // 2)
         self.workers = []
-    
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, exc_type, exc_value, traceback):
         pass
-    
+
     def save_frames(self):
         grouped = pd.DataFrame(self.data["state_raw"]).groupby("frame")
         for frame, frame_df in grouped:
             np.save(os.path.join(self.temp_dir, f"state_{frame}.npy"), frame_df.to_records(index=False))
-    
+
     def start_workers(self, progress_queue):
         self.workers = [
             Process(target=worker, args=(self.queue, self.result_queue, self.temp_dir, progress_queue))
@@ -73,25 +73,30 @@ class State:
         ]
         for p in self.workers:
             p.start()
-    
+
     def stop_workers(self):
         for _ in self.workers:
             self.queue.put(None)
         for p in self.workers:
             p.join()
-    
+
     def process(self):
         if not self.data["state_raw"]:
             return
-        
+
         last_frame = min(self.data["state_raw"][-1]["frame"], self.data["game_length"])
         frames = list(range(0, last_frame + 1))
-        
+
         with Manager() as manager:
             progress_queue = manager.Queue()
             self.start_workers(progress_queue)
-            
-            progress_bar = tqdm(total=len(frames), desc="Processing state...")
+
+            progress_bar = tqdm.tqdm(
+                total=len(frames),
+                desc="Processing state...",
+                miniters=max(1, len(frames) // 20)
+            )
+
             for frame in frames:
                 self.queue.put(frame)
             for _ in frames:
@@ -99,10 +104,10 @@ class State:
                 progress_queue.get()
                 progress_bar.update(1)
             progress_bar.close()
-            
+
             self.stop_workers()
-        
+
         del self.data["state_raw"]
-    
+
     def run(self):
         self.process()

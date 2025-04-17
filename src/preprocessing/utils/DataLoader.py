@@ -27,7 +27,6 @@ class DataLoader:
         self.save_meta()
         self.save_terrain()
         
-        
     def save_meta(self):
         with open(os.path.join(self.output_dir, self.data["filename"], "meta.txt"), "w") as f:
             f.write(f"map_name: {self.data['map_name']}\n")
@@ -93,7 +92,6 @@ class DataLoader:
         print("Done")
         return terrain
 
-
     def load_vision(self, path, meta):
         print("Load vision...", end="")
         
@@ -102,11 +100,16 @@ class DataLoader:
         print("Done")
         return vision
 
-
-    def load_event(self, path):
+    def load_event(self, path, meta):
         print("Load event...", end="")
-        # first line is frame,x,y,player,unit,event
         events = self._open_file_with_fallback(os.path.join(path, "event"))
+        
+        iterable = tqdm.tqdm(
+            events[1:], 
+            desc="Load event...", 
+            miniters=max(1, len(events[1:]) // 20)
+        )
+
         events = [
             {
                 "frame": frame, 
@@ -116,36 +119,40 @@ class DataLoader:
                 "unit_type": unit_type, 
                 "event_type": event_type
             }
-            for event in tqdm.tqdm(events[1:], desc="Load event...")
+            for event in iterable
             for frame, x, y, player, unit_type, event_type in [event.split(",")]
             for frame, x, y in [map(int, [frame, x, y])]
         ]
-        
+
         return events
 
     def load_state(self, path):
         print("Load state...", end="")
         state = self._open_file_with_fallback(os.path.join(path, "state"))
 
-        state_data = [line.split(",") for line in tqdm.tqdm(state[1:], desc="Load state...")]
-        state_array = np.array(state_data)
-        del state_data
+        iterable = tqdm.tqdm(
+            state[1:], 
+            desc="Load state...", 
+            miniters=max(1, len(state[1:]) // 20)
+        )
 
-        dataframe = pd.DataFrame(state_array, columns=[
-            "frame", "player", "race", "player_color", "name", "ID", "x", "y",
-            "top", "bottom", "left", "right", "HP", "max_HP", "shield", "max_shield",
-            "energy", "max_energy"
+        state_data = [line.split(",") for line in iterable]
+        state_array = np.array(state_data)
+        
+        filtered_df = pd.DataFrame(state_array, columns=[
+        "frame", "player", "race", "player_color", "name", "ID", "x", "y",
+        "top", "bottom", "left", "right", "HP", "max_HP", "shield", "max_shield", 
+        "energy", "max_energy"
         ])
 
         int_columns = ["frame", "x", "y", "top", "bottom", "left", "right", "HP",  "max_HP", "shield", "max_shield", "energy", "max_energy"]
-        dataframe[int_columns] = dataframe[int_columns].astype(int)
+        filtered_df[int_columns] = filtered_df[int_columns].astype(int)
 
-        filtered_df = dataframe.query("player != 'Neutral'")
-        players_in_frame = filtered_df.groupby("frame")["player"].nunique().reset_index()
-
+        non_neutral_df = filtered_df.query("player != 'Neutral'")
+        players_in_frame = non_neutral_df.groupby("frame")["player"].nunique().reset_index()
         resolution_frame = players_in_frame.loc[players_in_frame["player"] < 2, "frame"].min()
-
-        return resolution_frame, dataframe.to_dict("records")
+        
+        del resolution_frame, state_data
 
     def load_data(self, file_path, args):
         meta = self.load_meta(file_path)

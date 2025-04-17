@@ -53,7 +53,15 @@ class Resolver:
                 raise FileNotFoundError("terrain.npy does not exist.")
             terrain = np.load(terrain_files[0])
 
-        for i in tqdm.tqdm(range(self.resolution_frame), desc="Resolving outputs"):
+        min_length = min(
+            len(state_player_1_files),
+            len(state_player_2_files),
+            len(state_neutral_files) if self.include_neutral else float('inf'),
+            len(vision_files) if self.include_vision else float('inf'),
+            self.resolution_frame
+        )
+
+        for i in tqdm.tqdm(range(min_length), desc="Resolving outputs", miniters=max(1, min_length // 20)):
             result_list = []
 
             player_1 = self._filter_unit_types(np.load(state_player_1_files[i]))

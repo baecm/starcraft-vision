@@ -1,7 +1,7 @@
 import os
 import numpy as np
-from tqdm import tqdm
-from glob import glob
+import tqdm
+import glob
 from argparse import ArgumentParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple, Generator
@@ -15,7 +15,6 @@ LABEL_METHODS = [
 ]
 
 OUTPUT_TYPES = ["coord", "channel"]
-
 
 def parse_arguments():
     parser = ArgumentParser()
@@ -68,13 +67,13 @@ class LazyScatterLabels:
                 channels.append(channel.T)
             else:
                 print(f"[Error] Invalid label format: {label}")
-        
+
         self._cache[idx] = channels
         return channels
 
 
 def get_sorted_files(directory: str) -> List[str]:
-    files = glob(os.path.join(directory, "*.npy"))
+    files = glob.glob(os.path.join(directory, "*.npy"))
     valid_files = []
     for f in files:
         filename = os.path.basename(f)
@@ -95,7 +94,7 @@ def load_input(replay: int, show_progress=False) -> LazyNpyLoader:
         print(f"[Warning] No input found at {path}")
     if show_progress:
         print(f"[Info] Loading {len(files)} input frames...")
-        for _ in tqdm(files, desc=f"Loading frames"):
+        for _ in tqdm.tqdm(files, desc="Loading frames", miniters=max(1, len(files) // 20)):
             pass
     return LazyNpyLoader(files)
 
@@ -113,7 +112,7 @@ def load_labels(replay: int, method: str, output: str, show_progress=False):
         scatter_loader = LazyScatterLabels(loader)
         if show_progress:
             print(f"[Info] Scattering {len(scatter_loader)} labels...")
-            for _ in tqdm(range(len(scatter_loader)), desc="Scattering"):
+            for _ in tqdm.tqdm(range(len(scatter_loader)), desc="Scattering", miniters=max(1, len(scatter_loader) // 20)):
                 _ = scatter_loader[_]
         return scatter_loader
     return None
@@ -135,7 +134,6 @@ def make_pairs(inputs, labels) -> Tuple[Generator, int]:
 def save_pair(args: Tuple[int, Tuple[np.ndarray, np.ndarray], str]):
     idx, pair, path = args
     try:
-        # Ensure the pair is iterable and in proper format
         if not isinstance(pair, tuple) or len(pair) != 2:
             print(f"[Error] Invalid pair format at index {idx}: {pair}")
             return
@@ -150,17 +148,14 @@ def store_pairs(pairs, count: int, result_dir: str, replay: int, method: str):
     args = [(i, pair, path) for i, pair in enumerate(pairs)]
     with ThreadPoolExecutor() as executor:
         futures = [executor.submit(save_pair, arg) for arg in args]
-        for _ in tqdm(as_completed(futures), total=count, desc=f"Saving replay {replay}"):
-
+        for _ in tqdm.tqdm(as_completed(futures), total=count, desc=f"Saving replay {replay}", miniters=max(1, count // 20)):
             pass
 
 
 def process_replay(replay: int, method: str, output: str, result_dir: str):
     print(f"\n[Start] Processing replay {replay}")
-    
-    # Output type info
     print(f"[INFO] Output type: {output}")
-    
+
     try:
         inputs = load_input(replay, show_progress=True)
         if len(inputs) == 0:

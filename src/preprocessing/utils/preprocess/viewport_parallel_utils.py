@@ -1,9 +1,9 @@
+import os
+import tqdm
 import numpy as np
 import pandas as pd
 from multiprocessing import Pool, cpu_count
 from concurrent.futures import ThreadPoolExecutor
-import os
-from tqdm import tqdm
 import traceback
 
 def group_by_frame(dataframe):
@@ -45,7 +45,12 @@ def preprocess_argmax_kernel_sum_parallel(dataframe: pd.DataFrame, num_vpds: int
     with Pool(cpu_count() // 2) as pool:
         results = list(tqdm(pool.imap_unordered(process_single_frame_argmax, tasks, chunksize=1), total=len(tasks), desc="Processing viewport (legacy)"))
 
-    results = sorted([r for r in results if r[1] is not None], key=lambda x: x[0])
+    results = list(tqdm.tqdm(
+        pool.imap_unordered(process_single_frame_argmax, tasks, chunksize=1),
+        total=len(tasks),
+        desc="Processing viewport (legacy)",
+        miniters=max(1, len(tasks) // 20)
+    ))
     return [r[1] for r in results]
 
 def process_local_max_frame(args):
@@ -113,7 +118,12 @@ def save_all_results(results, path):
     os.makedirs(path, exist_ok=True)
     args = [(t, result, path) for t, result in enumerate(results)]
     with ThreadPoolExecutor(max_workers=cpu_count()) as executor:
-        list(tqdm(executor.map(lambda x: save_single_result(x), args), total=len(args), desc="Saving results"))
+        list(tqdm.tqdm(
+            executor.map(lambda x: save_single_result(x), args),
+            total=len(args),
+            desc="Saving results",
+            miniters=max(1, len(args) // 20)
+        ))
 
 def read_single_csv(path):
     try:
