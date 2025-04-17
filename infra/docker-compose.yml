@@ -4,15 +4,17 @@ services:
       context: ../
       dockerfile: infra/docker/Dockerfile
     image: starcraft-vision:dev
+    environment:
+      - PYTHONPATH=/workspace/src
+      - TORCH_HOME=/workspace/.torch_cache
     volumes:
       - ../data:/workspace/data
       - ../src:/workspace/src
       - ../models:/workspace/models
+      - ../.torch_cache:/workspace/.torch_cache
       - ./entrypoint.sh:/workspace/entrypoint.sh
     user: "${UID}:${GID}"
     working_dir: /workspace
-    environment:
-      - PYTHONPATH=/workspace/src
     stdin_open: true
     tty: true
     runtime: nvidia
