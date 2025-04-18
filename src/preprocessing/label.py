@@ -2,7 +2,7 @@ from argparse import ArgumentParser
 
 from utils import Viewport
 
-label_method = [
+LABEL_METHODS = [
     # singular label
     "legacy",
     # "argmax_kernel_sum",
@@ -15,7 +15,7 @@ label_method = [
 def parse_arguments():
     parser = ArgumentParser(description="Generate viewport-based point labels for replays")
     parser.add_argument("--replays", type=str, nargs="+", required=True, help="Replay ID(s) to process")
-    parser.add_argument("--method", type=str, default=label_method[0], choices=label_method, help="Viewport label extraction method")
+    parser.add_argument("--method", type=str, default=LABEL_METHODS[0], choices=LABEL_METHODS, help="Viewport label extraction method")
     args = parser.parse_args()
     return args
 
