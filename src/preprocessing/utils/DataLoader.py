@@ -10,7 +10,7 @@ import tqdm
 
 class DataLoader:
     def __init__(self, rep_dir, args):
-        self.output_dir = os.path.join(os.getcwd(), "data", "dst")
+        self.output_dir = os.path.join(os.getcwd(), "data", "input", "dst")
 
         self.data = self.load_data(rep_dir, args)
         
@@ -128,31 +128,48 @@ class DataLoader:
 
     def load_state(self, path):
         print("Load state...", end="")
-        state = self._open_file_with_fallback(os.path.join(path, "state"))
+        dataframe = pd.read_csv(os.path.join(path, "state"),
+                                skiprows=1,
+                                names=[
+                                'frame', 'player', 'race', 'player_color', 'name', 'ID', 'x', 'y',
+                                'top', 'bottom', 'left', 'right', 'HP', 'max_HP', 'shield', 'max_shield',
+                                'energy', 'max_energy'
+                                ],
+                                dtype={
+                                    'frame': int, 'x': int, 'y': int,
+                                        'top': int, 'bottom': int, 'left': int, 'right': int,
+                                        'HP': int, 'max_HP': int, 'shield': int, 'max_shield': int,
+                                        'energy': int, 'max_energy': int,
+                                        'player': str, 'race': str, 'player_color': str, 'name': str, 'ID': str
+                                        }
+                                )
 
-        iterable = tqdm.tqdm(
-            state[1:], 
-            desc="Load state...", 
-            miniters=max(1, len(state[1:]) // 20)
-        )
+        # iterable = tqdm.tqdm(
+        #     state[1:], 
+        #     desc="Load state...", 
+        #     miniters=max(1, len(state[1:]) // 20)
+        # )
 
-        state_data = [line.split(",") for line in iterable]
-        state_array = np.array(state_data)
+        # state_data = [line.split(",") for line in iterable]
+        # state_array = np.array(state_data)
+        # del state_data        
         
-        filtered_df = pd.DataFrame(state_array, columns=[
-        "frame", "player", "race", "player_color", "name", "ID", "x", "y",
-        "top", "bottom", "left", "right", "HP", "max_HP", "shield", "max_shield", 
-        "energy", "max_energy"
-        ])
+        # dataframe = pd.DataFrame(state_array, columns=[
+        #     'frame', 'player', 'race', 'player_color', 'name', 'ID', 'x', 'y',
+        #     'top', 'bottom', 'left', 'right', 'HP', 'max_HP', 'shield', 'max_shield',
+        #     'energy', 'max_energy'
+        # ])
 
-        int_columns = ["frame", "x", "y", "top", "bottom", "left", "right", "HP",  "max_HP", "shield", "max_shield", "energy", "max_energy"]
-        filtered_df[int_columns] = filtered_df[int_columns].astype(int)
+        # int_columns = ['frame', 'x', 'y', 'top', 'bottom', 'left', 'right', 'HP',  'max_HP', 'shield', 'max_shield', 'energy', 'max_energy']
+        # dataframe[int_columns] = dataframe[int_columns].astype(int)
 
-        non_neutral_df = filtered_df.query("player != 'Neutral'")
-        players_in_frame = non_neutral_df.groupby("frame")["player"].nunique().reset_index()
-        resolution_frame = players_in_frame.loc[players_in_frame["player"] < 2, "frame"].min()
-        
-        del resolution_frame, state_data
+        filtered_df = dataframe.query("player != 'Neutral'")
+        players_in_frame = filtered_df.groupby('frame')['player'].nunique().reset_index()
+
+        resolution_frame = players_in_frame.loc[players_in_frame['player'] < 2, 'frame'].min()
+
+        print("Done")
+        return resolution_frame, dataframe.to_dict('records')
 
     def load_data(self, file_path, args):
         meta = self.load_meta(file_path)
