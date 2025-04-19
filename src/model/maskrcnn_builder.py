@@ -7,10 +7,11 @@ from torchvision.models.detection import MaskRCNN_ResNet50_FPN_Weights
 
 from .CustomRCNNTransform import CustomRCNNTransform
 
-def get_model_instance_segmentation(num_classes: int, do_normalize=False, in_channels: int = 36):
+def get_model_instance_segmentation(num_classes: int, window_size: int, do_normalize=False):
+    in_channels = 9 * window_size
     weights = MaskRCNN_ResNet50_FPN_Weights.DEFAULT
     model = torchvision.models.detection.maskrcnn_resnet50_fpn(weights=weights)
-    
+
     model.backbone.body.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
 
     in_features = model.roi_heads.box_predictor.cls_score.in_features
