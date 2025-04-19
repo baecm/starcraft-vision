@@ -12,11 +12,7 @@ from .viewport_parallel_utils import (
     read_single_csv
 )
 import traceback
-
-ORIGIN_SHAPE = (128, 128)
-KERNEL_SHAPE = (20, 12)
-TILE_SIZE = 32
-INTERVAL = 1
+import config
 
 
 class Viewport:
@@ -36,7 +32,7 @@ class Viewport:
         pass
 
     def save(self):
-        result_path = os.path.join(self.result_root, self.replay_id, self.method)
+        result_path = os.path.join(self.result_root, self.replay_id + ".rep", self.method)
         from .viewport_parallel_utils import save_all_results
         try:
             save_all_results(results=self.results, path=result_path)
@@ -76,7 +72,7 @@ class Viewport:
             num = len(dataframes)
             df = pd.concat(dataframes, axis=1).ffill().astype(int)
             df.columns = [f"vp{x}_{i + 1}" for i in range(num) for x in ("x", "y")]
-            df = (df / TILE_SIZE).astype(int).reset_index()
+            df = (df / config.TILE_SIZE).astype(int).reset_index()
             return df, num
         except Exception as e:
             print("[Merge Error]", e)
@@ -85,19 +81,19 @@ class Viewport:
 
     def preprocess_argmax_kernel_sum(self, dataframe, num_vpds):
         return preprocess_argmax_kernel_sum_parallel(
-            dataframe, num_vpds, KERNEL_SHAPE, ORIGIN_SHAPE, INTERVAL
+            dataframe, num_vpds, config.KERNEL_SHAPE, config.ORIGIN_SHAPE, config.INTERVAL
         )
 
     def preprocess_unique_local_maximums(self, dataframe, num_vpds):
         from local_peaks import get_local_maximums, get_unique_peaks2
         return preprocess_unique_local_maximums_parallel(
-            dataframe, num_vpds, KERNEL_SHAPE, ORIGIN_SHAPE, INTERVAL,
+            dataframe, num_vpds, config.KERNEL_SHAPE, config.ORIGIN_SHAPE, config.INTERVAL,
             get_local_maximums, get_unique_peaks2
         )
 
     def preprocess_all_correct(self, dataframe, num_vpds):
         return preprocess_all_correct_parallel(
-            dataframe, num_vpds, INTERVAL
+            dataframe, num_vpds, config.INTERVAL
         )
 
     def preprocess_consider_previous(self, dataframe: pd.DataFrame, num_vpds: int):
@@ -114,7 +110,7 @@ class Viewport:
         result = []
         previous_viewport = None
 
-        total_frames = range(0, len(dataframe), INTERVAL)
+        total_frames = range(0, len(dataframe), config.INTERVAL)
         for t in tqdm.tqdm(
             total_frames,
             desc="Processing viewport(consider previous)",
@@ -123,19 +119,19 @@ class Viewport:
             try:
                 df_t = dataframe.loc[dataframe["frame"] == t].squeeze()
                 channel = np.zeros(ORIGIN_SHAPE)
-                kernel = np.ones(KERNEL_SHAPE)
+                kernel = np.ones(config.KERNEL_SHAPE)
                 for i in range(num_vpds):
                     x = int(df_t[f"vpx_{i + 1}"])
                     y = int(df_t[f"vpy_{i + 1}"])
-                    channel[x:x + KERNEL_SHAPE[0], y:y + KERNEL_SHAPE[1]] += kernel
+                    channel[x:x + config.KERNEL_SHAPE[0], y:y + config.KERNEL_SHAPE[1]] += kernel
                 channel = channel.T
 
-                width_tile = ORIGIN_SHAPE[0] - KERNEL_SHAPE[0]
-                height_tile = ORIGIN_SHAPE[1] - KERNEL_SHAPE[1]
+                width_tile = ORIGIN_SHAPE[0] - config.KERNEL_SHAPE[0]
+                height_tile = ORIGIN_SHAPE[1] - config.KERNEL_SHAPE[1]
                 kernel_sum = np.zeros((width_tile, height_tile))
                 for x in range(width_tile):
                     for y in range(height_tile):
-                        kernel_sum[x][y] = channel[x:x + KERNEL_SHAPE[0], y:y + KERNEL_SHAPE[1]].sum()
+                        kernel_sum[x][y] = channel[x:x + config.KERNEL_SHAPE[0], y:y + config.KERNEL_SHAPE[1]].sum()
 
                 peaks, _ = get_local_maximums(kernel_sum)
                 unique_peaks = get_unique_peaks(peaks)

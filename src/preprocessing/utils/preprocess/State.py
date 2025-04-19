@@ -3,9 +3,7 @@ import numpy as np
 import pandas as pd
 import tqdm
 from multiprocessing import Process, Queue, cpu_count, Manager
-
-
-TILE_SIZE = 32
+import config
 
 
 def worker(queue, result_queue, temp_dir, progress_queue):
@@ -25,12 +23,12 @@ def worker(queue, result_queue, temp_dir, progress_queue):
         frame_data = np.load(frame_file_npy, allow_pickle=True)
         frame_df = pd.DataFrame(frame_data)
         
-        frame_df["x_tile"] = frame_df["x"] // TILE_SIZE
-        frame_df["y_tile"] = frame_df["y"] // TILE_SIZE
-        frame_df["left_tile"] = frame_df["left"] // TILE_SIZE
-        frame_df["right_tile"] = frame_df["right"] // TILE_SIZE
-        frame_df["top_tile"] = frame_df["top"] // TILE_SIZE
-        frame_df["bottom_tile"] = frame_df["bottom"] // TILE_SIZE
+        frame_df["x_tile"] = frame_df["x"] // config.TILE_SIZE
+        frame_df["y_tile"] = frame_df["y"] // config.TILE_SIZE
+        frame_df["left_tile"] = frame_df["left"] // config.TILE_SIZE
+        frame_df["right_tile"] = frame_df["right"] // config.TILE_SIZE
+        frame_df["top_tile"] = frame_df["top"] // config.TILE_SIZE
+        frame_df["bottom_tile"] = frame_df["bottom"] // config.TILE_SIZE
         frame_df["width_tile"] = frame_df["right_tile"] - frame_df["left_tile"]
         frame_df["height_tile"] = frame_df["bottom_tile"] - frame_df["top_tile"]
         

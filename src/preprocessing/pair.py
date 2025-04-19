@@ -6,21 +6,13 @@ from argparse import ArgumentParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple, Generator
 
-
-LABEL_METHODS = [
-    "legacy",
-    "consider_previous",
-    "unique_local_maximums",
-    "all_correct",
-]
-
-OUTPUT_TYPES = ["coord", "channel"]
+import config
 
 def parse_arguments():
     parser = ArgumentParser()
     parser.add_argument("--replays", type=int, nargs="+", required=True)
-    parser.add_argument("--method", type=str, default=LABEL_METHODS[0], choices=LABEL_METHODS)
-    parser.add_argument("--output", type=str, default=OUTPUT_TYPES[1], choices=OUTPUT_TYPES)
+    parser.add_argument("--method", type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS)
+    parser.add_argument("--output", type=str, default=config.OUTPUT_TYPES[1], choices=config.OUTPUT_TYPES)
     parser.add_argument("--result-dir", type=str, default=os.path.join(os.getcwd(), "data", "pair"))
     return parser.parse_args()
 
@@ -37,7 +29,7 @@ class LazyNpyLoader:
 
 
 class LazyScatterLabels:
-    def __init__(self, loader: LazyNpyLoader, kernel_shape=(20, 12), origin_shape=(128, 128)):
+    def __init__(self, loader: LazyNpyLoader, kernel_shape=config.KERNEL_SHAPE, origin_shape=config.ORIGIN_SHAPE):
         self.loader = loader
         self.kernel = np.ones(kernel_shape)
         self.kh, self.kw = kernel_shape
@@ -100,7 +92,7 @@ def load_input(replay: int, show_progress=False) -> LazyNpyLoader:
 
 
 def load_labels(replay: int, method: str, output: str, show_progress=False):
-    path = os.path.join("data", "label", "dst", str(replay), method)
+    path = os.path.join("data", "label", "dst", f"{replay}.rep", method)
     files = get_sorted_files(path)
     if not files:
         print(f"[Warning] No labels found at {path}")
@@ -144,7 +136,7 @@ def save_pair(args: Tuple[int, Tuple[np.ndarray, np.ndarray], str]):
 
 
 def store_pairs(pairs, count: int, result_dir: str, replay: int, method: str):
-    path = os.path.join(result_dir, str(replay), method)
+    path = os.path.join(result_dir, f"{replay}.rep", method)
     args = [(i, pair, path) for i, pair in enumerate(pairs)]
     with ThreadPoolExecutor() as executor:
         futures = [executor.submit(save_pair, arg) for arg in args]
