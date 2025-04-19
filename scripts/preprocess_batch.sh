@@ -7,10 +7,8 @@ shift
 REPLAY_IDS=()
 ARGS=()
 
-# 로그 디렉토리 준비
 mkdir -p logs
 
-# --replays 인자 분리
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == "--replays" ]]; then
     shift
@@ -24,20 +22,17 @@ while [[ $# -gt 0 ]]; do
   fi
 done
 
-# 유효성 검사
 if [[ "$COMMAND" != "preprocess_input" && "$COMMAND" != "preprocess_label" && "$COMMAND" != "preprocess_pair" ]]; then
   echo "[ERROR] Invalid command: $COMMAND"
   exit 1
 fi
 
-# 병렬 실행 제한 수 설정 (CPU 수 절반, 최소 1개)
 MAX_PARALLEL=2
 if [ "$MAX_PARALLEL" -lt 1 ]; then MAX_PARALLEL=1; fi
 
 echo "[INFO] Running '$COMMAND' for ${#REPLAY_IDS[@]} replays (max $MAX_PARALLEL in parallel)"
 echo "[INFO] Shared args: ${ARGS[@]}"
 
-# 실행 카운터
 CURRENT_PARALLEL=0
 
 for REPLAY_ID in "${REPLAY_IDS[@]}"; do
@@ -55,6 +50,5 @@ for REPLAY_ID in "${REPLAY_IDS[@]}"; do
   fi
 done
 
-# 남은 작업 대기
 wait
 echo "[DONE] All parallel tasks finished."
