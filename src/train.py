@@ -11,8 +11,12 @@ from model.maskrcnn_builder import get_model_instance_segmentation
 
 import detection.transforms as T
 from utils.logger import Logger
+import config
 
-Logger.set_level("log")  # 로그 레벨: "none", "log", "debug"
+from torch.utils.tensorboard import SummaryWriter
+
+Logger.set_level("log")  # "none", "log", "debug"
+
 
 def get_transform(train):
     transforms = [T.ToTensor()]
@@ -21,17 +25,16 @@ def get_transform(train):
     return T.Compose(transforms)
 
 
-def load_data(replays_dir, window_size, batch_size, train_replays=None, test_replays=None, test_size=50):
+def load_data(replays_dir, label_method, window_size, batch_size, train_replays=None, test_replays=None, test_size=50):
     Logger.info("[Stage] Loading data...")
 
-    data_input_dst = os.path.join(args.data_root, "input", "dst")
+    data_input_dst = os.path.join(args.data_root, "pair")
     Logger.info(f"[Info] Loading replays from {data_input_dst}")
 
     replay_names = os.listdir(data_input_dst)
     replay_names = [r for r in replay_names if os.path.isdir(os.path.join(data_input_dst, r))]
     Logger.info(f"[Info] Found {len(replay_names)} valid replay directories")
 
-    # 이제 제대로 분기
     if train_replays is not None:
         train_replays = list(map(str, train_replays))
         if test_replays is None:
@@ -42,13 +45,13 @@ def load_data(replays_dir, window_size, batch_size, train_replays=None, test_rep
 
         Logger.info(f"[Info] Train: {len(train_replays)} replays, Test: {len(test_replays)} replays")
 
-        train_dataset = CustomPennFudanDataset(data_input_dst, training=train_replays, window_size=window_size)
-        test_dataset = CustomPennFudanDataset(data_input_dst, training=test_replays, window_size=window_size)
+        train_dataset = CustomPennFudanDataset(data_input_dst, label_method, training=train_replays, window_size=window_size)
+        test_dataset = CustomPennFudanDataset(data_input_dst, label_method, training=test_replays, window_size=window_size)
 
     else:
         Logger.log("[Auto] No train-replays provided, falling back to random split")
 
-        full_dataset = CustomPennFudanDataset(data_input_dst, training=replay_names, window_size=window_size)
+        full_dataset = CustomPennFudanDataset(data_input_dst, label_method, training=replay_names, window_size=window_size)
 
         indices = torch.randperm(len(full_dataset)).tolist()
         train_indices, test_indices = indices[:-test_size], indices[-test_size:]
@@ -60,21 +63,36 @@ def load_data(replays_dir, window_size, batch_size, train_replays=None, test_rep
 
         return make_loader(train_dataset, batch_size, shuffle=True), make_loader(test_dataset, batch_size=1, shuffle=False)
 
+    return make_loader(train_dataset, batch_size, shuffle=True), make_loader(test_dataset, batch_size=1, shuffle=False)
+
+
 def make_loader(ds, batch_size, shuffle):
     return torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=shuffle, num_workers=4, collate_fn=utils.collate_fn)
 
-def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, num_epochs, save_dir):
+
+def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, num_epochs, save_dir, writer):
     Logger.info("[Stage] Starting training loop...")
     for epoch in tqdm.tqdm(range(num_epochs)):
-        train_one_epoch(model, optimizer, data_loader_train, device, epoch, print_freq=10)
-
+        train_stats = train_one_epoch(model, optimizer, data_loader_train, device, epoch, print_freq=10)
         lr_scheduler.step()
 
-        evaluate(model, data_loader_test, device=device)
+        eval_stats = evaluate(model, data_loader_test, device=device)
+
+        writer.add_scalar("Loss/train", train_stats["loss"], epoch)
+        writer.add_scalar("Loss/class", train_stats["loss_classifier"], epoch)
+        writer.add_scalar("Loss/box_reg", train_stats["loss_box_reg"], epoch)
+        writer.add_scalar("Loss/mask", train_stats["loss_mask"], epoch)
+        writer.add_scalar("Loss/objectness", train_stats["loss_objectness"], epoch)
+        writer.add_scalar("Loss/rpn_box_reg", train_stats["loss_rpn_box_reg"], epoch)
+
+        if isinstance(eval_stats, dict):
+            for k, v in eval_stats.items():
+                writer.add_scalar(f"Eval/{k}", v, epoch)
 
         save_path = os.path.join(save_dir, f"model_{epoch}.pth")
         torch.save(model.state_dict(), save_path)
 
+    writer.close()
     Logger.info("[Stage] Training complete!")
 
 
@@ -83,29 +101,48 @@ def run_training(args):
     device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
     Logger.info(f"[Info] Using device: {device}")
 
+    if not args.id_string:
+        args.id_string = f"{args.label_method}_win{args.window_size}_b{args.batch_size}"
+
     log_save_path = os.path.join(
         args.log_root,
-        f"model_{args.id_string}_lr{args.learning_rate}_w_size{args.window_size}_{str(int(time.time()))[4:]}/"
+        f"{args.id_string}_{time.strftime('%Y%m%d_%H%M%S')}/"
     )
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
 
+    writer = SummaryWriter(log_dir=log_save_path)
+
+    # 기록용 하이퍼파라미터 메타데이터
+    writer.add_hparams(
+        {
+            "label_method": args.label_method,
+            "window_size": args.window_size,
+            "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate
+        },
+        {
+            "final_train_loss": train_stats["loss"],
+            "final_eval_loss": eval_stats.get("loss", 0.0) if isinstance(eval_stats, dict) else 0.0,
+        }
+    )
+
     data_loader_train, data_loader_test = load_data(
-        args.replays, args.window_size, args.batch_size,
+        args.replays, args.label_method, args.window_size, args.batch_size,
         train_replays=args.train_replays,
         test_replays=args.test_replays
     )
 
     Logger.info("[Stage] Initializing model...")
     num_classes = 2
-    model = get_model_instance_segmentation(num_classes)
+    model = get_model_instance_segmentation(num_classes, window_size=args.window_size)
     model.to(device)
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=args.learning_rate, momentum=0.9, weight_decay=0.0005)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path)
+    train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path, writer)
 
 
 def parse_arguments():
@@ -114,9 +151,10 @@ def parse_arguments():
     parser.add_argument("--replays", type=str, nargs="+", required=True, help="List of replay directories")
     parser.add_argument("--train-replays", type=int, nargs="+", default=None, help="Replay indices used for training")
     parser.add_argument("--test-replays", type=int, nargs="+", default=None, help="Replay indices used for testing")
+    parser.add_argument("--label-method", type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS, help="Label extraction method")
 
     parser.add_argument("--window-size", type=int, default=1)
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=0.0001)
     parser.add_argument("--max-epoch", type=int, default=100)
 
