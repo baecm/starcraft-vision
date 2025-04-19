@@ -1,52 +1,117 @@
 import os
+import re
+import glob
 import numpy as np
 import torch
 from .penn_fudan import PennFudanDataset as BasePennFudanDataset
 from utils.logger import Logger
 
 
+def natural_sort_key(s):
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", os.path.basename(s))]
+    
+
 class CustomPennFudanDataset(BasePennFudanDataset):
-    def __init__(self, replays, training, window_size):
-        Logger.info("[CustomDataset] Initializing CustomPennFudanDataset...")
+    def __init__(self, root_dir: str, label_method: str, training: list, window_size: int = None):
+        Logger.info("[CustomDataset] Initializing from preprocessed pair directory...")
 
-        self.dir_paths = [
-            os.path.join(replays, dir_name) + "/"
-            for dir_name in os.listdir(replays)
-            if os.path.isdir(os.path.join(replays, dir_name)) and dir_name in map(str, training)
-        ]
-        Logger.info(f"[CustomDataset] Using {len(self.dir_paths)} replay directories: {self.dir_paths}")
+        self.files = []
+        for replay_id in map(str, training):
+            pair_dir = os.path.join(root_dir, f"{replay_id}", label_method)
+            if not os.path.isdir(pair_dir):
+                Logger.warn(f"[CustomDataset] Skipping {replay_id} (no path: {pair_dir})")
+                continue
 
-        self.window_size = window_size
-        self.seq_indexs = self._generate_sequence_indices()
+            npy_files = sorted(glob.glob(os.path.join(pair_dir, "*.npy")), key=natural_sort_key)
+            Logger.info(f"[CustomDataset] {replay_id}: found {len(npy_files)} pair files")
+            self.files.extend(npy_files)
 
-        Logger.info(f"[CustomDataset] Total sequence segments: {len(self.seq_indexs)}")
-        Logger.debug(f"[CustomDataset] Sequence index map: {self.seq_indexs}")
+        if not self.files:
+            Logger.error("[CustomDataset] No pair data found. Aborting.")
+            raise RuntimeError("Empty dataset")
+
+        Logger.info(f"[CustomDataset] Total samples: {len(self.files)}")
 
     def _generate_sequence_indices(self):
         seq_indexs = []
         index_a = 0
+
         for dir_path in self.dir_paths:
-            num_files = len(os.listdir(dir_path))
+            all_files = os.listdir(dir_path)
+            num_files = len(all_files)
             valid_length = num_files - 150  # usable frame 수
+
+            Logger.debug(f"[CustomDataset] dir: {dir_path}, total files: {num_files}, valid: {valid_length}")
+
+            if valid_length <= 0:
+                Logger.warn(f"[CustomDataset] Skipping dir: {dir_path} (not enough usable frames)")
+                continue
+
             index_b = index_a + valid_length
             seq_indexs.append((dir_path, index_a, index_b))
             index_a = index_b
+
+        Logger.debug(f"[CustomDataset] Final seq_indexs: {seq_indexs}")
         return seq_indexs
 
     def __len__(self):
-        total_length = self.seq_indexs[-1][-1]
-        Logger.debug(f"[CustomDataset] __len__ called, total length: {total_length}")
-        return total_length
+        return len(self.files)
 
     def __getitem__(self, idx):
-        for dir_path, start, end in self.seq_indexs:
-            if start <= idx < end:
-                real_idx = idx - start
-                Logger.debug(f"[CustomDataset] Fetching idx={idx} from {dir_path}, real_idx={real_idx}")
-                return self._load_data(dir_path, real_idx)
+        path = self.files[idx]
+        try:
+            pair = np.load(path, allow_pickle=True)
+            input_arr, mask_arr = pair[0], pair[1]
+        except Exception as e:
+            Logger.error(f"[CustomDataset] Failed to load pair at {path}: {e}")
+            raise
 
-        Logger.error(f"[CustomDataset] Index {idx} out of range!")
-        raise IndexError(f"Index {idx} out of range in CustomPennFudanDataset")
+        # [1] Input 처리
+        if isinstance(input_arr, list):
+            input_arr = np.stack(input_arr)
+
+        if input_arr.ndim == 4:
+            # (T, C, H, W) → (C*T, H, W)
+            input_arr = input_arr.transpose(1, 0, 2, 3).reshape(-1, input_arr.shape[2], input_arr.shape[3])
+        elif input_arr.ndim == 3:
+            # (T, H, W) → (1*T, H, W)
+            input_arr = input_arr.reshape(-1, input_arr.shape[1], input_arr.shape[2])
+
+        input_tensor = torch.FloatTensor(input_arr)
+
+        # [2] Masks와 Boxes
+        masks = np.array(mask_arr)
+        num_objs = len(masks)
+        boxes = []
+
+        for i in range(num_objs):
+            pos = np.where(masks[i])
+            if pos[0].size == 0 or pos[1].size == 0:
+                boxes.append([0, 0, 1, 1])  # fallback
+            else:
+                xmin = np.min(pos[1])
+                xmax = np.max(pos[1])
+                ymin = np.min(pos[0])
+                ymax = np.max(pos[0])
+                boxes.append([xmin, ymin, xmax, ymax])
+
+        boxes = torch.tensor(boxes, dtype=torch.float32)
+        labels = torch.ones((num_objs,), dtype=torch.int64)
+        masks = torch.tensor(masks, dtype=torch.uint8)
+        image_id = torch.tensor([idx])
+        area = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
+        iscrowd = torch.zeros((num_objs,), dtype=torch.int64)
+
+        target = {
+            "boxes": boxes,
+            "labels": labels,
+            "masks": masks,
+            "image_id": image_id,
+            "area": area,
+            "iscrowd": iscrowd
+        }
+
+        return input_tensor, target
 
     def _load_data(self, dir_path, real_idx):
         Logger.debug(f"[CustomDataset] Loading frames from {dir_path} at index {real_idx}")
