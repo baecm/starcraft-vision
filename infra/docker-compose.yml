@@ -14,8 +14,8 @@ services:
       - ../.torch_cache:/workspace/.torch_cache
       - ./entrypoint.sh:/workspace/entrypoint.sh
     user: "${UID}:${GID}"
+    shm_size: '4g'
     working_dir: /workspace
     stdin_open: true
-    tty: true
     runtime: nvidia
     entrypoint: ["bash", "entrypoint.sh"]
