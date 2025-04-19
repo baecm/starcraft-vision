@@ -27,10 +27,12 @@ run:
 	docker compose -f $(COMPOSE_FILE) run --rm dispatcher $(CMD) $(ARGS)
 
 train:
-	make run CMD=train ARGS="$(ARGS)"
+	mkdir -p logs
+	script -q -f -c "make run CMD=train ARGS='$(ARGS)'" logs/train_$(shell date +%Y%m%d_%H%M%S).log
 
 evaluate:
-	make run CMD=evaluate ARGS="$(ARGS)"
+	mkdir -p logs
+	script -q -f -c "make run CMD=evaluate ARGS='$(ARGS)'" logs/evaluate_$(shell date +%Y%m%d_%H%M%S).log
 
 # Entry points
 preprocess_input:
