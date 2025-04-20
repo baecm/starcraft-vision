@@ -12,6 +12,8 @@ make preprocess_pair ARGS="--replays 36 212 438 522 1660 --method legacy --outpu
 
 # Training with specific replays
 make train ARGS="--replays 36 212 438 522 1660 --label-method legacy"
+make train ARGS="--replays 36 212 438 522 1660 --label-method legacy --sample-ratio 0.1"
+make train ARGS="--replays 36 212 438 522 1660 --label-method legacy --sample-ratio 0.1 --log-level log"
 
 # Evaluate model
 make evaluate ARGS="--replays 438 --load-dir /workspace/models/..."
