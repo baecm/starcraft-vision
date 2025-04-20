@@ -15,8 +15,6 @@ import config
 
 from torch.utils.tensorboard import SummaryWriter
 
-Logger.set_level("log")  # "none", "log", "debug"
-
 
 def get_transform(train):
     transforms = [T.ToTensor()]
@@ -25,7 +23,7 @@ def get_transform(train):
     return T.Compose(transforms)
 
 
-def load_data(replays_dir, label_method, window_size, batch_size, train_replays=None, test_replays=None, test_size=50):
+def load_data(replays_dir, label_method, window_size, batch_size, train_replays=None, test_replays=None, test_size=50, sample_ratio=1.0):
     Logger.info("[Stage] Loading data...")
 
     data_input_dst = os.path.join(args.data_root, "pair")
@@ -45,25 +43,51 @@ def load_data(replays_dir, label_method, window_size, batch_size, train_replays=
 
         Logger.info(f"[Info] Train: {len(train_replays)} replays, Test: {len(test_replays)} replays")
 
-        train_dataset = CustomPennFudanDataset(data_input_dst, label_method, training=train_replays, window_size=window_size)
-        test_dataset = CustomPennFudanDataset(data_input_dst, label_method, training=test_replays, window_size=window_size)
+        full_train_dataset = CustomPennFudanDataset(data_input_dst, label_method, training=train_replays, window_size=window_size)
+        full_test_dataset = CustomPennFudanDataset(data_input_dst, label_method, training=test_replays, window_size=window_size)
+
+        if sample_ratio < 1.0:
+            train_sampled_indices = torch.randperm(len(full_train_dataset)).tolist()[:int(len(full_train_dataset) * sample_ratio)]
+            test_sampled_indices = torch.randperm(len(full_test_dataset)).tolist()[:int(len(full_test_dataset) * sample_ratio)]
+
+            train_dataset = CustomPennFudanDataset(
+                data_input_dst, label_method, training=train_replays,
+                window_size=window_size, indices=train_sampled_indices
+            )
+            test_dataset = CustomPennFudanDataset(
+                data_input_dst, label_method, training=test_replays,
+                window_size=window_size, indices=test_sampled_indices
+            )
+
+            Logger.info(f"[Info] Applied sampling: Train {len(train_dataset)}, Test {len(test_dataset)}")
+        else:
+            train_dataset = full_train_dataset
+            test_dataset = full_test_dataset
 
     else:
         Logger.log("[Auto] No train-replays provided, falling back to random split")
 
         full_dataset = CustomPennFudanDataset(data_input_dst, label_method, training=replay_names, window_size=window_size)
+        total_len = len(full_dataset)
+        sample_len = int(total_len * sample_ratio)
 
-        indices = torch.randperm(len(full_dataset)).tolist()
-        train_indices, test_indices = indices[:-test_size], indices[-test_size:]
+        indices = torch.randperm(total_len).tolist()[:sample_len]
+        test_len = min(test_size, sample_len // 5)
+        train_indices, test_indices = indices[:-test_len], indices[-test_len:]
 
-        Logger.info(f"[Info] Random split: Train {len(train_indices)}, Test {len(test_indices)}")
+        Logger.info(f"[Info] Random split (sampled): Train {len(train_indices)}, Test {len(test_indices)}")
 
-        train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
-        test_dataset = torch.utils.data.Subset(full_dataset, test_indices)
-
-        return make_loader(train_dataset, batch_size, shuffle=True), make_loader(test_dataset, batch_size=1, shuffle=False)
+        train_dataset = CustomPennFudanDataset(
+            data_input_dst, label_method, training=replay_names,
+            window_size=window_size, indices=train_indices
+        )
+        test_dataset = CustomPennFudanDataset(
+            data_input_dst, label_method, training=replay_names,
+            window_size=window_size, indices=test_indices
+        )
 
     return make_loader(train_dataset, batch_size, shuffle=True), make_loader(test_dataset, batch_size=1, shuffle=False)
+
 
 
 def make_loader(ds, batch_size, shuffle):
@@ -78,17 +102,20 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
 
         eval_stats = evaluate(model, data_loader_test, device=device)
 
-        writer.add_scalar("Loss/train", train_stats["loss"], epoch)
-        writer.add_scalar("Loss/class", train_stats["loss_classifier"], epoch)
-        writer.add_scalar("Loss/box_reg", train_stats["loss_box_reg"], epoch)
-        writer.add_scalar("Loss/mask", train_stats["loss_mask"], epoch)
-        writer.add_scalar("Loss/objectness", train_stats["loss_objectness"], epoch)
-        writer.add_scalar("Loss/rpn_box_reg", train_stats["loss_rpn_box_reg"], epoch)
+        # MetricLogger -> 각 loss 항목에 접근하려면 .loss.global_avg 식으로 접근해야 함
+        writer.add_scalar("Loss/train", train_stats.loss.global_avg, epoch)
+        writer.add_scalar("Loss/class", train_stats.loss_classifier.global_avg, epoch)
+        writer.add_scalar("Loss/box_reg", train_stats.loss_box_reg.global_avg, epoch)
+        writer.add_scalar("Loss/mask", train_stats.loss_mask.global_avg, epoch)
+        writer.add_scalar("Loss/objectness", train_stats.loss_objectness.global_avg, epoch)
+        writer.add_scalar("Loss/rpn_box_reg", train_stats.loss_rpn_box_reg.global_avg, epoch)
 
+        # Eval 로그 (dict일 경우만 기록)
         if isinstance(eval_stats, dict):
             for k, v in eval_stats.items():
                 writer.add_scalar(f"Eval/{k}", v, epoch)
 
+        # 모델 저장
         save_path = os.path.join(save_dir, f"model_{epoch}.pth")
         torch.save(model.state_dict(), save_path)
 
@@ -113,24 +140,25 @@ def run_training(args):
 
     writer = SummaryWriter(log_dir=log_save_path)
 
-    # 기록용 하이퍼파라미터 메타데이터
     writer.add_hparams(
         {
+            "replays": ', '.join(args.replays),
             "label_method": args.label_method,
+            "sample_ratio": args.sample_ratio,
             "window_size": args.window_size,
             "batch_size": args.batch_size,
-            "learning_rate": args.learning_rate
+            "learning_rate": args.learning_rate,
+            "max_epoch": args.max_epoch,
         },
-        {
-            "final_train_loss": train_stats["loss"],
-            "final_eval_loss": eval_stats.get("loss", 0.0) if isinstance(eval_stats, dict) else 0.0,
+        {          
         }
     )
 
     data_loader_train, data_loader_test = load_data(
         args.replays, args.label_method, args.window_size, args.batch_size,
         train_replays=args.train_replays,
-        test_replays=args.test_replays
+        test_replays=args.test_replays,
+        sample_ratio=args.sample_ratio
     )
 
     Logger.info("[Stage] Initializing model...")
@@ -152,6 +180,7 @@ def parse_arguments():
     parser.add_argument("--train-replays", type=int, nargs="+", default=None, help="Replay indices used for training")
     parser.add_argument("--test-replays", type=int, nargs="+", default=None, help="Replay indices used for testing")
     parser.add_argument("--label-method", type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS, help="Label extraction method")
+    parser.add_argument("--sample-ratio", type=float, default=1.0, help="Fraction of dataset to use (e.g., 0.1 for 10%)")
 
     parser.add_argument("--window-size", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -162,6 +191,8 @@ def parse_arguments():
     parser.add_argument("--id-string", type=str, default="")
     parser.add_argument("--data-root", type=str, default=os.path.join(os.getcwd(), "data"))
     parser.add_argument("--log-root", type=str, default=os.path.join(os.getcwd(), "models"))
+    parser.add_argument("--log-level", type=str, default="log", choices=["none", "log", "debug"], help="Logging level")
+
 
     return parser.parse_args()
 
@@ -169,4 +200,5 @@ def parse_arguments():
 if __name__ == "__main__":
     Logger.info("[Entry] Starting training script...")
     args = parse_arguments()
+    Logger.set_level(args.log_level)
     run_training(args)
