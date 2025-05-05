@@ -16,4 +16,4 @@ make train ARGS="--replays 36 212 438 522 1660 --label-method legacy --sample-ra
 make train ARGS="--replays 36 212 438 522 1660 --label-method legacy --sample-ratio 0.1 --log-level log"
 
 # Evaluate model
-make evaluate ARGS="--replays 438 --load-dir /workspace/models/..."
+make evaluate ARGS="--set set_0 --model-name legacy_win1_b32_20250423_060708 --model-number 9"
