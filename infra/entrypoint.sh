@@ -28,6 +28,10 @@ train)
   log "Training model..."
   exec python src/train.py "$@"
   ;;
+inference)
+  log "Running inference..."
+  exec python src/inference.py "$@"
+  ;;
 evaluate)
   log "Evaluating model..."
   exec python src/evaluate.py "$@"
