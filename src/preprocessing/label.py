@@ -2,11 +2,12 @@ from argparse import ArgumentParser
 
 from utils import Viewport
 
+import config
 
 def parse_arguments():
     parser = ArgumentParser(description="Generate viewport-based point labels for replays")
     parser.add_argument("--replays", type=str, nargs="+", required=True, help="Replay ID(s) to process")
-    parser.add_argument("--method", type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS, help="Viewport label extraction method")
+    parser.add_argument("--method", type=str, default=config.LABEL_METHODS[3], choices=config.LABEL_METHODS, help="Viewport label extraction method")
     args = parser.parse_args()
     return args
 
