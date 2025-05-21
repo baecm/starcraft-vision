@@ -30,6 +30,10 @@ train:
 	mkdir -p logs
 	script -q -f -c "make run CMD=train ARGS='$(ARGS)'" logs/train_$(shell date +%Y%m%d_%H%M%S).log
 
+inference:
+	mkdir -p logs
+	script -q -f -c "make run CMD=inference ARGS='$(ARGS)'" logs/inference_$(shell date +%Y%m%d_%H%M%S).log
+
 evaluate:
 	mkdir -p logs
 	script -q -f -c "make run CMD=evaluate ARGS='$(ARGS)'" logs/evaluate_$(shell date +%Y%m%d_%H%M%S).log
