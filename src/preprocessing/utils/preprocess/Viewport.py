@@ -1,5 +1,7 @@
 import os
 import glob
+import json
+from datetime import datetime
 import numpy as np
 import pandas as pd
 import tqdm
@@ -8,7 +10,8 @@ from .viewport_parallel_utils import (
     preprocess_argmax_kernel_sum_parallel,
     preprocess_unique_local_maximums_parallel,
     preprocess_all_correct_parallel,
-    save_single_result,
+    # save_single_result,
+    save_all_results,
     read_single_csv
 )
 import traceback
@@ -35,7 +38,7 @@ class Viewport:
         result_path = os.path.join(self.result_root, self.replay_id + ".rep", self.method)
         from .viewport_parallel_utils import save_all_results
         try:
-            save_all_results(results=self.results, path=result_path)
+            save_all_results(results=self.results, path=result_path, replay_id=self.replay_id, coco_dims=config.KERNEL_SHAPE)
         except Exception as e:
             print("[Save Error]", e)
             traceback.print_exc()
@@ -118,7 +121,7 @@ class Viewport:
         ):
             try:
                 df_t = dataframe.loc[dataframe["frame"] == t].squeeze()
-                channel = np.zeros(ORIGIN_SHAPE)
+                channel = np.zeros(config.ORIGIN_SHAPE)
                 kernel = np.ones(config.KERNEL_SHAPE)
                 for i in range(num_vpds):
                     x = int(df_t[f"vpx_{i + 1}"])
@@ -126,8 +129,8 @@ class Viewport:
                     channel[x:x + config.KERNEL_SHAPE[0], y:y + config.KERNEL_SHAPE[1]] += kernel
                 channel = channel.T
 
-                width_tile = ORIGIN_SHAPE[0] - config.KERNEL_SHAPE[0]
-                height_tile = ORIGIN_SHAPE[1] - config.KERNEL_SHAPE[1]
+                width_tile = config.ORIGIN_SHAPE[0] - config.KERNEL_SHAPE[0]
+                height_tile = config.ORIGIN_SHAPE[1] - config.KERNEL_SHAPE[1]
                 kernel_sum = np.zeros((width_tile, height_tile))
                 for x in range(width_tile):
                     for y in range(height_tile):
@@ -170,3 +173,62 @@ class Viewport:
         except Exception as e:
             print("[Viewport.run] Exception occurred")
             traceback.print_exc()
+
+    def export_to_coco(self, output_path, viewport_dims=None):
+        """
+        Export viewport results to COCO-style JSON.
+        - self.results: list of (x, y) or (x, y, w, h).
+        - viewport_dims: (w, h) applied if results only provide x, y.
+        """
+        # COCO skeleton
+        coco = {
+            "info": {
+                "description": f"Viewport annotations for replay {self.replay_id}",
+                "version": "1.0",
+                "year": datetime.now().year,
+                "date_created": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            },
+            "licenses": [],
+            "images": [],
+            "annotations": [],
+            "categories": [
+                {"id": 1, "name": "viewport", "supercategory": "viewport"}
+            ]
+        }
+        # Image dims
+        H, W = config.ORIGIN_SHAPE
+        # Images entries
+        for fid in range(len(self.results)):
+            coco["images"].append({
+                "id": fid,
+                "file_name": f"{self.replay_id}_frame_{fid}.png",
+                "width": W,
+                "height": H
+            })
+        # Annotations
+        ann_id = 1
+        for fid, res in enumerate(self.results):
+            if len(res) >= 4:
+                x, y, w, h = res[:4]
+            else:
+                x, y = res
+                if viewport_dims:
+                    w, h = viewport_dims
+                else:
+                    w, h = config.KERNEL_SHAPE
+            bbox = [x, y, w, h]
+            segmentation = [[x, y, x + w, y, x + w, y + h, x, y + h]]
+            coco["annotations"].append({
+                "id": ann_id,
+                "image_id": fid,
+                "category_id": 1,
+                "bbox": bbox,
+                "area": w * h,
+                "segmentation": segmentation,
+                "iscrowd": 0
+            })
+            ann_id += 1
+        # Save JSON
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(coco, f, indent=2, ensure_ascii=False)
