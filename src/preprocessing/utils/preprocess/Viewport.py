@@ -11,7 +11,7 @@ from .viewport_parallel_utils import (
     preprocess_unique_local_maximums_parallel,
     preprocess_all_correct_parallel,
     # save_single_result,
-    save_all_results,
+    # save_all_results,
     read_single_csv
 )
 import traceback
@@ -20,14 +20,14 @@ import config
 
 class Viewport:
     def __init__(self, replay_id):
-        base_path = os.path.join(os.getcwd(), "data", "label")
-        self.viewport_root = os.path.join(base_path, "src")
-        self.result_root = os.path.join(base_path, "dst")
+        data_path = os.path.join(os.getcwd(), "data")
+        self.viewport_root = os.path.join(data_path, "label", "src")
+        self.result_root = os.path.join(data_path, "label", "dst")
         self.replay_id = replay_id
         self.method = None
         self.vpds = []
         self.results = []
-
+                
     def __enter__(self):
         return self
 
@@ -35,10 +35,34 @@ class Viewport:
         pass
 
     def save(self):
-        result_path = os.path.join(self.result_root, self.replay_id + ".rep", self.method)
-        from .viewport_parallel_utils import save_all_results
+        # result_path = os.path.join(self.result_root, self.replay_id + ".rep", self.method)
+        # from .viewport_parallel_utils import save_all_results
+        # try:
+        #     save_all_results(results=self.results, path=result_path, replay_id=self.replay_id, coco_dims=config.KERNEL_SHAPE)
+        # except Exception as e:
+        #     print("[Save Error]", e)
+        #     traceback.print_exc()
+        """
+        COCO 형식 JSON을 data/label/dst/{replay_id}.rep/{method}/{method}.json
+        위치에 하나만 생성합니다.
+        """
+        # 1) base label 디렉토리 (원래 result_root 는 data/label/src 였으니, dst 로 바꿔줍니다)
+        label_base = os.path.join(os.getcwd(), "data", "label", "dst")
+
+        # 2) replay/method 폴더 생성
+        out_dir = os.path.join(label_base, f"{self.replay_id}.rep")
+        os.makedirs(out_dir, exist_ok=True)
+
+        # 3) 최종 JSON 파일명은 `{method}.json`
+        output_path = os.path.join(out_dir, f"{self.method}.json")
+
+        # 4) 결과 내보내기
         try:
-            save_all_results(results=self.results, path=result_path, replay_id=self.replay_id, coco_dims=config.KERNEL_SHAPE)
+            self.export_to_coco(
+                output_path=output_path,
+                viewport_dims=config.KERNEL_SHAPE
+            )
+            print(f"[Save] COCO JSON saved to {output_path}")
         except Exception as e:
             print("[Save Error]", e)
             traceback.print_exc()
@@ -58,12 +82,14 @@ class Viewport:
         interpolated = []
         for df in dataframes:
             try:
-                df = (df.set_index("frame")
-                        .reindex(range(df["frame"].max()))
-                        .ffill()
-                        .reset_index()
-                        .astype(int)
-                        .set_index("frame"))
+                df = (
+                    df.set_index("frame")
+                      .reindex(range(df["frame"].max()))
+                      .ffill()
+                      .reset_index()
+                      .astype(int)
+                      .set_index("frame")
+                )
                 interpolated.append(df)
             except Exception as e:
                 print("[Interpolation Error]", e)
@@ -198,37 +224,53 @@ class Viewport:
         # Image dims
         H, W = config.ORIGIN_SHAPE
         # Images entries
+            
         for fid in range(len(self.results)):
+            input_dir = os.path.join(os.getcwd(), "data", "input", "dst", self.replay_id + ".rep")
+            
+            if not os.path.isfile(os.path.join(input_dir, f"{fid}.npy")):
+                continue
+            
             coco["images"].append({
-                "id": fid,
-                "file_name": f"{self.replay_id}_frame_{fid}.png",
-                "width": W,
-                "height": H
+                "id": int(fid),
+                "file_name": f"input/dst/{self.replay_id}/{fid}.npy",
+                "width": int(W),
+                "height": int(H)
             })
         # Annotations
         ann_id = 1
         for fid, res in enumerate(self.results):
-            if len(res) >= 4:
-                x, y, w, h = res[:4]
+            input_dir = os.path.join(os.getcwd(), "data", "input", "dst", self.replay_id + ".rep")
+            
+            if not os.path.isfile(os.path.join(input_dir, f"{fid}.npy")):
+                continue
+            
+            if isinstance(res, (list, tuple)):
+                coords = [np.asarray(r).flatten() for r in res]
             else:
-                x, y = res
-                if viewport_dims:
-                    w, h = viewport_dims
+                coords = [np.asarray(res).flatten()]
+
+            for arr in coords:
+                if arr.size == 2:
+                    x, y = int(arr[0]), int(arr[1])
+                    w, h = viewport_dims or config.KERNEL_SHAPE
+                elif arr.size >= 4:
+                    x, y, w, h = map(int, arr[:4])
                 else:
-                    w, h = config.KERNEL_SHAPE
-            bbox = [x, y, w, h]
-            segmentation = [[x, y, x + w, y, x + w, y + h, x, y + h]]
-            coco["annotations"].append({
-                "id": ann_id,
-                "image_id": fid,
-                "category_id": 1,
-                "bbox": bbox,
-                "area": w * h,
-                "segmentation": segmentation,
-                "iscrowd": 0
-            })
-            ann_id += 1
-        # Save JSON
+                    raise ValueError(f"Unexpected res shape {arr.shape}")
+
+                coco["annotations"].append({
+                    "id":          ann_id,
+                    "image_id":    fid,
+                    "category_id": 1,
+                    "bbox":        [x, y, w, h],
+                    "area":        int(w * h),
+                    "segmentation":[[x, y, x+w, y, x+w, y+h, x, y+h]],
+                    "iscrowd":     0
+                })
+                ann_id += 1
+
+        # 3) JSON 저장
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(coco, f, indent=2, ensure_ascii=False)
