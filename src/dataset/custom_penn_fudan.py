@@ -19,101 +19,82 @@ class CustomPennFudanDataset(BasePennFudanDataset):
                  label_root: str,
                  label_method: str,
                  training_ids: list,
-                 window_size: int = None,
+                 window_size: int = 1,
                  indices: list = None,
                  verbose: bool = True):
-        """
-        - input_root: "data/input/dst"
-        - label_root: "data/label/dst"
-        - label_method: folder under label_root/{id}.rep/{method}
-        - training_ids: list of replay IDs
-        - verbose: control logging
-        """
         self.verbose = verbose
-        if self.verbose:
-            Logger.info("[CustomDataset] Initializing from input and JSON label directories...")
-        self.files = []
-        self.window_size = window_size or 1
+        self.files = []            # (image_id, npy_path) 쌍
+        self.window_size = window_size
 
-        for replay_id in map(str, training_ids):
-            inp_dir = os.path.join(input_root, f"{replay_id}.rep")
-            ann_dir = os.path.join(label_root, f"{replay_id}.rep", label_method)
+        for rid in map(str, training_ids):
+            inp_dir = os.path.join(input_root, f"{rid}.rep")
+            json_file = os.path.join(label_root, f"{rid}.rep", f"{label_method}.json")
             if not os.path.isdir(inp_dir):
-                if self.verbose:
-                    Logger.warn(f"[CustomDataset] Missing input directory: {inp_dir}")
+                if self.verbose: Logger.warn(f"Missing input dir: {inp_dir}")
                 continue
-            if not os.path.isdir(ann_dir):
-                if self.verbose:
-                    Logger.warn(f"[CustomDataset] Missing annotation directory: {ann_dir}")
+            if not os.path.isfile(json_file):
+                if self.verbose: Logger.warn(f"Missing COCO JSON: {json_file}")
                 continue
 
-            npy_files = sorted(glob.glob(os.path.join(inp_dir, "*.npy")),
-                               key=natural_sort_key)
-            if self.verbose:
-                Logger.info(f"[CustomDataset] {replay_id}: found {len(npy_files)} input files")
-
-            for npy_path in npy_files:
-                base = os.path.splitext(os.path.basename(npy_path))[0]
-                json_path = os.path.join(ann_dir, f"{base}.json")
-                if os.path.isfile(json_path):
-                    self.files.append((npy_path, json_path))
-                elif self.verbose:
-                    Logger.warn(f"[CustomDataset] Missing JSON for {npy_path}")
+            # JSON 한 번만 로드
+            coco = json.load(open(json_file, 'r', encoding='utf-8'))
+            # images 리스트 순회하며 (image_id, npy_path) 쌓기
+            for img in coco["images"]:
+                img_id   = int(img["id"])
+                # file_name에 이미 상대경로를 넣었다면 그대로, 아니라면 조합
+                npy_path = os.path.join(input_root, f"{rid}.rep", f"{img_id}.npy")
+                self.files.append((rid, img_id, npy_path, coco))
 
         if not self.files:
-            if self.verbose:
-                Logger.error("[CustomDataset] No valid samples found. Aborting.")
             raise RuntimeError("Empty dataset")
 
-        # apply optional indexing
+        # 인덱싱
         if indices is not None:
             self.files = [self.files[i] for i in indices]
-            self.indices = indices
-        else:
-            self.indices = list(range(len(self.files)))
 
         if self.verbose:
-            Logger.info(f"[CustomDataset] Total samples: {len(self.files)}")
+            Logger.info(f"Total samples: {len(self.files)}")
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
-        npy_path, json_path = self.files[idx]
+        rid, img_id, npy_path, coco = self.files[idx]
+        
+        # 1) 입력 로드
+        arr = np.load(npy_path)
+        if arr.ndim != 3:
+            raise ValueError(f"Unexpected shape {arr.shape}")
+        input_tensor = torch.from_numpy(arr).float()  # (9, H, W)
 
-        # 1) load the raw input array
-        arr = np.load(npy_path)   # arr.shape == (9, 128, 128)
+        # 2) 해당 image_id 어노테이션만 필터링
+        anns = [a for a in coco["annotations"] if int(a["image_id"]) == img_id]
 
-        # 2) ensure shape is (C, H, W)
-        if arr.ndim == 3:
-            input_tensor = torch.from_numpy(arr).float()
-        else:
-            raise ValueError(f"Unexpected npy shape: {arr.shape}")
+        boxes, masks, labels, areas, iscrowd = [], [], [], [], []
+        H = int(next(img for img in coco["images"] if int(img["id"]) == img_id)["height"])
+        W = int(next(img for img in coco["images"] if int(img["id"]) == img_id)["width"])
 
-        # 이후 JSON 로드 및 target 구성
-        anno = json.load(open(json_path, 'r', encoding='utf-8'))
-        image_info = anno['images'][0]
-        W, H = image_info['width'], image_info['height']
-        anns = anno.get('annotations', [])
-
-        masks, boxes, labels = [], [], []
         for ann in anns:
-            x, y, w, h = ann['bbox']
-            x1, y1 = int(x), int(y)
-            x2, y2 = int(x + w), int(y + h)
-            mask = np.zeros((H, W), dtype=np.uint8)
-            mask[y1:y2, x1:x2] = 1
-            masks.append(mask)
-            boxes.append([x1, y1, x2, y2])
-            labels.append(ann['category_id'])
+            x, y, w, h = map(int, ann["bbox"])
+            x1, y1, x2, y2 = x, y, x+w, y+h
 
-        # 빈 케이스 처리
-        if masks:
+            # mask 생성 (바운딩박스로 단순화)
+            m = np.zeros((H, W), dtype=np.uint8)
+            m[y1:y2, x1:x2] = 1
+
+            boxes.append([x1, y1, x2, y2])
+            masks.append(torch.from_numpy(m))
+            labels.append(int(ann["category_id"]))
+            areas.append((x2-x1)*(y2-y1))
+            iscrowd.append(int(ann.get("iscrowd", 0)))
+
+        # 3) 텐서 변환
+        if boxes:
             boxes   = torch.tensor(boxes, dtype=torch.float32)
-            masks   = torch.stack([torch.from_numpy(m) for m in masks])
+            masks   = torch.stack(masks)                 # (N, H, W)
             labels  = torch.tensor(labels, dtype=torch.int64)
-            area    = (boxes[:,2]-boxes[:,0]) * (boxes[:,3]-boxes[:,1])
-            iscrowd = torch.zeros((len(boxes),), dtype=torch.int64)
+            area    = torch.tensor(areas, dtype=torch.float32)
+            iscrowd = torch.tensor(iscrowd, dtype=torch.int64)
         else:
             boxes   = torch.zeros((0,4), dtype=torch.float32)
             masks   = torch.zeros((0, H, W), dtype=torch.uint8)
@@ -125,10 +106,11 @@ class CustomPennFudanDataset(BasePennFudanDataset):
             "boxes":    boxes,
             "labels":   labels,
             "masks":    masks,
-            "image_id": torch.tensor([idx]),
+            "image_id": idx,     # Python int
             "area":     area,
             "iscrowd":  iscrowd
         }
+
         return input_tensor, target
 
     def preprocessing(self, *data):
