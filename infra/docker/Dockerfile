@@ -15,6 +15,4 @@ COPY infra/docker/requirements.txt .
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt
 
-# COPY infra/docker/opt/transform.py /opt/conda/lib/python3.11/site-packages/torchvision/models/detection/transform.py
-
 CMD ["/bin/bash"]
