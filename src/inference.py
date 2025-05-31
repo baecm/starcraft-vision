@@ -1,129 +1,311 @@
+#!/usr/bin/env python
+# src/inference.py
+
 import os
 import argparse
-import glob
-import numpy as np
+import json
 import torch
-from tqdm import tqdm
-from dataset.custom_penn_fudan import CustomPennFudanDataset
+import numpy as np
+from torch.utils.data import Dataset, DataLoader
+
 from model.maskrcnn_builder import get_model_instance_segmentation
+import detection.transforms as T
+from utils.logger import Logger
 import config
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(description="Inference script: run Mask R-CNN on replay data and save vpx/vpy arrays")
-    parser.add_argument('--replays', nargs='+', required=True, help="List of replay names (directories under data_root/pair)")
-    
-    parser.add_argument('--label-method', type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS, help="Label extraction method")
-    parser.add_argument('--window-size', type=int, default=1, help="Window size used during training")
-    parser.add_argument('--batch-size', type=int, default=32, help="Batch size used during training (for model folder prefix)")
-    parser.add_argument('--checkpoint', type=int, default=30, help="Epoch number of the model checkpoint to use")
-    
-    parser.add_argument('--data-root', type=str, default=os.path.join(os.getcwd(), 'data'), help="Root directory for data (must contain 'pair' and 'label' subdirs)")
-    parser.add_argument('--model-root', type=str, default=os.path.join(os.getcwd(), 'models'), help="Root directory for model checkpoints")
-    parser.add_argument('--cuda', action='store_true', help="Use CUDA for inference")
-    
-    return parser.parse_args()
+
+class InferenceDataset(Dataset):
+    """
+    순수 입력(npy)만 읽어서 Mask R-CNN 추론을 수행할 수 있도록 한 커스텀 데이터셋입니다.
+    - 각 replay_id별로 'data/input/dst/{replay_id}.rep/*.npy' 형태로 프레임이 존재한다고 가정합니다.
+    - __getitem__은 (image_tensor, (replay_id, frame_id)) 튜플을 반환합니다.
+    """
+    def __init__(self, input_root: str, replay_ids: list, transform=None):
+        """
+        - input_root: 예) "data/input/dst"
+        - replay_ids: ["36", "212", ...] 등
+        - transform: torchvision.transforms 형태의 전처리. Mask R-CNN은 ToTensor만 있으면 됩니다.
+        """
+        super().__init__()
+        self.input_root = input_root
+        self.transform = transform if transform is not None else T.Compose([T.ToTensor()])
+
+        # [(replay_id, frame_id:int, npy_path:str), ...] 리스트를 만듭니다.
+        self.indexes = []
+        for rid in map(str, replay_ids):
+            rep_dir = os.path.join(self.input_root, f"{rid}.rep")
+            if not os.path.isdir(rep_dir):
+                Logger.warn(f"[InferenceDataset] Missing directory: {rep_dir}")
+                continue
+
+            # 모든 .npy 파일을 숫자 순으로 정렬
+            npy_files = sorted(
+                [f for f in os.listdir(rep_dir) if f.endswith(".npy")],
+                key=lambda s: int(os.path.splitext(s)[0])
+            )
+            for fname in npy_files:
+                frame_id = int(os.path.splitext(fname)[0])
+                npy_path = os.path.join(rep_dir, fname)
+                self.indexes.append((rid, frame_id, npy_path))
+
+        if len(self.indexes) == 0:
+            raise RuntimeError("No .npy files found for inference. Aborting.")
+
+    def __len__(self):
+        return len(self.indexes)
+
+    def __getitem__(self, idx):
+        rid, frame_id, npy_path = self.indexes[idx]
+        arr = np.load(npy_path)            # shape = (9, H, W)
+        if arr.ndim != 3:
+            raise ValueError(f"Unexpected array shape {arr.shape} at {npy_path}")
+        img = torch.from_numpy(arr).float()  # (9, H, W)
+
+        # 변환(ToTensor 등) 적용
+        if self.transform is not None:
+            img = self.transform(img)  # 결과는 [C,H,W] float tensor
+
+        # image_id로 replay_id와 frame_id 모두 전달하되, 모델 호출 시에는 image_id만 사용
+        # 뒤에서 COCO‐style 결과를 만들 때 replay_id별 JSON에 합치기 위함.
+        return img, (rid, frame_id)
 
 
-def find_model_folder(model_root, label_method, window_size, batch_size):
-    prefix = f"{label_method}_win{window_size}_b{batch_size}"
-    candidates = sorted(glob.glob(os.path.join(model_root, f"{prefix}*")))
-    if not candidates:
-        raise FileNotFoundError(f"No model folder found matching {prefix}* in {model_root}")
-    return os.path.basename(candidates[0])
+def collate_fn(batch):
+    """
+    DataLoader collate_fn: batch 의 형식을 ([images], [metadata]) 로 묶어 주기 위함.
+    metadata는 list of (rid, frame_id) 튜플.
+    """
+    images, metas = zip(*batch)
+    return list(images), list(metas)
 
 
-def run_inference(args):
-    # locate model folder and checkpoint
-    model_folder = find_model_folder(
-        args.model_root, args.label_method, args.window_size, args.batch_size
+def run_inference(
+    model: torch.nn.Module,
+    data_loader: DataLoader,
+    device: torch.device,
+    score_threshold: float = 0.5
+):
+    """
+    모델을 평가 모드로 두고, data_loader 안의 모든 프레임을 순회하면서
+    예측된 결과(박스, 스코어, 클래스, 마스크)를 수집하여, replay_id별로 리턴합니다.
+
+    리턴값: {
+       replay_id_1: [
+         {
+           "frame_id": int,
+           "boxes": [[x1,y1,x2,y2], ...],
+           "scores": [s1, s2, ...],
+           "labels": [l1, l2, ...],
+           "masks": [mask_rle / polygon 형식…],
+         },
+         ...
+       ],
+       replay_id_2: [ ... ],
+       ...
+    }
+    """
+    model.eval()
+    results = {}  # replay_id → list of frame‐level 딕셔너리들
+
+    with torch.no_grad():
+        for images, metas in data_loader:
+            # images: list of tensors [C,H,W], metas: list of (rid, frame_id)
+            images = [img.to(device) for img in images]
+            outputs = model(images)  # list of dict, length = batch_size
+
+            for output, (rid, frame_id) in zip(outputs, metas):
+                # 예측 필터링: score >= threshold
+                keep = (output["scores"] >= score_threshold).cpu().numpy().tolist()
+                boxes = output["boxes"].cpu().numpy().tolist()
+                scores = output["scores"].cpu().numpy().tolist()
+                labels = output["labels"].cpu().numpy().tolist()
+                masks  = output["masks"].cpu().numpy()  # (N, 1, H, W)
+
+                frame_boxes  = []
+                frame_scores = []
+                frame_labels = []
+                frame_masks  = []
+
+                for idx, k in enumerate(keep):
+                    if k:
+                        frame_boxes.append(boxes[idx])
+                        frame_scores.append(scores[idx])
+                        frame_labels.append(labels[idx])
+                        # mask를 RLE 혹은 polygon으로 바꾸려면 추가 구현 필요
+                        # 여기서는 단순히 바이너리 마스크를 저장해 둡니다.
+                        # mask tensor는 (1,H,W) → (H,W) uint8 로 변환
+                        binary_mask = (masks[idx, 0] >= 0.5).astype(np.uint8).tolist()
+                        frame_masks.append(binary_mask)
+
+                # 딕셔너리 구성
+                entry = {
+                    "frame_id": frame_id,
+                    "boxes":    frame_boxes,   # [[x1,y1,x2,y2], ...]
+                    "scores":   frame_scores,  # [float, ...]
+                    "labels":   frame_labels,  # [int, ...]
+                    "masks":    frame_masks    # list of (H×W) 0/1 이중 리스트
+                }
+
+                if rid not in results:
+                    results[rid] = []
+                results[rid].append(entry)
+
+    return results
+
+
+def save_predictions_as_coco(
+    all_results: dict,
+    output_dir: str,
+    device: torch.device
+):
+    """
+    all_results 형식:
+    {
+      replay_id1: [ 
+         {"frame_id": int, "boxes": [...], "scores": [...], "labels": [...], "masks": [...]}, 
+         … 
+      ],
+      replay_id2: [ ... ],
+      ...
+    }
+
+    이를 COCO evaluation과 호환되는 JSON으로 출력합니다.
+    - 각 replay_id별로 단일 JSON을 생성하며,
+      images, annotations, categories 필드만 채웁니다.
+    - 예시 output: output_dir/{replay_id}_predictions.json
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # COCO 카테고리 정보 (여기서는 viewport=1 하나뿐)
+    categories = [{"id": 1, "name": "viewport", "supercategory": "viewport"}]
+
+    for rid, frames in all_results.items():
+        coco = {
+            "info": {"description": f"Predictions for replay {rid}", "version": "1.0"},
+            "licenses": [],
+            "images": [],
+            "annotations": [],
+            "categories": categories
+        }
+
+        ann_id = 1
+        for item in frames:
+            fid = item["frame_id"]
+            # COCO image entry
+            coco["images"].append({
+                "id":   fid,
+                "file_name": f"{rid}.rep/{fid}.npy",
+                "width":  config.ORIGIN_SHAPE[1],  # ORIGIN_SHAPE = (H, W)
+                "height": config.ORIGIN_SHAPE[0]
+            })
+            # COCO annotation entry
+            for box, score, label, mask in zip(
+                item["boxes"], item["scores"], item["labels"], item["masks"]
+            ):
+                x1, y1, x2, y2 = map(int, box)
+                w = x2 - x1
+                h = y2 - y1
+                # 간단한 폴리곤 생성 (rect)
+                segmentation = [[x1, y1, x1 + w, y1, x1 + w, y1 + h, x1, y1 + h]]
+                coco["annotations"].append({
+                    "id": ann_id,
+                    "image_id": fid,
+                    "category_id": int(label),
+                    "bbox": [x1, y1, w, h],
+                    "score": float(score),
+                    "area": w * h,
+                    "segmentation": segmentation,
+                    "iscrowd": 0
+                })
+                ann_id += 1
+
+        out_path = os.path.join(output_dir, f"{rid}_predictions.json")
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(coco, f, indent=2, ensure_ascii=False)
+
+        Logger.info(f"[Inference] Saved predictions for replay {rid} → {out_path}")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Run Mask R-CNN inference on preprocessed StarCraft II replays"
     )
-    model_dir = os.path.join(args.model_root, model_folder)
-    ckpt_path = os.path.join(model_dir, f"model_{args.checkpoint}.pth")
-    if not os.path.isfile(ckpt_path):
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-
-    # prepare device and model
-    device = torch.device('cuda' if args.cuda and torch.cuda.is_available() else 'cpu')
-    num_classes = 2
-    model = get_model_instance_segmentation(num_classes, window_size=args.window_size)
-    state = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(state)
-    model.to(device).eval()
-
-    data_pair = os.path.join(args.data_root, 'pair')
-    data_label = os.path.join(args.data_root, 'label')
-
-    for replay in args.replays:
-        # load .npy frames
-        replay_folder = os.path.join(data_pair, f"{replay}.rep", args.label_method)
-        npy_files = sorted(glob.glob(os.path.join(replay_folder, '*.npy')))
-        if not npy_files:
-            raise FileNotFoundError(f"No .npy files found under {replay_folder}")
-
-        vpx_list = []
-        vpy_list = []
-        step = 8  # frame interval in CSV
-
-        for idx in tqdm(range(len(npy_files)), desc=f"Inferring {replay}"):
-            # collect window
-            start = max(0, idx - args.window_size + 1)
-            files = npy_files[start:idx+1]
-            frames = []
-            for f in files:
-                arr = np.load(f, allow_pickle=True)
-                frames.append(arr[0])
-            # pad
-            while len(frames) < args.window_size:
-                frames.insert(0, frames[0])
-            stack = np.stack(frames, axis=0)  # shape (T, C, H, W)
-            Tt, C, H, W = stack.shape
-            img = torch.from_numpy(stack.reshape(Tt * C, H, W)).unsqueeze(0).to(device).float()
-
-            with torch.no_grad():
-                pred = model(img)[0]
-            boxes = pred['boxes']
-            if boxes.shape[0] == 0:
-                if idx > 0:
-                    vpx, vpy = vpx_list[-1], vpy_list[-1]
-                else:
-                    vpx, vpy = 0, 0
-            else:
-                x1, y1 = boxes[0][:2]
-                vpx = int(x1.item()) * 32
-                vpy = int(y1.item()) * 32
-            vpx_list.append(vpx)
-            vpy_list.append(vpy)
-
-        # prepare output dir
-        out_dir = os.path.join(data_label, model_folder, f"{replay}.rep", args.label_method)
-        os.makedirs(out_dir, exist_ok=True)
-
-        # save numpy
-        arr = np.stack([vpx_list, vpy_list], axis=1)
-        npy_path = os.path.join(out_dir, 'pred.vpds.npy')
-        np.save(npy_path, arr)
-        print(f"Saved viewport npy: {npy_path}")
-
-        # create .rep.vpd CSV
-        import pandas as pd
-        frames_idx = np.arange(0, len(vpx_list) * step, step)
-        df_pred = pd.DataFrame({
-            'frame': frames_idx,
-            'vpx': vpx_list,
-            'vpy': vpy_list
-        })
-        all_frames = np.arange(0, frames_idx[-1] + 1)
-        df_all = pd.DataFrame({'frame': all_frames})
-        df_merged = df_all.merge(df_pred, on='frame', how='left').fillna(method='ffill')
-        csv_path = os.path.join(out_dir, f"{replay}.rep.vpd")
-        df_merged.to_csv(csv_path, index=False)
-        print(f"Saved viewport CSV: {csv_path}")
+    parser.add_argument(
+        "--replays", nargs="+", required=True,
+        help="List of replay IDs to run inference on"
+    )
+    parser.add_argument(
+        "--model-path", type=str, required=True,
+        help="학습된 체크포인트(.pth) 경로"
+    )
+    parser.add_argument(
+        "--label-method", type=str, default=config.LABEL_METHODS[0],
+        choices=config.LABEL_METHODS,
+        help="(참고용) GT 레이블 메소드. Inference 에선 사용하지 않지만, 출력 파일 네임에 포함해두면 편합니다."
+    )
+    parser.add_argument(
+        "--data-root", type=str, default=os.path.join(os.getcwd(), "data"),
+        help="Data root 위치 (default=data)"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=8,
+        help="Inference 시 배치 크기"
+    )
+    parser.add_argument(
+        "--score-thr", type=float, default=0.5,
+        help="Objectness 스코어 임계값"
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default=os.path.join(os.getcwd(), "predictions"),
+        help="출력 JSON을 저장할 디렉토리"
+    )
+    args = parser.parse_args()
+    return args
 
 
 def main():
-    args = parse_arguments()
-    run_inference(args)
+    args = parse_args()
+    Logger.info("[Inference] Starting...")
+
+    # 디바이스 설정
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    Logger.info(f"[Inference] Using device: {device}")
+
+    # 데이터셋 준비
+    input_root = os.path.join(args.data_root, "input", "dst")
+    dataset = InferenceDataset(input_root, args.replays, transform=T.ToTensor())
+    data_loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=4,
+        collate_fn=collate_fn
+    )
+
+    # 모델 로드
+    num_classes = 2  # background + viewport
+    model = get_model_instance_segmentation(num_classes, window_size=1)
+    model.load_state_dict(torch.load(args.model_path, map_location=device))
+    model.to(device)
+
+    # 추론 수행
+    Logger.info("[Inference] Running inference …")
+    all_results = run_inference(
+        model=model,
+        data_loader=data_loader,
+        device=device,
+        score_threshold=args.score_thr
+    )
+
+    # 결과 JSON 저장
+    save_predictions_as_coco(
+        all_results=all_results,
+        output_dir=args.output_dir,
+        device=device
+    )
+
+    Logger.info("[Inference] Complete!")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
