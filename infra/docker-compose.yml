@@ -11,6 +11,7 @@ services:
       - ../data:/workspace/data
       - ../src:/workspace/src
       - ../models:/workspace/models
+      - ../predictions:/workspace/predictions
       - ../.torch_cache:/workspace/.torch_cache
       - ./entrypoint.sh:/workspace/entrypoint.sh
     user: "${UID}:${GID}"

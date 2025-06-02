@@ -26,10 +26,11 @@ make evaluate ARGS=" \
 # Inference
 make inference ARGS=" \
   --replays 36 212 438 522 1660 \
-  --model-name all_correct_win1_b8_20250530_04111 \
+  --model-name all_correct_win1_b8_20250530_053044 \
   --model-number 4 \
   --label-method all_correct \
   --batch-size 8 \
   --score-thr 0.5 \
+  --sample-ratio 0.1 \
   --output-dir /workspace/predictions \
   "

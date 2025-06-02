@@ -6,7 +6,8 @@ import argparse
 import json
 import torch
 import numpy as np
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
+import tqdm
 
 from model.maskrcnn_builder import get_model_instance_segmentation
 import detection.transforms as T
@@ -20,15 +21,9 @@ class InferenceDataset(Dataset):
     - 각 replay_id별로 'data/input/dst/{replay_id}.rep/*.npy' 형태로 프레임이 존재한다고 가정합니다.
     - __getitem__은 (image_tensor, (replay_id, frame_id)) 튜플을 반환합니다.
     """
-    def __init__(self, input_root: str, replay_ids: list, transform=None):
-        """
-        - input_root: 예) "data/input/dst"
-        - replay_ids: ["36", "212", ...] 등
-        - transform: torchvision.transforms 형태의 전처리. Mask R-CNN은 ToTensor만 있으면 됩니다.
-        """
+    def __init__(self, input_root: str, replay_ids: list):
         super().__init__()
         self.input_root = input_root
-        self.transform = transform if transform is not None else T.Compose([T.ToTensor()])
 
         # [(replay_id, frame_id:int, npy_path:str), ...] 리스트를 만듭니다.
         self.indexes = []
@@ -61,12 +56,6 @@ class InferenceDataset(Dataset):
             raise ValueError(f"Unexpected array shape {arr.shape} at {npy_path}")
         img = torch.from_numpy(arr).float()  # (9, H, W)
 
-        # 변환(ToTensor 등) 적용
-        if self.transform is not None:
-            img = self.transform(img)  # 결과는 [C,H,W] float tensor
-
-        # image_id로 replay_id와 frame_id 모두 전달하되, 모델 호출 시에는 image_id만 사용
-        # 뒤에서 COCO‐style 결과를 만들 때 replay_id별 JSON에 합치기 위함.
         return img, (rid, frame_id)
 
 
@@ -96,7 +85,7 @@ def run_inference(
            "boxes": [[x1,y1,x2,y2], ...],
            "scores": [s1, s2, ...],
            "labels": [l1, l2, ...],
-           "masks": [mask_rle / polygon 형식…],
+           "masks": [mask_binary, ...],
          },
          ...
        ],
@@ -108,36 +97,33 @@ def run_inference(
     results = {}  # replay_id → list of frame‐level 딕셔너리들
 
     with torch.no_grad():
-        for images, metas in data_loader:
+        for images, metas in tqdm.tqdm(data_loader, desc="Running inference", unit="batch"):
             # images: list of tensors [C,H,W], metas: list of (rid, frame_id)
             images = [img.to(device) for img in images]
             outputs = model(images)  # list of dict, length = batch_size
 
             for output, (rid, frame_id) in zip(outputs, metas):
                 # 예측 필터링: score >= threshold
-                keep = (output["scores"] >= score_threshold).cpu().numpy().tolist()
-                boxes = output["boxes"].cpu().numpy().tolist()
-                scores = output["scores"].cpu().numpy().tolist()
-                labels = output["labels"].cpu().numpy().tolist()
-                masks  = output["masks"].cpu().numpy()  # (N, 1, H, W)
+                scores_all = output["scores"].cpu().numpy().tolist()
+                keep_idx = [i for i, s in enumerate(scores_all) if s >= score_threshold]
+
+                boxes_all  = output["boxes"].cpu().numpy().tolist()
+                labels_all = output["labels"].cpu().numpy().tolist()
+                masks_all  = output["masks"].cpu().numpy()  # (N, 1, H, W)
 
                 frame_boxes  = []
                 frame_scores = []
                 frame_labels = []
                 frame_masks  = []
 
-                for idx, k in enumerate(keep):
-                    if k:
-                        frame_boxes.append(boxes[idx])
-                        frame_scores.append(scores[idx])
-                        frame_labels.append(labels[idx])
-                        # mask를 RLE 혹은 polygon으로 바꾸려면 추가 구현 필요
-                        # 여기서는 단순히 바이너리 마스크를 저장해 둡니다.
-                        # mask tensor는 (1,H,W) → (H,W) uint8 로 변환
-                        binary_mask = (masks[idx, 0] >= 0.5).astype(np.uint8).tolist()
-                        frame_masks.append(binary_mask)
+                for idx in keep_idx:
+                    frame_boxes.append(boxes_all[idx])
+                    frame_scores.append(scores_all[idx])
+                    frame_labels.append(labels_all[idx])
+                    # mask를 바이너리로 변환
+                    binary_mask = (masks_all[idx, 0] >= 0.5).astype(np.uint8).tolist()
+                    frame_masks.append(binary_mask)
 
-                # 딕셔너리 구성
                 entry = {
                     "frame_id": frame_id,
                     "boxes":    frame_boxes,   # [[x1,y1,x2,y2], ...]
@@ -155,8 +141,7 @@ def run_inference(
 
 def save_predictions_as_coco(
     all_results: dict,
-    output_dir: str,
-    device: torch.device
+    output_dir: str
 ):
     """
     all_results 형식:
@@ -176,10 +161,9 @@ def save_predictions_as_coco(
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    # COCO 카테고리 정보 (여기서는 viewport=1 하나뿐)
     categories = [{"id": 1, "name": "viewport", "supercategory": "viewport"}]
 
-    for rid, frames in all_results.items():
+    for rid, frames in tqdm.tqdm(all_results.items(), desc="Saving predictions", unit="replay"):
         coco = {
             "info": {"description": f"Predictions for replay {rid}", "version": "1.0"},
             "licenses": [],
@@ -191,21 +175,18 @@ def save_predictions_as_coco(
         ann_id = 1
         for item in frames:
             fid = item["frame_id"]
-            # COCO image entry
             coco["images"].append({
                 "id":   fid,
                 "file_name": f"{rid}.rep/{fid}.npy",
                 "width":  config.ORIGIN_SHAPE[1],  # ORIGIN_SHAPE = (H, W)
                 "height": config.ORIGIN_SHAPE[0]
             })
-            # COCO annotation entry
-            for box, score, label, mask in zip(
+            for box, score, label, _mask in zip(
                 item["boxes"], item["scores"], item["labels"], item["masks"]
             ):
                 x1, y1, x2, y2 = map(int, box)
                 w = x2 - x1
                 h = y2 - y1
-                # 간단한 폴리곤 생성 (rect)
                 segmentation = [[x1, y1, x1 + w, y1, x1 + w, y1 + h, x1, y1 + h]]
                 coco["annotations"].append({
                     "id": ann_id,
@@ -235,8 +216,16 @@ def parse_args():
         help="List of replay IDs to run inference on"
     )
     parser.add_argument(
-        "--model-path", type=str, required=True,
-        help="학습된 체크포인트(.pth) 경로"
+        "--model-root", type=str, default=os.path.join(os.getcwd(), "models"),
+        help="모델 체크포인트가 저장된 최상위 디렉토리 (default=models)"
+    )
+    parser.add_argument(
+        "--model-name", type=str, required=True,
+        help="사용할 모델 폴더 이름"
+    )
+    parser.add_argument(
+        "--model-number", type=int, required=True,
+        help="몇 번째 체크포인트를 사용할지 (예: 4 → model_4.pth)"
     )
     parser.add_argument(
         "--label-method", type=str, default=config.LABEL_METHODS[0],
@@ -256,11 +245,14 @@ def parse_args():
         help="Objectness 스코어 임계값"
     )
     parser.add_argument(
+        "--sample-ratio", type=float, default=1.0,
+        help="샘플링 비율 (0.0 < 샘플링 비율 ≤ 1.0). 1.0이면 전체 프레임 사용."
+    )
+    parser.add_argument(
         "--output-dir", type=str, default=os.path.join(os.getcwd(), "predictions"),
         help="출력 JSON을 저장할 디렉토리"
     )
-    args = parser.parse_args()
-    return args
+    return parser.parse_args()
 
 
 def main():
@@ -273,7 +265,16 @@ def main():
 
     # 데이터셋 준비
     input_root = os.path.join(args.data_root, "input", "dst")
-    dataset = InferenceDataset(input_root, args.replays, transform=T.ToTensor())
+    dataset = InferenceDataset(input_root, args.replays)
+
+    # sample_ratio이 1.0 미만인 경우 랜덤 샘플링
+    if 0.0 < args.sample_ratio < 1.0:
+        total_len = len(dataset)
+        sample_size = int(total_len * args.sample_ratio)
+        indices = torch.randperm(total_len).tolist()[:sample_size]
+        dataset = Subset(dataset, indices)
+        Logger.info(f"[Inference] Applied sampling: {sample_size}/{total_len} frames")
+
     data_loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -282,10 +283,16 @@ def main():
         collate_fn=collate_fn
     )
 
-    # 모델 로드
+    # 모델 로드 경로 생성
+    model_folder = os.path.join(args.model_root, args.model_name)
+    model_path = os.path.join(model_folder, f"model_{args.model_number}.pth")
+    if not os.path.isfile(model_path):
+        raise FileNotFoundError(f"Checkpoint not found: {model_path}")
+
+    # 모델 불러오기
     num_classes = 2  # background + viewport
     model = get_model_instance_segmentation(num_classes, window_size=1)
-    model.load_state_dict(torch.load(args.model_path, map_location=device))
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
 
     # 추론 수행
@@ -300,8 +307,7 @@ def main():
     # 결과 JSON 저장
     save_predictions_as_coco(
         all_results=all_results,
-        output_dir=args.output_dir,
-        device=device
+        output_dir=args.output_dir
     )
 
     Logger.info("[Inference] Complete!")
