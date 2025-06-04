@@ -23,6 +23,18 @@ make evaluate ARGS=" \
 --model-name legacy_win1_b32_20250423_060708
 --model-number 9"
 
+make evaluate ARGS=" \
+  --set set_0 \
+  --label-method all_correct \
+  --window-size 1 \
+  --batch-size 8 \
+  --model-number 4 \
+  --data-root /home/bcm/workspace/starcraft/data \
+  --model-root /home/bcm/workspace/starcraft/models \
+  --partial-length 0.1 \
+  --out-csv results.csv \
+  "
+
 # Inference
 make inference ARGS=" \
   --replays 36 212 438 522 1660 \
