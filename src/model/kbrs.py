@@ -109,9 +109,9 @@ if __name__ == "__main__":
     # Region 추출
     top_regions = extract_kbrs_regions_from_tensor(
         tensor,
-        region_size=(64, 64),
+        region_size=(20, 12),
         top_k=5,
-        stride=16,
+        stride=2,
         score_fn=score_fn
     )
 

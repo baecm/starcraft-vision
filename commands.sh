@@ -31,7 +31,7 @@ make evaluate ARGS=" \
   --model-number 4 \
   --data-root /home/bcm/workspace/starcraft/data \
   --model-root /home/bcm/workspace/starcraft/models \
-  --partial-length 0.1 \
+  --partial-length 0.1 \ 
   --out-csv results.csv \
   "
 
