@@ -46,3 +46,13 @@ make inference ARGS=" \
   --sample-ratio 0.1 \
   --output-dir /workspace/predictions \
   "
+
+python src/train.py \
+    --data-path /path/to/your/five_replay_dataset \
+    --epochs 10 \
+    --batch-size 2 \
+    --lr 0.005 \
+    --momentum 0.9 \
+    --weight-decay 0.0005 \
+    --lr-step-size 3 \
+    --lr-gamma 0.1

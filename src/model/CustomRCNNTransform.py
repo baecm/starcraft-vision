@@ -1,5 +1,7 @@
 from torchvision.models.detection.transform import GeneralizedRCNNTransform, ImageList
 
+from utils.logger import Logger
+
 class CustomRCNNTransform(GeneralizedRCNNTransform):
     def __init__(self, *args, do_normalize=True, **kwargs):
         super().__init__(*args, **kwargs)
@@ -19,6 +21,9 @@ class CustomRCNNTransform(GeneralizedRCNNTransform):
 
             if self.do_normalize:
                 image = self.normalize(image)
+            else:
+                # Logger.info("Skipping normalization of images as do_normalize is set to False.")
+                pass
 
             image, target_index = self.resize(image, target_index)
             images[i] = image
