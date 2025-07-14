@@ -113,7 +113,7 @@ def load_data(input_root, label_root, label_method, window_size, batch_size, rep
     return train_loader, test_loader
 
 
-def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, num_epochs, save_dir, writer):
+def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, num_epochs, save_dir, writer, use_kbrs=False):
     Logger.info("[Stage] Starting training loop...")
     for epoch in tqdm.tqdm(range(num_epochs)):
         train_stats = train_one_epoch(model, optimizer, data_loader_train, device, epoch, print_freq=10)
@@ -127,6 +127,8 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
         writer.add_scalar("Loss/mask", train_stats.loss_mask.global_avg, epoch)
         writer.add_scalar("Loss/objectness", train_stats.loss_objectness.global_avg, epoch)
         writer.add_scalar("Loss/rpn_box_reg", train_stats.loss_rpn_box_reg.global_avg, epoch)
+        if use_kbrs and hasattr(train_stats, 'loss_kbrs'):
+            writer.add_scalar("Loss/kbrs", train_stats.loss_kbrs.global_avg, epoch)
 
         if isinstance(eval_stats, dict):
             for k, v in eval_stats.items():
@@ -145,27 +147,29 @@ def run_training(args):
     Logger.info(f"[Info] Using device: {device}")
 
     if not args.id_string:
-        args.id_string = f"{args.label_method}_win{args.window_size}_b{args.batch_size}"
+        id_str = f"{args.label_method}_win{args.window_size}_b{args.batch_size}"
+        if args.use_kbrs:
+            id_str += "_kbrs"
+        args.id_string = id_str
 
     log_save_path = os.path.join(args.log_root, f"{args.id_string}_{time.strftime('%Y%m%d_%H%M%S')}/")
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
 
+    # SummaryWriter 로그 디렉토리 설정 후
     writer = SummaryWriter(log_dir=log_save_path)
-    writer.add_hparams(
-        {
-            "replays": ", ".join(args.replays),
-            "label_method": args.label_method,
-            "sample_ratio": args.sample_ratio,
-            "window_size": args.window_size,
-            "batch_size": args.batch_size,
-            "learning_rate": args.learning_rate,
-            "max_epoch": args.max_epoch
-        },
-        {}
-    )
-    
 
+    # hparams 필터링
+    raw_hparams = vars(args)
+    hparams = {}
+    for k, v in raw_hparams.items():
+        if isinstance(v, (int, float, str, bool, torch.Tensor)):
+            hparams[k] = v
+        else:
+            hparams[k] = str(v)
+
+    writer.add_hparams(hparams, {})
+    
     # Define data roots
     input_root = os.path.join(args.data_root, "input/dst")
     label_root = os.path.join(args.data_root, "label/dst")
@@ -188,33 +192,57 @@ def run_training(args):
 
     Logger.info("[Stage] Initializing model...")
     num_classes = 2  # background + viewport
-    model = get_model_instance_segmentation(num_classes, window_size=args.window_size, do_normalize=False)
+    
+    kbrs_params = None
+    if args.use_kbrs:
+        kbrs_params = {
+            'weights': {"density": 1.0, "mixture": 0.7, "centeredness": 1.2},
+            'loss_weight': args.kbrs_loss_weight,
+            'region_size': config.KERNEL_SHAPE,
+            'feature_map_name': 'pool'
+        }
+
+    model = get_model_instance_segmentation(
+        num_classes,
+        window_size=args.window_size,
+        do_normalize=False,
+        use_kbrs=args.use_kbrs,
+        kbrs_params=kbrs_params
+    )
     model.to(device)
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=args.learning_rate, momentum=0.9, weight_decay=0.0005)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path, writer)
+    train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path, writer, use_kbrs=args.use_kbrs)
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Minimal argument parser for Mask R-CNN training"
     )
+    # Data and Labeling
     parser.add_argument("--replays", type=str, nargs="+", required=True, help="List of replay IDs to include in dataset")
     parser.add_argument("--train-replays", type=str, nargs="+", default=None, help="Subset of replay IDs to use for training")
     parser.add_argument("--test-replays", type=str, nargs="+", default=None, help="Subset of replay IDs to use for testing")
     parser.add_argument("--label-method", type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS, help="Label extraction method (folder name)")
     parser.add_argument("--sample-ratio", type=float, default=1.0, help="Fraction of dataset to sample")
+    parser.add_argument("--data-root", type=str, default=os.path.join(os.getcwd(), "data"))
+
+    # Model Hyperparameters
     parser.add_argument("--window-size", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=0.0001)
     parser.add_argument("--max-epoch", type=int, default=100)
+    
+    # KBRS Specific
+    parser.add_argument("--use-kbrs", action='store_true', help="Use KBRS loss during training")
+    parser.add_argument("--kbrs-loss-weight", type=float, default=0.5, help="Weight for the KBRS loss component")
+
+    # Environment and Logging
     parser.add_argument("--cuda", action='store_true', default=True)
     parser.add_argument("--id-string", type=str, default="")
-    parser.add_argument("--data-root", type=str, default=os.path.join(os.getcwd(), "data"))
-
     parser.add_argument("--log-level", type=str, default="log", choices=["none", "log", "debug"], help="Logging level")
     parser.add_argument("--log-root", type=str, default=os.path.join(os.getcwd(), "models"))
     return parser.parse_args()
