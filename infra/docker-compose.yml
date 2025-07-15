@@ -9,11 +9,11 @@ services:
       - TORCH_HOME=/workspace/.torch_cache
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
     volumes:
-      - ../data:/workspace/data
-      - ../src:/workspace/src
-      - ../models:/workspace/models
-      - ../predictions:/workspace/predictions
-      - ../.torch_cache:/workspace/.torch_cache
+      - ${DATA_DIR}:/workspace/data
+      - ${SRC_DIR}:/workspace/src
+      - ${MODELS_DIR}:/workspace/models
+      - ${PREDICTIONS_DIR}:/workspace/predictions
+      - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
       - ./entrypoint.sh:/workspace/entrypoint.sh
     user: "${UID}:${GID}"
     shm_size: '4g'
