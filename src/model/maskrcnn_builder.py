@@ -98,8 +98,7 @@ class KBRS_MaskRCNN(MaskRCNN):
         
         feature_map = features[self.feature_map_name]
         
-        total_score = torch.tensor(0.0, device=feature_map.device)
-        num_boxes = 0
+        scores = []
         
         for i, target in enumerate(targets):
             gt_boxes = target['boxes']
@@ -133,14 +132,13 @@ class KBRS_MaskRCNN(MaskRCNN):
                     patch.unsqueeze(0), self.kbrs_params['region_size']
                 ).squeeze(0)
                 
-                total_score += self.score_fn(patch_resized)
-                num_boxes += 1
+                scores.append(self.score_fn(patch_resized))
         
-        if num_boxes == 0:
+        if not scores:
             return torch.tensor(0.0, device=feature_map.device)
             
-        avg_score = total_score / num_boxes
-        return -avg_score
+        avg_score = torch.mean(torch.stack(scores))
+        return 1.0 / (avg_score + 1e-6)
 
 
 def get_model_instance_segmentation(num_classes: int, window_size: int, do_normalize=False, use_kbrs=False, kbrs_params=None):
@@ -155,9 +153,7 @@ def get_model_instance_segmentation(num_classes: int, window_size: int, do_norma
                 'feature_map_name': 'pool'
             }
         
-        backbone = torchvision.models.detection.backbone_utils.resnet_fpn_backbone(
-            'resnet50', weights=MaskRCNN_ResNet50_FPN_Weights.DEFAULT
-        )
+        backbone = torchvision.models.detection.backbone_utils.resnet_fpn_backbone('resnet50', weights=ResNet50_Weights.DEFAULT)
         backbone.body.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         
         model = KBRS_MaskRCNN(backbone, num_classes, kbrs_params=kbrs_params)
