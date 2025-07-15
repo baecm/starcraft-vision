@@ -109,7 +109,7 @@ class KBRS_MaskRCNN(MaskRCNN):
         feature_map = features[self.feature_map_name]
         top_k_ratio = self.kbrs_params.get('top_k_ratio', 1.0)
         
-        batch_scores = []
+        batch_mean_scores = []
 
         for i, target in enumerate(targets):
             gt_boxes = target['boxes']
@@ -156,23 +156,25 @@ class KBRS_MaskRCNN(MaskRCNN):
             k = max(1, int(num_boxes * top_k_ratio))
             
             top_k_scores, _ = torch.topk(box_scores_tensor, k=k, largest=True)
-            batch_scores.extend(top_k_scores)
+            batch_mean_scores.append(torch.mean(top_k_scores))
 
         losses = {}
-        if not batch_scores:
+        if not batch_mean_scores:
             losses['loss_kbrs'] = torch.tensor(0.0, device=feature_map.device)
             return losses
 
         # Calculate the final loss based on the average of the top scores across the batch
-        final_score = torch.mean(torch.stack(batch_scores))
+        final_score = torch.mean(torch.stack(batch_mean_scores))
+
+        # Clamp final_score to be non-negative to prevent log(<=0) which results in NaN or -inf.
+        # This ensures numerical stability for the loss calculation.
+        final_score = final_score.clamp(min=0.0)
 
         print(f"DEBUG: Final composite score (mean of top-k scores): {final_score.item()}")
 
-        if final_score > 0:
-            # NOTE: The final weight is applied in the main forward method now.
-            losses['loss_kbrs'] = 1.0 / (final_score + 1e-6)
-        else:
-            losses['loss_kbrs'] = torch.tensor(0.0, device=feature_map.device)
+        # The loss is designed to be inversely proportional to the score.
+        # The epsilon prevents division by zero. Clamping above prevents log(<=0).
+        losses['loss_kbrs'] = 1.0 / (torch.log(final_score + 1) + 1e-6)
             
         return losses
 
