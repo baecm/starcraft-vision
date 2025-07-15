@@ -97,6 +97,12 @@ class KBRS_MaskRCNN(MaskRCNN):
         return detections
 
     def compute_kbrs_loss(self, features, targets, image_sizes):
+        print(f"DEBUG: compute_kbrs_loss called. Batch size: {len(targets)}")
+        num_boxes_per_image = [t['boxes'].shape[0] for t in targets]
+        print(f"DEBUG: Number of boxes per image in batch: {num_boxes_per_image}")
+        if all(n == 0 for n in num_boxes_per_image):
+            print("DEBUG: All images in this batch have 0 boxes. kbrs_loss will be 0.")
+
         if self.feature_map_name not in features:
             raise ValueError(f"Feature map '{self.feature_map_name}' not found. Available: {list(features.keys())}")
         
@@ -159,6 +165,8 @@ class KBRS_MaskRCNN(MaskRCNN):
 
         # Calculate the final loss based on the average of the top scores across the batch
         final_score = torch.mean(torch.stack(batch_scores))
+
+        print(f"DEBUG: Final composite score (mean of top-k scores): {final_score.item()}")
 
         if final_score > 0:
             # NOTE: The final weight is applied in the main forward method now.
