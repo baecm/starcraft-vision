@@ -139,8 +139,12 @@ class KBRS_MaskRCNN(MaskRCNN):
                     box_scores.append(torch.tensor(0.0, device=feature_map.device))
                     continue
 
+                # Normalize patch to [0, 1] to make scores independent of activation magnitude
+                p_min, p_max = patch.min(), patch.max()
+                normalized_patch = (patch - p_min) / (p_max - p_min + 1e-6)
+
                 patch_resized = nn.functional.adaptive_avg_pool2d(
-                    patch.unsqueeze(0), self.kbrs_params['region_size']
+                    normalized_patch.unsqueeze(0), self.kbrs_params['region_size']
                 ).squeeze(0)
                 
                 # Calculate the composite score for the patch
