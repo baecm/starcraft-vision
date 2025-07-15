@@ -9,6 +9,7 @@ services:
       - TORCH_HOME=/workspace/.torch_cache
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
     volumes:
+      - ${WANDB_API_KEY}:/run/secrets/wandb_api_key:ro
       - ${DATA_DIR}:/workspace/data
       - ${SRC_DIR}:/workspace/src
       - ${MODELS_DIR}:/workspace/models

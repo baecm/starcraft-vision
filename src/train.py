@@ -6,6 +6,8 @@ import tqdm
 import utils
 import json
 import pickle
+import wandb
+from ultralytics import settings
 
 import detection.transforms as T
 import config
@@ -13,7 +15,6 @@ from detection.engine import train_one_epoch, evaluate
 from dataset.custom_penn_fudan import CustomPennFudanDataset
 from model.maskrcnn_builder import get_model_instance_segmentation
 from utils.logger import Logger
-from torch.utils.tensorboard import SummaryWriter
 
 
 def get_transform(train):
@@ -113,7 +114,7 @@ def load_data(input_root, label_root, label_method, window_size, batch_size, rep
     return train_loader, test_loader
 
 
-def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, num_epochs, save_dir, writer, use_kbrs=False):
+def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, num_epochs, save_dir, use_kbrs=False):
     Logger.info("[Stage] Starting training loop...")
     final_eval_stats = {}
     for epoch in tqdm.tqdm(range(num_epochs)):
@@ -122,21 +123,24 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
         eval_stats = evaluate(model, data_loader_test, device=device)
 
         # Log losses
-        writer.add_scalar("Loss/train", train_stats.loss.global_avg, epoch)
-        writer.add_scalar("Loss/class", train_stats.loss_classifier.global_avg, epoch)
-        writer.add_scalar("Loss/box_reg", train_stats.loss_box_reg.global_avg, epoch)
-        writer.add_scalar("Loss/mask", train_stats.loss_mask.global_avg, epoch)
-        writer.add_scalar("Loss/objectness", train_stats.loss_objectness.global_avg, epoch)
-        writer.add_scalar("Loss/rpn_box_reg", train_stats.loss_rpn_box_reg.global_avg, epoch)
+        log_dict = {
+            "Loss/train": train_stats.loss.global_avg,
+            "Loss/class": train_stats.loss_classifier.global_avg,
+            "Loss/box_reg": train_stats.loss_box_reg.global_avg,
+            "Loss/mask": train_stats.loss_mask.global_avg,
+            "Loss/objectness": train_stats.loss_objectness.global_avg,
+            "Loss/rpn_box_reg": train_stats.loss_rpn_box_reg.global_avg,
+        }
+
         if use_kbrs:
             if hasattr(train_stats, 'loss_kbrs'):
-                writer.add_scalar("Loss/kbrs", train_stats.loss_kbrs.global_avg, epoch)
+                log_dict["Loss/kbrs"] = train_stats.loss_kbrs.global_avg
             if hasattr(train_stats, 'loss_kbrs_density'):
-                writer.add_scalar("Loss/kbrs_density", train_stats.loss_kbrs_density.global_avg, epoch)
+                log_dict["Loss/kbrs_density"] = train_stats.loss_kbrs_density.global_avg
             if hasattr(train_stats, 'loss_kbrs_mixture'):
-                writer.add_scalar("Loss/kbrs_mixture", train_stats.loss_kbrs_mixture.global_avg, epoch)
+                log_dict["Loss/kbrs_mixture"] = train_stats.loss_kbrs_mixture.global_avg
             if hasattr(train_stats, 'loss_kbrs_centeredness'):
-                writer.add_scalar("Loss/kbrs_centeredness", train_stats.loss_kbrs_centeredness.global_avg, epoch)
+                log_dict["Loss/kbrs_centeredness"] = train_stats.loss_kbrs_centeredness.global_avg
 
         # Log evaluation stats
         # The evaluate function returns a CocoEvaluator object, from which we can extract stats.
@@ -148,7 +152,10 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
                     metric_name = f"Eval/{iou_type}/{name}"
                     metric_value = coco_eval.stats[i]
                     metric_dict[metric_name] = metric_value
-                    writer.add_scalar(metric_name, metric_value, epoch)
+        
+        log_dict.update(metric_dict)
+        wandb.log(log_dict)
+        
         final_eval_stats = metric_dict
         
         # Save model checkpoint
@@ -159,6 +166,7 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
 
 
 def run_training(args):
+    settings.update({"wandb": True})
     Logger.info("[Stage] Preparing environment...")
     device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
     Logger.info(f"[Info] Using device: {device}")
@@ -173,29 +181,8 @@ def run_training(args):
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
 
-    # SummaryWriter 로그 디렉토리 설정 후
-    writer = SummaryWriter(log_dir=log_save_path)
-
-    # hparams 필터링 및 loss_weights 추가
-    raw_hparams = vars(args)
-    hparams = {}
-    for k, v in raw_hparams.items():
-        if k == 'loss_weight': # Skip the raw list of lists
-            continue
-        if isinstance(v, (int, float, str, bool, torch.Tensor)):
-            hparams[k] = v
-        else:
-            hparams[k] = str(v)
-    
-    # Add the processed loss weights to the hparams for logging
-    loss_weights = {}
-    if args.loss_weight:
-        for name, weight in args.loss_weight:
-            loss_weights[name] = float(weight)
-    hparams.update(loss_weights)
-
-    # hparams를 학습 시작과 함께 기록 (메트릭은 나중에 기록됨)
-    writer.add_hparams(hparams, {})
+    # Initialize wandb
+    wandb.init(project="starcraft", name=args.id_string, config=args)
 
 
     # Define data roots
@@ -221,6 +208,11 @@ def run_training(args):
     Logger.info("[Stage] Initializing model...")
     num_classes = 2  # background + viewport
     
+    loss_weights = {}
+    if args.loss_weight:
+        for name, weight in args.loss_weight:
+            loss_weights[name] = float(weight)
+
     kbrs_params = None
     if args.use_kbrs:
         if 'loss_kbrs' not in loss_weights and 'kbrs_loss_weight' in args and args.kbrs_loss_weight is not None:
@@ -247,10 +239,10 @@ def run_training(args):
     optimizer = torch.optim.SGD(params, lr=args.learning_rate, momentum=0.9, weight_decay=0.0005)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path, writer, use_kbrs=args.use_kbrs)
+    train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path, use_kbrs=args.use_kbrs)
 
-    # 최종적으로 writer를 닫음
-    writer.close()
+    # Finish wandb run
+    wandb.finish()
 
 
 def parse_arguments():

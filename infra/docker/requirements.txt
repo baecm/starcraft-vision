@@ -6,3 +6,5 @@ pandas
 tqdm
 torchvision
 tensorboard
+wandb
+ultralytics

@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+export WANDB_API_KEY=$(cat /run/secrets/wandb_api_key)
+echo "[Entrypoint] WANDB_API_KEY = $WANDB_API_KEY"
+
 COMMAND="$1"
 shift
 

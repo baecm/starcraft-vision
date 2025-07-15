@@ -9,6 +9,7 @@ import tqdm
 import utils
 from detection.utils import MetricLogger
 import json
+import wandb
 
 from detection.engine import evaluate
 from dataset.custom_penn_fudan import CustomPennFudanDataset
@@ -17,7 +18,6 @@ import detection.transforms as T
 from utils.logger import Logger
 import config
 
-from torch.utils.tensorboard import SummaryWriter
 from torch.cuda.amp import autocast, GradScaler
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -81,7 +81,7 @@ def load_data(input_root, label_root, label_method,
 
 def train_model(model, optimizer, lr_scheduler,
                 data_loader_train, data_loader_test,
-                device, num_epochs, save_dir, writer, train_sampler, is_main):
+                device, num_epochs, save_dir, train_sampler, is_main):
     scaler = GradScaler()
     for epoch in range(num_epochs):
         train_sampler.set_epoch(epoch)
@@ -111,16 +111,15 @@ def train_model(model, optimizer, lr_scheduler,
         lr_scheduler.step()
         eval_stats = evaluate(model, data_loader_test, device=device)
 
-        if is_main and writer:
+        if is_main:
+            log_dict = {}
             for k, meter in metric_logger.meters.items():
-                writer.add_scalar(f"Loss/{k}", meter.global_avg, epoch)
+                log_dict[f"Loss/{k}"] = meter.global_avg
             if isinstance(eval_stats, dict):
                 for k, v in eval_stats.items():
-                    writer.add_scalar(f"Eval/{k}", v, epoch)
+                    log_dict[f"Eval/{k}"] = v
+            wandb.log(log_dict)
             torch.save(model.module.state_dict(), os.path.join(save_dir, f"model_{epoch}.pth"))
-
-    if is_main and writer:
-        writer.close()
 
 def run_training(args):
     local_rank = setup_ddp()
@@ -133,18 +132,7 @@ def run_training(args):
     log_save_path = os.path.join(args.log_root, f"{args.id_string}_{time.strftime('%Y%m%d_%H%M%S')}/")
     if is_main:
         os.makedirs(log_save_path, exist_ok=True)
-        writer = SummaryWriter(log_dir=log_save_path)
-        writer.add_hparams({
-            "replays": ", ".join(args.replays),
-            "label_method": args.label_method,
-            "sample_ratio": args.sample_ratio,
-            "window_size": args.window_size,
-            "batch_size": args.batch_size,
-            "learning_rate": args.learning_rate,
-            "max_epoch": args.max_epoch
-        }, {})
-    else:
-        writer = None
+        wandb.init(project="starcraft", name=args.id_string, config=args)
 
     input_root = os.path.join(args.data_root, "input/dst")
     label_root = os.path.join(args.data_root, "label/dst")
@@ -168,7 +156,10 @@ def run_training(args):
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
     train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test,
-                device, args.max_epoch, log_save_path, writer, train_sampler, is_main)
+                device, args.max_epoch, log_save_path, train_sampler, is_main)
+    
+    if is_main:
+        wandb.finish()
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -179,7 +170,7 @@ def parse_arguments():
     parser.add_argument("--sample-ratio", type=float, default=1.0)
     parser.add_argument("--window-size", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--learning-rate", type=float, default=0.0001)
+    parser.add_gument("--learning-rate", type=float, default=0.0001)
     parser.add_argument("--max-epoch", type=int, default=100)
     parser.add_argument("--id-string", type=str, default="")
     parser.add_argument("--data-root", type=str, default=os.path.join(os.getcwd(), "data"))
