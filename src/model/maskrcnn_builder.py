@@ -10,6 +10,7 @@ from torchvision.models.detection.mask_rcnn import MaskRCNN, MaskRCNNPredictor
 from torchvision.models.detection import MaskRCNN_ResNet50_FPN_Weights
 from torchvision.models import ResNet50_Weights
 
+from src.utils.logger import Logger
 from .CustomRCNNTransform import CustomRCNNTransform
 
 # KBRS score functions in torch for differentiability
@@ -97,11 +98,11 @@ class KBRS_MaskRCNN(MaskRCNN):
         return detections
 
     def compute_kbrs_loss(self, features, targets, image_sizes):
-        print(f"DEBUG: compute_kbrs_loss called. Batch size: {len(targets)}")
+        Logger.debug(f"compute_kbrs_loss called. Batch size: {len(targets)}")
         num_boxes_per_image = [t['boxes'].shape[0] for t in targets]
-        print(f"DEBUG: Number of boxes per image in batch: {num_boxes_per_image}")
+        Logger.debug(f"Number of boxes per image in batch: {num_boxes_per_image}")
         if all(n == 0 for n in num_boxes_per_image):
-            print("DEBUG: All images in this batch have 0 boxes. kbrs_loss will be 0.")
+            Logger.debug("All images in this batch have 0 boxes. kbrs_loss will be 0.")
 
         if self.feature_map_name not in features:
             raise ValueError(f"Feature map '{self.feature_map_name}' not found. Available: {list(features.keys())}")
@@ -174,7 +175,7 @@ class KBRS_MaskRCNN(MaskRCNN):
         # This ensures numerical stability for the loss calculation.
         final_score = final_score.clamp(min=0.0)
 
-        print(f"DEBUG: Final composite score (mean of top-k scores): {final_score.item()}")
+        Logger.debug(f"Final composite score (mean of top-k scores): {final_score.item()}")
 
         # The loss is designed to be inversely proportional to the score.
         # The epsilon prevents division by zero. Clamping above prevents log(<=0).
