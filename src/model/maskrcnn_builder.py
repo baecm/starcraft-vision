@@ -20,8 +20,7 @@ def score_density_torch(patch: torch.Tensor) -> torch.Tensor:
 def score_mixture_torch(patch: torch.Tensor) -> torch.Tensor:
     """Calculates the number of active channels using a differentiable sigmoid approximation."""
     # Use sigmoid as a differentiable approximation for (x > 0)
-    # A large factor is used to make the sigmoid function act like a step function
-    channel_active = torch.sigmoid(patch.sum(dim=(1, 2)) * 1e3)
+    channel_active = torch.sigmoid(patch.sum(dim=(1, 2)))
     return channel_active.sum()
 
 def score_centeredness_torch(patch: torch.Tensor) -> torch.Tensor:
