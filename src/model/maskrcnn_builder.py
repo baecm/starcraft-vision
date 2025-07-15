@@ -86,8 +86,8 @@ class KBRS_MaskRCNN(MaskRCNN):
         losses.update(proposal_losses)
 
         if self.training:
-            kbrs_loss = self.compute_kbrs_loss(features, targets, images.image_sizes)
-            losses['loss_kbrs'] = self.kbrs_loss_weight * kbrs_loss
+            kbrs_losses = self.compute_kbrs_loss(features, targets, images.image_sizes)
+            losses.update(kbrs_losses)
             return losses
         
         return detections
@@ -98,7 +98,8 @@ class KBRS_MaskRCNN(MaskRCNN):
         
         feature_map = features[self.feature_map_name]
         
-        scores = []
+        # 각 score 구성 요소별로 점수를 저장할 리스트
+        scores_by_type = {name: [] for name in self.score_fn.score_funcs.keys()}
         
         for i, target in enumerate(targets):
             gt_boxes = target['boxes']
@@ -119,12 +120,10 @@ class KBRS_MaskRCNN(MaskRCNN):
 
             for box in scaled_boxes:
                 x1, y1, x2, y2 = box.to(torch.int)
-                
                 x1, y1 = x1.clamp(0, feat_w - 1), y1.clamp(0, feat_h - 1)
                 x2, y2 = x2.clamp(x1 + 1, feat_w), y2.clamp(y1 + 1, feat_h)
                 
                 patch = image_feature_map[:, y1:y2, x1:x2]
-                
                 if patch.numel() == 0:
                     continue
 
@@ -132,13 +131,36 @@ class KBRS_MaskRCNN(MaskRCNN):
                     patch.unsqueeze(0), self.kbrs_params['region_size']
                 ).squeeze(0)
                 
-                scores.append(self.score_fn(patch_resized))
+                # 각 score 함수를 개별적으로 호출하여 점수 계산
+                for name, func in self.score_fn.score_funcs.items():
+                    scores_by_type[name].append(func(patch_resized))
         
-        if not scores:
-            return torch.tensor(0.0, device=feature_map.device)
+        # 최종 loss를 담을 딕셔너리
+        losses = {}
+        total_score = torch.tensor(0.0, device=feature_map.device)
+
+        for name, scores in scores_by_type.items():
+            if not scores:
+                # 해당 타입의 score가 없는 경우 loss를 0으로 설정
+                avg_score = torch.tensor(0.0, device=feature_map.device)
+            else:
+                avg_score = torch.mean(torch.stack(scores))
+
+            # 개별 loss 계산 (score가 높을수록 loss가 낮아지도록)
+            # 1e-6은 분모가 0이 되는 것을 방지
+            individual_loss = 1.0 / (avg_score + 1e-6)
+            losses[f'loss_kbrs_{name}'] = individual_loss
             
-        avg_score = torch.mean(torch.stack(scores))
-        return 1.0 / (avg_score + 1e-6)
+            # 가중치를 적용하여 전체 score에 합산
+            total_score += self.score_fn.weights.get(name, 0.0) * avg_score
+
+        # 전체 KBRS loss 계산
+        if not any(scores_by_type.values()):
+            losses['loss_kbrs'] = torch.tensor(0.0, device=feature_map.device)
+        else:
+            losses['loss_kbrs'] = (1.0 / (total_score + 1e-6)) * self.kbrs_loss_weight
+            
+        return losses
 
 
 def get_model_instance_segmentation(num_classes: int, window_size: int, do_normalize=False, use_kbrs=False, kbrs_params=None):

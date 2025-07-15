@@ -127,8 +127,15 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
         writer.add_scalar("Loss/mask", train_stats.loss_mask.global_avg, epoch)
         writer.add_scalar("Loss/objectness", train_stats.loss_objectness.global_avg, epoch)
         writer.add_scalar("Loss/rpn_box_reg", train_stats.loss_rpn_box_reg.global_avg, epoch)
-        if use_kbrs and hasattr(train_stats, 'loss_kbrs'):
-            writer.add_scalar("Loss/kbrs", train_stats.loss_kbrs.global_avg, epoch)
+        if use_kbrs:
+            if hasattr(train_stats, 'loss_kbrs'):
+                writer.add_scalar("Loss/kbrs", train_stats.loss_kbrs.global_avg, epoch)
+            if hasattr(train_stats, 'loss_kbrs_density'):
+                writer.add_scalar("Loss/kbrs_density", train_stats.loss_kbrs_density.global_avg, epoch)
+            if hasattr(train_stats, 'loss_kbrs_mixture'):
+                writer.add_scalar("Loss/kbrs_mixture", train_stats.loss_kbrs_mixture.global_avg, epoch)
+            if hasattr(train_stats, 'loss_kbrs_centeredness'):
+                writer.add_scalar("Loss/kbrs_centeredness", train_stats.loss_kbrs_centeredness.global_avg, epoch)
 
         if isinstance(eval_stats, dict):
             for k, v in eval_stats.items():
