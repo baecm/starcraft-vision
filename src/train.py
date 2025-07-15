@@ -115,6 +115,7 @@ def load_data(input_root, label_root, label_method, window_size, batch_size, rep
 
 def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, num_epochs, save_dir, writer, use_kbrs=False):
     Logger.info("[Stage] Starting training loop...")
+    final_eval_stats = {}
     for epoch in tqdm.tqdm(range(num_epochs)):
         train_stats = train_one_epoch(model, optimizer, data_loader_train, device, epoch, print_freq=10)
         lr_scheduler.step()
@@ -140,12 +141,13 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
         if isinstance(eval_stats, dict):
             for k, v in eval_stats.items():
                 writer.add_scalar(f"Eval/{k}", v, epoch)
+            final_eval_stats = eval_stats
 
         # Save model checkpoint
         torch.save(model.state_dict(), os.path.join(save_dir, f"model_{epoch}.pth"))
 
-    writer.close()
     Logger.info("[Stage] Training complete!")
+    return final_eval_stats
 
 
 def run_training(args):
@@ -175,8 +177,6 @@ def run_training(args):
         else:
             hparams[k] = str(v)
 
-    writer.add_hparams(hparams, {})
-    
     # Define data roots
     input_root = os.path.join(args.data_root, "input/dst")
     label_root = os.path.join(args.data_root, "label/dst")
@@ -201,12 +201,21 @@ def run_training(args):
     num_classes = 2  # background + viewport
     
     kbrs_params = None
+    loss_weights = {}
+    if args.loss_weight:
+        for name, weight in args.loss_weight:
+            loss_weights[name] = float(weight)
+
     if args.use_kbrs:
+        # For backward compatibility, if --kbrs-loss-weight is used and loss_kbrs is not set by --loss-weight
+        if 'loss_kbrs' not in loss_weights and args.kbrs_loss_weight is not None:
+            loss_weights['loss_kbrs'] = args.kbrs_loss_weight
+
         kbrs_params = {
             'weights': {"density": 1.0, "mixture": 0.7, "centeredness": 1.2},
-            'loss_weight': args.kbrs_loss_weight,
             'region_size': config.KERNEL_SHAPE,
-            'feature_map_name': 'pool'
+            'feature_map_name': '0',  # Use the first feature map from FPN
+            'top_k_ratio': 0.5  # Use top 50% of GT boxes based on K-BRS score
         }
 
     model = get_model_instance_segmentation(
@@ -214,7 +223,8 @@ def run_training(args):
         window_size=args.window_size,
         do_normalize=False,
         use_kbrs=args.use_kbrs,
-        kbrs_params=kbrs_params
+        kbrs_params=kbrs_params,
+        loss_weights=loss_weights
     )
     model.to(device)
 
@@ -222,7 +232,11 @@ def run_training(args):
     optimizer = torch.optim.SGD(params, lr=args.learning_rate, momentum=0.9, weight_decay=0.0005)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path, writer, use_kbrs=args.use_kbrs)
+    final_metrics = train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path, writer, use_kbrs=args.use_kbrs)
+
+    # 최종 평가지표와 함께 hparams 기록
+    writer.add_hparams(hparams, final_metrics)
+    writer.close()
 
 
 def parse_arguments():
@@ -245,7 +259,10 @@ def parse_arguments():
     
     # KBRS Specific
     parser.add_argument("--use-kbrs", action='store_true', help="Use KBRS loss during training")
-    parser.add_argument("--kbrs-loss-weight", type=float, default=0.5, help="Weight for the KBRS loss component")
+    # parser.add_argument("--kbrs-loss-weight", type=float, default=1.0, help="Weight for the KBRS loss component (deprecated, use --loss-weight instead)")
+    parser.add_argument('--loss-weight', nargs=2, action='append', metavar=('LOSS_NAME', 'WEIGHT'),
+                        help='Set a weight for a specific loss. Can be used multiple times. '
+                             'Example: --loss-weight loss_rpn_box_reg 0.0 --loss-weight loss_kbrs 10.0')
 
     # Environment and Logging
     parser.add_argument("--cuda", action='store_true', default=True)

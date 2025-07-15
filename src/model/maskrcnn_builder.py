@@ -49,21 +49,19 @@ def build_composite_score_fn_torch(
 
 class KBRS_MaskRCNN(MaskRCNN):
     """
-    MaskRCNN model with an additional KBRS loss.
-    The KBRS loss is designed to maximize a score within the ground truth bounding boxes,
-    guiding the model to learn more representative features.
+    MaskRCNN model with an additional KBRS loss and flexible loss weighting.
     """
-    def __init__(self, backbone, num_classes, kbrs_params, **kwargs):
+    def __init__(self, backbone, num_classes, kbrs_params, loss_weights=None, **kwargs):
         super().__init__(backbone, num_classes, **kwargs)
         self.kbrs_params = kbrs_params
+        self.loss_weights = loss_weights if loss_weights is not None else {}
         
-        score_funcs = {
+        self.score_funcs = {
             "density": score_density_torch,
             "mixture": score_mixture_torch,
             "centeredness": score_centeredness_torch,
         }
-        self.score_fn = build_composite_score_fn_torch(score_funcs, self.kbrs_params['weights'])
-        self.kbrs_loss_weight = self.kbrs_params.get('loss_weight', 1.0)
+        self.score_fn = build_composite_score_fn_torch(self.score_funcs, self.kbrs_params['weights'])
         self.feature_map_name = self.kbrs_params.get('feature_map_name', 'pool')
 
     def forward(self, images, targets=None):
@@ -88,6 +86,12 @@ class KBRS_MaskRCNN(MaskRCNN):
         if self.training:
             kbrs_losses = self.compute_kbrs_loss(features, targets, images.image_sizes)
             losses.update(kbrs_losses)
+
+            # Apply all loss weights centrally
+            for name, value in losses.items():
+                weight = self.loss_weights.get(name, 1.0) # Default weight is 1.0
+                losses[name] = value * weight
+            
             return losses
         
         return detections
@@ -97,10 +101,10 @@ class KBRS_MaskRCNN(MaskRCNN):
             raise ValueError(f"Feature map '{self.feature_map_name}' not found. Available: {list(features.keys())}")
         
         feature_map = features[self.feature_map_name]
+        top_k_ratio = self.kbrs_params.get('top_k_ratio', 1.0)
         
-        # 각 score 구성 요소별로 점수를 저장할 리스트
-        scores_by_type = {name: [] for name in self.score_fn.score_funcs.keys()}
-        
+        batch_scores = []
+
         for i, target in enumerate(targets):
             gt_boxes = target['boxes']
             if gt_boxes.shape[0] == 0:
@@ -117,7 +121,8 @@ class KBRS_MaskRCNN(MaskRCNN):
             scaled_boxes[:, 1::2] *= scale_h
             
             image_feature_map = feature_map[i]
-
+            
+            box_scores = []
             for box in scaled_boxes:
                 x1, y1, x2, y2 = box.to(torch.int)
                 x1, y1 = x1.clamp(0, feat_w - 1), y1.clamp(0, feat_h - 1)
@@ -125,52 +130,52 @@ class KBRS_MaskRCNN(MaskRCNN):
                 
                 patch = image_feature_map[:, y1:y2, x1:x2]
                 if patch.numel() == 0:
+                    box_scores.append(torch.tensor(0.0, device=feature_map.device))
                     continue
 
                 patch_resized = nn.functional.adaptive_avg_pool2d(
                     patch.unsqueeze(0), self.kbrs_params['region_size']
                 ).squeeze(0)
                 
-                # 각 score 함수를 개별적으로 호출하여 점수 계산
-                for name, func in self.score_fn.score_funcs.items():
-                    scores_by_type[name].append(func(patch_resized))
-        
-        # 최종 loss를 담을 딕셔너리
-        losses = {}
-        total_score = torch.tensor(0.0, device=feature_map.device)
-
-        for name, scores in scores_by_type.items():
-            if not scores:
-                # 해당 타입의 score가 없는 경우 loss를 0으로 설정
-                avg_score = torch.tensor(0.0, device=feature_map.device)
-            else:
-                avg_score = torch.mean(torch.stack(scores))
-
-            # 개별 loss 계산 (score가 높을수록 loss가 낮아지도록)
-            # 1e-6은 분모가 0이 되는 것을 방지
-            individual_loss = 1.0 / (avg_score + 1e-6)
-            losses[f'loss_kbrs_{name}'] = individual_loss
+                # Calculate the composite score for the patch
+                score = self.score_fn(patch_resized)
+                box_scores.append(score)
             
-            # 가중치를 적용하여 전체 score에 합산
-            total_score += self.score_fn.weights.get(name, 0.0) * avg_score
+            if not box_scores:
+                continue
 
-        # 전체 KBRS loss 계산
-        if not any(scores_by_type.values()):
+            # Select top-k scores from the boxes of the current image
+            box_scores_tensor = torch.stack(box_scores)
+            num_boxes = len(box_scores_tensor)
+            k = max(1, int(num_boxes * top_k_ratio))
+            
+            top_k_scores, _ = torch.topk(box_scores_tensor, k=k, largest=True)
+            batch_scores.extend(top_k_scores)
+
+        losses = {}
+        if not batch_scores:
             losses['loss_kbrs'] = torch.tensor(0.0, device=feature_map.device)
+            return losses
+
+        # Calculate the final loss based on the average of the top scores across the batch
+        final_score = torch.mean(torch.stack(batch_scores))
+
+        if final_score > 0:
+            # NOTE: The final weight is applied in the main forward method now.
+            losses['loss_kbrs'] = 1.0 / (final_score + 1e-6)
         else:
-            losses['loss_kbrs'] = (1.0 / (total_score + 1e-6)) * self.kbrs_loss_weight
+            losses['loss_kbrs'] = torch.tensor(0.0, device=feature_map.device)
             
         return losses
 
 
-def get_model_instance_segmentation(num_classes: int, window_size: int, do_normalize=False, use_kbrs=False, kbrs_params=None):
+def get_model_instance_segmentation(num_classes: int, window_size: int, do_normalize=False, use_kbrs=False, kbrs_params=None, loss_weights=None):
     in_channels = 9 * window_size
     
     if use_kbrs:
         if kbrs_params is None:
             kbrs_params = {
                 'weights': {"density": 1.0, "mixture": 0.7, "centeredness": 1.2},
-                'loss_weight': 0.5,
                 'region_size': (20, 12),
                 'feature_map_name': 'pool'
             }
@@ -178,9 +183,8 @@ def get_model_instance_segmentation(num_classes: int, window_size: int, do_norma
         backbone = torchvision.models.detection.backbone_utils.resnet_fpn_backbone('resnet50', weights=ResNet50_Weights.DEFAULT)
         backbone.body.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         
-        model = KBRS_MaskRCNN(backbone, num_classes, kbrs_params=kbrs_params)
+        model = KBRS_MaskRCNN(backbone, num_classes, kbrs_params=kbrs_params, loss_weights=loss_weights)
         
-        # Replace the pre-trained heads with new ones for the given num_classes
         in_features = model.roi_heads.box_predictor.cls_score.in_features
         model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
@@ -201,7 +205,6 @@ def get_model_instance_segmentation(num_classes: int, window_size: int, do_norma
         hidden_layer = 256
         model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask, hidden_layer, num_classes)
 
-    # Common transform for both model types
     model.transform = CustomRCNNTransform(
         min_size=[800],
         max_size=1333,
