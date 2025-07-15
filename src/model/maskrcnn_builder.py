@@ -172,9 +172,12 @@ class KBRS_MaskRCNN(MaskRCNN):
         # This ensures numerical stability for the loss calculation.
         final_score = final_score.clamp(min=0.0)
 
-        # The loss is designed to be inversely proportional to the score.
-        # The epsilon prevents division by zero. Clamping above prevents log(<=0).
-        losses['loss_kbrs'] = 1.0 / (torch.log(final_score + 1) + 1e-6)
+        # New loss function: exp(-score/scale)
+        # This provides a better gradient than the previous 1/log(score+1),
+        # especially for large scores. The scale parameter helps to keep the
+        # loss value in a reasonable range.
+        loss_scale = self.kbrs_params.get('loss_scale', 100.0)
+        losses['loss_kbrs'] = torch.exp(-final_score / loss_scale)
             
         return losses
 
