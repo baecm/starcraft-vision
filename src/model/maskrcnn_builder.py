@@ -14,8 +14,8 @@ from .CustomRCNNTransform import CustomRCNNTransform
 
 # KBRS score functions in torch for differentiability
 def score_density_torch(patch: torch.Tensor) -> torch.Tensor:
-    """Calculates the sum of all values in the patch."""
-    return patch.sum()
+    """Calculates the mean of all values in the patch for stability."""
+    return patch.mean()
 
 def score_mixture_torch(patch: torch.Tensor) -> torch.Tensor:
     """Calculates the number of active channels using a differentiable sigmoid approximation."""
@@ -30,7 +30,8 @@ def score_centeredness_torch(patch: torch.Tensor) -> torch.Tensor:
     cy, cx = h // 2, w // 2
     sigma = h / 4  # Standard deviation for the Gaussian weight
     weight = torch.exp(-((x - cx).pow(2) + (y - cy).pow(2)) / (2 * sigma ** 2))
-    return (patch * weight.unsqueeze(0)).sum()
+    # Using mean instead of sum for stability
+    return (patch * weight.unsqueeze(0)).mean()
 
 def build_composite_score_fn_torch(
     score_funcs: Dict[str, Callable[[torch.Tensor], torch.Tensor]],
