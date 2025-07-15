@@ -138,11 +138,19 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
             if hasattr(train_stats, 'loss_kbrs_centeredness'):
                 writer.add_scalar("Loss/kbrs_centeredness", train_stats.loss_kbrs_centeredness.global_avg, epoch)
 
-        if isinstance(eval_stats, dict):
-            for k, v in eval_stats.items():
-                writer.add_scalar(f"Eval/{k}", v, epoch)
-            final_eval_stats = eval_stats
-
+        # Log evaluation stats
+        # The evaluate function returns a CocoEvaluator object, from which we can extract stats.
+        metric_dict = {}
+        if hasattr(eval_stats, 'coco_eval'):
+            stat_names = ['AP', 'AP50', 'AP75', 'APs', 'APm', 'APl', 'AR1', 'AR10', 'AR100', 'ARs', 'ARm', 'ARl']
+            for iou_type, coco_eval in eval_stats.coco_eval.items():
+                for i, name in enumerate(stat_names):
+                    metric_name = f"Eval/{iou_type}/{name}"
+                    metric_value = coco_eval.stats[i]
+                    metric_dict[metric_name] = metric_value
+                    writer.add_scalar(metric_name, metric_value, epoch)
+        final_eval_stats = metric_dict
+        
         # Save model checkpoint
         torch.save(model.state_dict(), os.path.join(save_dir, f"model_{epoch}.pth"))
 
@@ -168,14 +176,27 @@ def run_training(args):
     # SummaryWriter 로그 디렉토리 설정 후
     writer = SummaryWriter(log_dir=log_save_path)
 
-    # hparams 필터링
+    # hparams 필터링 및 loss_weights 추가
     raw_hparams = vars(args)
     hparams = {}
     for k, v in raw_hparams.items():
+        if k == 'loss_weight': # Skip the raw list of lists
+            continue
         if isinstance(v, (int, float, str, bool, torch.Tensor)):
             hparams[k] = v
         else:
             hparams[k] = str(v)
+    
+    # Add the processed loss weights to the hparams for logging
+    loss_weights = {}
+    if args.loss_weight:
+        for name, weight in args.loss_weight:
+            loss_weights[name] = float(weight)
+    hparams.update(loss_weights)
+
+    # hparams를 학습 시작과 함께 기록 (메트릭은 나중에 기록됨)
+    writer.add_hparams(hparams, {})
+
 
     # Define data roots
     input_root = os.path.join(args.data_root, "input/dst")
@@ -201,14 +222,8 @@ def run_training(args):
     num_classes = 2  # background + viewport
     
     kbrs_params = None
-    loss_weights = {}
-    if args.loss_weight:
-        for name, weight in args.loss_weight:
-            loss_weights[name] = float(weight)
-
     if args.use_kbrs:
-        # For backward compatibility, if --kbrs-loss-weight is used and loss_kbrs is not set by --loss-weight
-        if 'loss_kbrs' not in loss_weights and args.kbrs_loss_weight is not None:
+        if 'loss_kbrs' not in loss_weights and 'kbrs_loss_weight' in args and args.kbrs_loss_weight is not None:
             loss_weights['loss_kbrs'] = args.kbrs_loss_weight
 
         kbrs_params = {
@@ -232,10 +247,9 @@ def run_training(args):
     optimizer = torch.optim.SGD(params, lr=args.learning_rate, momentum=0.9, weight_decay=0.0005)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    final_metrics = train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path, writer, use_kbrs=args.use_kbrs)
+    train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path, writer, use_kbrs=args.use_kbrs)
 
-    # 최종 평가지표와 함께 hparams 기록
-    writer.add_hparams(hparams, final_metrics)
+    # 최종적으로 writer를 닫음
     writer.close()
 
 
@@ -259,7 +273,6 @@ def parse_arguments():
     
     # KBRS Specific
     parser.add_argument("--use-kbrs", action='store_true', help="Use KBRS loss during training")
-    # parser.add_argument("--kbrs-loss-weight", type=float, default=1.0, help="Weight for the KBRS loss component (deprecated, use --loss-weight instead)")
     parser.add_argument('--loss-weight', nargs=2, action='append', metavar=('LOSS_NAME', 'WEIGHT'),
                         help='Set a weight for a specific loss. Can be used multiple times. '
                              'Example: --loss-weight loss_rpn_box_reg 0.0 --loss-weight loss_kbrs 10.0')

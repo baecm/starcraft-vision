@@ -7,7 +7,7 @@ services:
     environment:
       - PYTHONPATH=/workspace/src
       - TORCH_HOME=/workspace/.torch_cache
-      - NVIDIA_VISIBLE_DEVICES=
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
     volumes:
       - ../data:/workspace/data
       - ../src:/workspace/src
