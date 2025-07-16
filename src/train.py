@@ -36,7 +36,7 @@ def make_loader(ds, batch_size, shuffle):
 def preprocess_json_to_pickle(label_root, label_method, replay_ids, verbose=True):
     def log(msg):
         if verbose:
-            Logger.info(f"[Preprocess] {msg}")
+            Logger.info(f"[Preprocess] {msg}") if 'Logger' in globals() else print(f"[Preprocess] {msg}")
 
     for rid in replay_ids:
         json_path = os.path.join(label_root, f"{rid}.rep", f"{label_method}.json")
@@ -53,38 +53,25 @@ def preprocess_json_to_pickle(label_root, label_method, replay_ids, verbose=True
             with open(json_path, "r", encoding="utf-8") as f:
                 coco = json.load(f)
 
-            image_dict = {int(img["id"]): img for img in coco.get("images", [])}
-            ann_dict = {}
-            for ann in coco.get("annotations", []):
-                image_id = int(ann["image_id"])
-                ann_dict.setdefault(image_id, []).append(ann)
-
-            # Ensure 'info', 'licenses', and 'categories' fields are present
-            if 'info' not in coco:
-                coco['info'] = {}
-            if 'licenses' not in coco:
-                coco['licenses'] = []
-            if 'categories' not in coco:
-                coco['categories'] = []
-
-            image_dict = {int(img["id"]): img for img in coco.get("images", [])}
-            ann_dict = {}
-            for ann in coco.get("annotations", []):
-                image_id = int(ann["image_id"])
-                ann_dict.setdefault(image_id, []).append(ann)
+            # 누락된 필드 자동 보완
+            coco.setdefault("info", {"description": "auto-generated", "version": "1.0"})
+            coco.setdefault("licenses", [])
+            coco.setdefault("categories", [{"id": 1, "name": "viewport"}])
+            coco.setdefault("images", [])
+            coco.setdefault("annotations", [])
 
             with open(pkl_path, "wb") as f:
                 pickle.dump({
-                    "images": image_dict,
-                    "annotations": ann_dict,
-                    "info": coco['info'],
-                    "licenses": coco['licenses'],
-                    "categories": coco['categories']
+                    "info": coco["info"],
+                    "licenses": coco["licenses"],
+                    "categories": coco["categories"],
+                    "images": coco["images"],
+                    "annotations": coco["annotations"],
                 }, f)
 
             log(f"{rid}: pickle created.")
         except Exception as e:
-            Logger.warn(f"{rid}: failed to process JSON: {e}")
+            log(f"{rid}: failed to process JSON: {e}")
 
 
 def load_data(input_root, label_root, label_method, window_size, batch_size, replay_ids=None, train_replays=None, test_replays=None, test_size=50, sample_ratio=1.0):
@@ -116,8 +103,8 @@ def load_data(input_root, label_root, label_method, window_size, batch_size, rep
         Logger.info(f"[Info] No train-replays provided; using all replays for train and test: {all_ids}")
 
     # Build datasets
-    train_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=train_ids, window_size=window_size)
-    test_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=test_ids, window_size=window_size)
+    train_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=train_ids, training=True, window_size=window_size)
+    test_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=test_ids, training=False, window_size=window_size)
     
     # Apply sample ratio
     if sample_ratio < 1.0:
@@ -125,8 +112,8 @@ def load_data(input_root, label_root, label_method, window_size, batch_size, rep
         n_test = len(test_dataset)
         train_idx = torch.randperm(n_train).tolist()[:int(n_train * sample_ratio)]
         test_idx = torch.randperm(n_test).tolist()[:int(n_test * sample_ratio)]
-        train_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=train_ids, window_size=window_size, indices=train_idx)
-        test_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=test_ids, window_size=window_size, indices=test_idx)
+        train_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=train_ids, training=True, window_size=window_size, indices=train_idx)
+        test_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=test_ids, training=False, window_size=window_size, indices=test_idx)
         Logger.info(f"[Info] Applied sampling: Train {len(train_dataset)}, Test {len(test_dataset)}")
 
     train_loader = make_loader(train_dataset, batch_size, shuffle=True)
@@ -172,7 +159,8 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
                     metric_name = f"Eval/{iou_type}/{name}"
                     metric_value = coco_eval.stats[i]
                     metric_dict[metric_name] = metric_value
-        
+        ## Log metric_dict using Logger
+        Logger.info(f"[Eval] Epoch {epoch}: {metric_dict}")
         log_dict.update(metric_dict)
         wandb.log(log_dict)
         
