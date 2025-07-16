@@ -59,8 +59,28 @@ def preprocess_json_to_pickle(label_root, label_method, replay_ids, verbose=True
                 image_id = int(ann["image_id"])
                 ann_dict.setdefault(image_id, []).append(ann)
 
+            # Ensure 'info', 'licenses', and 'categories' fields are present
+            if 'info' not in coco:
+                coco['info'] = {}
+            if 'licenses' not in coco:
+                coco['licenses'] = []
+            if 'categories' not in coco:
+                coco['categories'] = []
+
+            image_dict = {int(img["id"]): img for img in coco.get("images", [])}
+            ann_dict = {}
+            for ann in coco.get("annotations", []):
+                image_id = int(ann["image_id"])
+                ann_dict.setdefault(image_id, []).append(ann)
+
             with open(pkl_path, "wb") as f:
-                pickle.dump({"images": image_dict, "annotations": ann_dict}, f)
+                pickle.dump({
+                    "images": image_dict,
+                    "annotations": ann_dict,
+                    "info": coco['info'],
+                    "licenses": coco['licenses'],
+                    "categories": coco['categories']
+                }, f)
 
             log(f"{rid}: pickle created.")
         except Exception as e:
