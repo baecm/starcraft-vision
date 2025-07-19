@@ -8,33 +8,33 @@ define run_or_parallel
 	@REPLAY_COUNT=$(shell echo $(ARGS) | sed -n 's/.*--replays\([^"]*\).*/\1/p' | wc -w); \
 	if [ "$$REPLAY_COUNT" -le 1 ]; then \
 		echo "[Makefile] Running $(1) as single task"; \
-		docker compose -f infra/docker-compose.yml run --rm dispatcher $(1) $(ARGS) & \
+		nohup docker compose -f infra/docker-compose.yml run --rm dispatcher $(1) $(ARGS) > logs/$(1)_$$(date +%Y%m%d_%H%M%S).log 2>&1 & \
 		echo $$! > $(PID_DIR)/$(1).pid; \
 	else \
 		echo "[Makefile] Running $(1) in parallel"; \
-		bash scripts/preprocess_batch.sh $(1) $(ARGS) & \
+		nohup bash scripts/preprocess_batch.sh $(1) $(ARGS) > logs/$(1)_$$(date +%Y%m%d_%H%M%S).log 2>&1 & \
 		echo $$! > $(PID_DIR)/$(1).pid; \
 	fi
 endef
 
 build:
-	docker compose -f $(COMPOSE_FILE) build & \
+	nohup docker compose -f $(COMPOSE_FILE) build > logs/build_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
 	echo $$! > $(PID_DIR)/build.pid
 
 rebuild:
-	docker compose -f $(COMPOSE_FILE) build --no-cache & \
+	nohup docker compose -f $(COMPOSE_FILE) build --no-cache > logs/rebuild_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
 	echo $$! > $(PID_DIR)/rebuild.pid
 
 up:
-	docker compose -f $(COMPOSE_FILE) up -d & \
+	nohup docker compose -f $(COMPOSE_FILE) up -d > logs/up_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
 	echo $$! > $(PID_DIR)/up.pid
 
 down:
-	docker compose -f $(COMPOSE_FILE) down --remove-orphans & \
+	nohup docker compose -f $(COMPOSE_FILE) down --remove-orphans > logs/down_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
 	echo $$! > $(PID_DIR)/down.pid
 
 run:
-	docker compose -f $(COMPOSE_FILE) run --rm dispatcher $(CMD) $(ARGS) & \
+	nohup docker compose -f $(COMPOSE_FILE) run --rm dispatcher $(CMD) $(ARGS) > logs/run_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
 	echo $$! > $(PID_DIR)/run.pid
 
 train:
@@ -44,12 +44,12 @@ train:
 
 inference:
 	mkdir -p logs
-	script -q -f -c "make run CMD=inference ARGS='$(ARGS)'" logs/inference_$(shell date +%Y%m%d_%H%M%S).log & \
+	nohup script -q -f -c "make run CMD=inference ARGS='$(ARGS)'" logs/inference_$(shell date +%Y%m%d_%H%M%S).log > /dev/null 2>&1 &
 	echo $$! > $(PID_DIR)/inference.pid
 
 evaluate:
 	mkdir -p logs
-	script -q -f -c "make run CMD=evaluate ARGS='$(ARGS)'" logs/evaluate_$(shell date +%Y%m%d_%H%M%S).log & \
+	nohup script -q -f -c "make run CMD=evaluate ARGS='$(ARGS)'" logs/evaluate_$(shell date +%Y%m%d_%H%M%S).log > /dev/null 2>&1 &
 	echo $$! > $(PID_DIR)/evaluate.pid
 
 # Entry points
