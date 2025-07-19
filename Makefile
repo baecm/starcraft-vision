@@ -1,64 +1,73 @@
 COMPOSE_FILE=infra/docker-compose.yml
 PID_DIR=pids
 
-# PID 디렉토리 생성
+# 디렉토리 생성
 $(shell mkdir -p $(PID_DIR))
 $(shell mkdir -p logs)
 
 define run_or_parallel
 	@REPLAY_COUNT=$(shell echo $(ARGS) | sed -n 's/.*--replays\([^"]*\).*/\1/p' | wc -w); \
+	CONTAINER_NAME=$(1)_$$(date +%Y%m%d_%H%M%S); \
 	if [ "$$REPLAY_COUNT" -le 1 ]; then \
 		echo "[Makefile] Running $(1) as single task"; \
-		nohup docker compose -f infra/docker-compose.yml run --rm dispatcher $(1) $(ARGS) \
-			> logs/$(1)_$$(date +%Y%m%d_%H%M%S).log 2>&1 & \
-		echo $$! > $(PID_DIR)/$(1).pid; \
+		nohup docker compose -f infra/docker-compose.yml run --name $$CONTAINER_NAME --rm dispatcher $(1) $(ARGS) \
+			> logs/$$CONTAINER_NAME.log 2>&1 & \
+		echo $$CONTAINER_NAME > $(PID_DIR)/$(1).cid; \
 	else \
 		echo "[Makefile] Running $(1) in parallel"; \
 		nohup bash scripts/preprocess_batch.sh $(1) $(ARGS) \
-			> logs/$(1)_$$(date +%Y%m%d_%H%M%S).log 2>&1 & \
-		echo $$! > $(PID_DIR)/$(1).pid; \
+			> logs/$$CONTAINER_NAME.log 2>&1 & \
+		echo $$CONTAINER_NAME > $(PID_DIR)/$(1).cid; \
 	fi
 endef
 
 build:
+	CONTAINER_NAME=build_$(shell date +%Y%m%d_%H%M%S); \
 	nohup docker compose -f $(COMPOSE_FILE) build \
-		> logs/build_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
-	echo $$! > $(PID_DIR)/build.pid
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/build.cid
 
 rebuild:
+	CONTAINER_NAME=rebuild_$(shell date +%Y%m%d_%H%M%S); \
 	nohup docker compose -f $(COMPOSE_FILE) build --no-cache \
-		> logs/rebuild_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
-	echo $$! > $(PID_DIR)/rebuild.pid
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/rebuild.cid
 
 up:
+	CONTAINER_NAME=up_$(shell date +%Y%m%d_%H%M%S); \
 	nohup docker compose -f $(COMPOSE_FILE) up -d \
-		> logs/up_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
-	echo $$! > $(PID_DIR)/up.pid
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/up.cid
 
 down:
+	CONTAINER_NAME=down_$(shell date +%Y%m%d_%H%M%S); \
 	nohup docker compose -f $(COMPOSE_FILE) down --remove-orphans \
-		> logs/down_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
-	echo $$! > $(PID_DIR)/down.pid
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/down.cid
 
 run:
-	nohup docker compose -f $(COMPOSE_FILE) run --rm dispatcher $(CMD) $(ARGS) \
-		> logs/run_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
-	echo $$! > $(PID_DIR)/run.pid
+	CONTAINER_NAME=run_$(shell date +%Y%m%d_%H%M%S); \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher $(CMD) $(ARGS) \
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/run.cid
 
 train:
-	nohup docker compose -f $(COMPOSE_FILE) run --rm dispatcher train $(ARGS) \
-		> logs/train_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
-	echo $$! > $(PID_DIR)/train.pid
+	CONTAINER_NAME=train_$(shell date +%Y%m%d_%H%M%S); \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher train $(ARGS) \
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/train.cid
 
 inference:
-	nohup docker compose -f $(COMPOSE_FILE) run --rm dispatcher inference $(ARGS) \
-		> logs/inference_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
-	echo $$! > $(PID_DIR)/inference.pid
+	CONTAINER_NAME=inference_$(shell date +%Y%m%d_%H%M%S); \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher inference $(ARGS) \
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/inference.cid
 
 evaluate:
-	nohup docker compose -f $(COMPOSE_FILE) run --rm dispatcher evaluate $(ARGS) \
-		> logs/evaluate_$(shell date +%Y%m%d_%H%M%S).log 2>&1 &
-	echo $$! > $(PID_DIR)/evaluate.pid
+	CONTAINER_NAME=evaluate_$(shell date +%Y%m%d_%H%M%S); \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher evaluate $(ARGS) \
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/evaluate.cid
 
 # Entry points
 preprocess_input:
@@ -70,14 +79,31 @@ preprocess_label:
 preprocess_pair:
 	$(call run_or_parallel,preprocess_pair)
 
-# PID 관리용 타겟
+# 상태 확인
 status:
-	@echo "Running PIDs:"; \
+	@echo "Running container IDs:"; \
 	ls $(PID_DIR) | xargs -I {} sh -c 'echo "{} -> $$(cat $(PID_DIR)/{})"'
 
+# 종료 명령
+stop-train:
+	-@docker stop $$(cat $(PID_DIR)/train.cid) 2>/dev/null || true
+	@rm -f $(PID_DIR)/train.cid
+
+stop-inference:
+	-@docker stop $$(cat $(PID_DIR)/inference.cid) 2>/dev/null || true
+	@rm -f $(PID_DIR)/inference.cid
+
+stop-evaluate:
+	-@docker stop $$(cat $(PID_DIR)/evaluate.cid) 2>/dev/null || true
+	@rm -f $(PID_DIR)/evaluate.cid
+
+stop-run:
+	-@docker stop $$(cat $(PID_DIR)/run.cid) 2>/dev/null || true
+	@rm -f $(PID_DIR)/run.cid
+
 stop:
-	@echo "Stopping all tasks..."; \
-	for pidfile in $(PID_DIR)/*.pid; do \
-		kill $$(cat $$pidfile) 2>/dev/null || true; \
-		rm -f $$pidfile; \
+	@echo "Stopping all tracked containers..."
+	@for cidfile in $(PID_DIR)/*.cid; do \
+		[ -f $$cidfile ] && docker stop $$(cat $$cidfile) 2>/dev/null || true; \
+		rm -f $$cidfile; \
 	done
