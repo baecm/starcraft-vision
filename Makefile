@@ -39,7 +39,7 @@ run:
 
 train:
 	mkdir -p logs
-	script -q -f -c "make run CMD=train ARGS='$(ARGS)'" logs/train_$(shell date +%Y%m%d_%H%M%S).log & \
+	nohup script -q -f -c "make run CMD=train ARGS='$(ARGS)'" logs/train_$(shell date +%Y%m%d_%H%M%S).log > /dev/null 2>&1 &
 	echo $$! > $(PID_DIR)/train.pid
 
 inference:
