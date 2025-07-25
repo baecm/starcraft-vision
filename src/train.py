@@ -8,6 +8,7 @@ import json
 import pickle
 import wandb
 from ultralytics import settings
+from torch.utils.data import Subset
 
 import detection.transforms as T
 import config
@@ -74,7 +75,7 @@ def preprocess_json_to_pickle(label_root, label_method, replay_ids, verbose=True
             log(f"{rid}: failed to process JSON: {e}")
 
 
-def load_data(input_root, label_root, label_method, window_size, batch_size, replay_ids=None, train_replays=None, test_replays=None, test_size=50, sample_ratio=1.0):
+def load_data(input_root, label_root, label_method, window_size, batch_size, replay_ids=None, train_replays=None, test_replays=None, test_size=50, sample_ratio=1.0, include_components=None):
     Logger.info("[Stage] Loading data...")
     Logger.info(f"[Info] Input root: {input_root}")
     Logger.info(f"[Info] Label root: {label_root}, method: {label_method}")
@@ -103,18 +104,21 @@ def load_data(input_root, label_root, label_method, window_size, batch_size, rep
         Logger.info(f"[Info] No train-replays provided; using all replays for train and test: {all_ids}")
 
     # Build datasets
-    train_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=train_ids, training=True, window_size=window_size)
-    test_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=test_ids, training=False, window_size=window_size)
+    train_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=train_ids, training=True, window_size=window_size, include_components=include_components)
+    test_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=test_ids, training=False, window_size=window_size, include_components=include_components)
+    Logger.info(f"[Info] Full dataset size: Train {len(train_dataset)}, Test {len(test_dataset)}")
     
-    # Apply sample ratio
+    # Apply sample ratio using torch.utils.data.Subset to avoid re-creating datasets
     if sample_ratio < 1.0:
         n_train = len(train_dataset)
-        n_test = len(test_dataset)
         train_idx = torch.randperm(n_train).tolist()[:int(n_train * sample_ratio)]
+        train_dataset = Subset(train_dataset, train_idx)
+        
+        n_test = len(test_dataset)
         test_idx = torch.randperm(n_test).tolist()[:int(n_test * sample_ratio)]
-        train_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=train_ids, training=True, window_size=window_size, indices=train_idx)
-        test_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=test_ids, training=False, window_size=window_size, indices=test_idx)
-        Logger.info(f"[Info] Applied sampling: Train {len(train_dataset)}, Test {len(test_dataset)}")
+        test_dataset = Subset(test_dataset, test_idx)
+        
+        Logger.info(f"[Info] Applied sampling (ratio={sample_ratio}): Train {len(train_dataset)}, Test {len(test_dataset)}")
 
     train_loader = make_loader(train_dataset, batch_size, shuffle=True)
     test_loader = make_loader(test_dataset, batch_size=1, shuffle=False)
@@ -210,7 +214,8 @@ def run_training(args):
         replay_ids=args.replays,
         train_replays=args.train_replays,
         test_replays=args.test_replays,
-        sample_ratio=args.sample_ratio
+        sample_ratio=args.sample_ratio,
+        include_components=args.include_components
     )
 
     Logger.info("[Stage] Initializing model...")
@@ -233,9 +238,13 @@ def run_training(args):
             'top_k_ratio': 0.5  # Use top 50% of GT boxes based on K-BRS score
         }
 
+    train_ds = data_loader_train.dataset
+    in_channels = len(train_ds.dataset.channel_indices if isinstance(train_ds, Subset) else train_ds.channel_indices)
+    
     model = get_model_instance_segmentation(
         num_classes,
         window_size=args.window_size,
+        in_channels=in_channels,
         do_normalize=False,
         use_kbrs=args.use_kbrs,
         kbrs_params=kbrs_params,
@@ -254,34 +263,37 @@ def run_training(args):
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(
-        description="Minimal argument parser for Mask R-CNN training"
-    )
+    parser = argparse.ArgumentParser(description="Minimal argument parser for Mask R-CNN training")
+    
     # Data and Labeling
-    parser.add_argument("--replays", type=str, nargs="+", required=True, help="List of replay IDs to include in dataset")
-    parser.add_argument("--train-replays", type=str, nargs="+", default=None, help="Subset of replay IDs to use for training")
-    parser.add_argument("--test-replays", type=str, nargs="+", default=None, help="Subset of replay IDs to use for testing")
-    parser.add_argument("--label-method", type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS, help="Label extraction method (folder name)")
-    parser.add_argument("--sample-ratio", type=float, default=1.0, help="Fraction of dataset to sample")
-    parser.add_argument("--data-root", type=str, default=os.path.join(os.getcwd(), "data"))
+    group_data = parser.add_argument_group("Data and Labeling")
+    group_data.add_argument("--replays", type=str, nargs="+", required=True, help="List of replay IDs to include in dataset.")
+    group_data.add_argument("--train-replays", type=str, nargs="+", default=None, help="Subset of replay IDs to use for training.")
+    group_data.add_argument("--test-replays", type=str, nargs="+", default=None, help="Subset of replay IDs to use for testing.")
+    group_data.add_argument("--label-method", type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS, help="Label extraction method (folder name).")
+    group_data.add_argument("--sample-ratio", type=float, default=1.0, help="Fraction of dataset to sample.")
+    group_data.add_argument("--data-root", type=str, default=os.path.join(os.getcwd(), "data"), help="Root directory for data.")
+    group_data.add_argument("--include-components", type=str, nargs='+', default=['worker', 'ground', 'air', 'building', 'vision'], help="List of components to include.")
 
     # Model Hyperparameters
-    parser.add_argument("--window-size", type=int, default=1)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--learning-rate", type=float, default=0.0001)
-    parser.add_argument("--max-epoch", type=int, default=100)
+    group_hyper = parser.add_argument_group("Model Hyperparameters")
+    group_hyper.add_argument("--window-size", type=int, default=config.WINDOW_SIZE, help="Window size for input features.")
+    group_hyper.add_argument("--batch-size", type=int, default=config.TRAIN_BATCH_SIZE, help="Batch size for training.")
+    group_hyper.add_argument("--learning-rate", type=float, default=config.TRAIN_LEARNING_RATE, help="Initial learning rate.")
+    group_hyper.add_argument("--max-epoch", type=int, default=config.TRAIN_EPOCHS, help="Maximum number of training epochs.")
     
     # KBRS Specific
-    parser.add_argument("--use-kbrs", action='store_true', help="Use KBRS loss during training")
-    parser.add_argument('--loss-weight', nargs=2, action='append', metavar=('LOSS_NAME', 'WEIGHT'),
-                        help='Set a weight for a specific loss. Can be used multiple times. '
-                             'Example: --loss-weight loss_rpn_box_reg 0.0 --loss-weight loss_kbrs 10.0')
+    group_kbrs = parser.add_argument_group("KBRS Specific")
+    group_kbrs.add_argument("--use-kbrs", action='store_true', help="Use KBRS loss during training.")
+    group_kbrs.add_argument('--loss-weight', nargs=2, action='append', metavar=('LOSS_NAME', 'WEIGHT'), help='Set a weight for a specific loss. Can be used multiple times.')
 
     # Environment and Logging
-    parser.add_argument("--cuda", action='store_true', default=True)
-    parser.add_argument("--id-string", type=str, default="")
-    parser.add_argument("--log-level", type=str, default="log", choices=["none", "log", "debug"], help="Logging level")
-    parser.add_argument("--log-root", type=str, default=os.path.join(os.getcwd(), "models"))
+    group_env = parser.add_argument_group("Environment and Logging")
+    group_env.add_argument("--cuda", action='store_true', default=True, help="Enable CUDA training.")
+    group_env.add_argument("--id-string", type=str, default="", help="Identifier string for the training run.")
+    group_env.add_argument("--log-level", type=str, default="log", choices=["none", "log", "debug"], help="Logging level.")
+    group_env.add_argument("--log-root", type=str, default=os.path.join(os.getcwd(), "models"), help="Root directory for saving models and logs.")
+    
     return parser.parse_args()
 
 

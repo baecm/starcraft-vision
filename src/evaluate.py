@@ -24,45 +24,27 @@ def parse_arguments():
     data_root = os.path.join(project_root, 'data')
     model_root = os.path.join(project_root, 'models')
 
-    parser = argparse.ArgumentParser(
-        description="Evaluate predicted viewports against human annotations."
-    )
-    parser.add_argument(
-        '--set', type=str, required=True, choices=SET_REPLAYS.keys(),
-        help="Select which set to evaluate (set_0, set_1, set_2)"
-    )
-    parser.add_argument(
-        '--label-method', type=str, required=True, choices=config.LABEL_METHODS,
-        help="Label extraction method (subfolder inside each .rep directory)"
-    )
-    parser.add_argument(
-        '--window-size', type=int, default=1,
-        help="Window size used during training (for model folder prefix)"
-    )
-    parser.add_argument(
-        '--batch-size', type=int, default=32,
-        help="Batch size used during training (for model folder prefix)"
-    )
-    parser.add_argument(
-        '--model-number', type=int, default=0,
-        help="Checkpoint number to evaluate (logging only)"
-    )
-    parser.add_argument(
-        '--data-root', type=str, default=data_root,
-        help="Root directory for data (must contain 'label' subdir)"
-    )
-    parser.add_argument(
-        '--model-root', type=str, default=model_root,
-        help="Root directory for model checkpoints"
-    )
-    parser.add_argument(
-        '--partial-length', type=float, default=1.0,
-        help="Fraction of each replay to evaluate (0.0 - 1.0)"
-    )
-    parser.add_argument(
-        '--out-csv', type=str, default='./temp.csv',
-        help="Path to output CSV file"
-    )
+    parser = argparse.ArgumentParser(description="Evaluate predicted viewports against human annotations.")
+
+    # Data and Model Specification
+    group_spec = parser.add_argument_group("Data and Model Specification")
+    group_spec.add_argument('--set', type=str, required=True, choices=SET_REPLAYS.keys(), help="Select which replay set to evaluate (e.g., set_0, set_1).")
+    group_spec.add_argument('--label-method', type=str, required=True, choices=config.LABEL_METHODS, help="Label extraction method.")
+    group_spec.add_argument('--data-root', type=str, default=data_root, help="Root directory for data (must contain 'label' subdir).")
+    group_spec.add_argument('--model-root', type=str, default=model_root, help="Root directory for model checkpoints.")
+    group_spec.add_argument("--include-components", type=str, nargs='+', default=['worker', 'ground', 'air', 'building', 'vision'], help="List of components to include.")
+
+    # Model Hyperparameters (for finding the folder)
+    group_hyper = parser.add_argument_group("Model Hyperparameters")
+    group_hyper.add_argument('--window-size', type=int, default=1, help="Window size used during training.")
+    group_hyper.add_argument('--batch-size', type=int, default=32, help="Batch size used during training.")
+    group_hyper.add_argument('--model-number', type=int, default=0, help="Checkpoint number to evaluate (for logging only).")
+
+    # Evaluation Settings
+    group_eval = parser.add_argument_group("Evaluation Settings")
+    group_eval.add_argument('--partial-length', type=float, default=1.0, help="Fraction of each replay to evaluate (0.0 - 1.0).")
+    group_eval.add_argument('--out-csv', type=str, default='./temp.csv', help="Path to output CSV file for results.")
+
     return parser.parse_args()
 
 

@@ -3,6 +3,7 @@
 
 # Preprocess input
 make preprocess_input ARGS="--replays 36 212 438 522 1660 --include-components worker ground air building vision"
+make preprocess_input ARGS="--replays 212 --include-components worker ground air building vision neutral resource terrain"
 
 # Preprocess label
 make preprocess_label ARGS="--replays 36 212 438 522 1660 --method all_correct"
@@ -19,6 +20,9 @@ make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-
 make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-epoch 15 --batch-size 8 --learning-rate 0.005 --sample-ratio 1.0 --log-level log"
 make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-epoch 15 --batch-size 8 --learning-rate 0.005 --sample-ratio 1.0 --log-level log --use-kbrs"
 make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-epoch 15 --batch-size 8 --learning-rate 0.005 --sample-ratio 0.0001 --log-level log --use-kbrs"
+
+make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-epoch 1 --batch-size 8 --sample-ratio 0.01 --log-level log"
+
 
 
 # Evaluate model
@@ -42,7 +46,8 @@ make evaluate ARGS=" \
 # Inference
 make inference ARGS=" \
   --replays 36 212 438 522 1660 \
-  --model-name all_correct_win1_b8_20250530_053044 \
+  --include-components worker ground air building vision \
+  --model-name completed/all_correct_win1_b16_20250721_034619 \
   --model-number 4 \
   --label-method all_correct \
   --batch-size 8 \

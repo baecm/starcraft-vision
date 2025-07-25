@@ -71,13 +71,13 @@ evaluate:
 
 # Entry points
 preprocess_input:
-	$(call run_or_parallel,preprocess_input)
+	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_input $(ARGS)
 
 preprocess_label:
-	$(call run_or_parallel,preprocess_label)
+	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_label $(ARGS)
 
 preprocess_pair:
-	$(call run_or_parallel,preprocess_pair)
+	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_pair $(ARGS)
 
 # 상태 확인
 status:

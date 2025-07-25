@@ -182,8 +182,9 @@ class KBRS_MaskRCNN(MaskRCNN):
         return losses
 
 
-def get_model_instance_segmentation(num_classes: int, window_size: int, do_normalize=False, use_kbrs=False, kbrs_params=None, loss_weights=None):
-    in_channels = 9 * window_size
+def get_model_instance_segmentation(num_classes: int, window_size: int = 1, in_channels: int = None, do_normalize=False, use_kbrs=False, kbrs_params=None, loss_weights=None):
+    if in_channels is None:
+        in_channels = 9 * window_size
     
     if use_kbrs:
         if kbrs_params is None:

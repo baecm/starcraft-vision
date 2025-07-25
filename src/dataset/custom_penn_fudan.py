@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from .penn_fudan import PennFudanDataset as BasePennFudanDataset
 from utils.logger import Logger
+import config
 
 
 def natural_sort_key(s):
@@ -13,11 +14,16 @@ def natural_sort_key(s):
 
 
 class CustomPennFudanDataset(BasePennFudanDataset):
-    def __init__(self, input_root: str, label_root: str, label_method: str, training_ids: list, window_size: int = 1, indices: list = None, training: bool = True, verbose: bool = True):
+    def __init__(self, input_root: str, label_root: str, label_method: str, training_ids: list, window_size: int = 1, indices: list = None, training: bool = True, verbose: bool = True, include_components: list = None):
         self.training = training
         self.verbose = verbose
         self.files = []  # (rid, image_id, npy_path, image_dict, ann_dict)
         self.window_size = window_size
+
+        if include_components:
+            self.channel_indices = sorted(sum([config.COMPONENT_CHANNEL_MAP[c] for c in include_components], []))
+        else:
+            self.channel_indices = list(range(len(config.Channel)))
 
         for rid in map(str, training_ids):
             input_dir = os.path.join(input_root, f"{rid}.rep")
@@ -57,6 +63,9 @@ class CustomPennFudanDataset(BasePennFudanDataset):
 
         if self.verbose:
             Logger.info(f"Total samples: {len(self.files)}")
+            value_to_name_map = {member.value: name for name, member in config.Channel.__members__.items()}
+            channel_names = [value_to_name_map[i] for i in self.channel_indices]
+            Logger.info(f"Using {len(self.channel_indices)} channels: {channel_names}")
 
 
     def __len__(self):
@@ -69,6 +78,7 @@ class CustomPennFudanDataset(BasePennFudanDataset):
             raise FileNotFoundError(f"[CustomDataset] Missing input file: {npy_path}")
 
         arr = np.load(npy_path)
+        arr = arr[self.channel_indices]
         if arr.ndim != 3:
             raise ValueError(f"[CustomDataset] Unexpected input shape: {arr.shape} at {npy_path}")
         if not np.isfinite(arr).all():
@@ -76,7 +86,7 @@ class CustomPennFudanDataset(BasePennFudanDataset):
         if np.abs(arr).max() > 1e5:
             Logger.warn(f"[CustomDataset] Unusually large input values in {npy_path}: max={np.abs(arr).max()}")
 
-        input_tensor = torch.from_numpy(arr).float()  # (9, H, W)
+        input_tensor = torch.from_numpy(arr).float()  # (C, H, W)
         H, W = arr.shape[1], arr.shape[2]
 
         if not self.training:
