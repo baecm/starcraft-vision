@@ -22,28 +22,16 @@ define run_or_parallel
 endef
 
 build:
-	CONTAINER_NAME=build_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) build \
-		> logs/$$CONTAINER_NAME.log 2>&1 & \
-	echo $$CONTAINER_NAME > $(PID_DIR)/build.cid
+	docker compose -f $(COMPOSE_FILE) build
 
 rebuild:
-	CONTAINER_NAME=rebuild_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) build --no-cache \
-		> logs/$$CONTAINER_NAME.log 2>&1 & \
-	echo $$CONTAINER_NAME > $(PID_DIR)/rebuild.cid
+	docker compose -f $(COMPOSE_FILE) build --no-cache
 
 up:
-	CONTAINER_NAME=up_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) up -d \
-		> logs/$$CONTAINER_NAME.log 2>&1 & \
-	echo $$CONTAINER_NAME > $(PID_DIR)/up.cid
+	docker compose -f $(COMPOSE_FILE) up -d
 
 down:
-	CONTAINER_NAME=down_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) down --remove-orphans \
-		> logs/$$CONTAINER_NAME.log 2>&1 & \
-	echo $$CONTAINER_NAME > $(PID_DIR)/down.cid
+	docker compose -f $(COMPOSE_FILE) down --remove-orphans
 
 run:
 	CONTAINER_NAME=run_$(shell date +%Y%m%d_%H%M%S); \
