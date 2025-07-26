@@ -16,6 +16,7 @@ from detection.engine import train_one_epoch, evaluate
 from dataset.custom_penn_fudan import CustomPennFudanDataset
 from model.maskrcnn_builder import get_model_instance_segmentation
 from utils.logger import Logger
+from utils.synology_chat import send_message
 
 
 def get_transform(train):
@@ -258,8 +259,9 @@ def run_training(args):
 
     train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path, use_kbrs=args.use_kbrs)
 
-    # Finish wandb run
+    # Finish wandb run and send success notification
     wandb.finish()
+    send_message(f"✅ Training run '{args.id_string}' completed successfully.")
 
 
 def parse_arguments():
@@ -298,7 +300,21 @@ def parse_arguments():
 
 
 if __name__ == "__main__":
-    Logger.info("[Entry] Starting training script...")
     args = parse_arguments()
     Logger.set_level(args.log_level)
-    run_training(args)
+    
+    try:
+        Logger.info("[Entry] Starting training script...")
+        run_training(args)
+    except Exception as e:
+        # Ensure the id_string is available for the message
+        if not args.id_string:
+            id_str = f"{args.label_method}_win{args.window_size}_b{args.batch_size}"
+            if args.use_kbrs:
+                id_str += "_kbrs"
+            args.id_string = id_str
+            
+        error_message = f"❌ Training run '{args.id_string}' failed with an error: {e}"
+        Logger.error(error_message)
+        send_message(error_message)
+        raise  # Re-raise the exception after sending the notification
