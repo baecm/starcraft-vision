@@ -57,6 +57,11 @@ evaluate:
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/evaluate.cid
 
+debug:
+	CONTAINER_NAME=debug_$(shell date +%Y%m%d_%H%M%S); \
+	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher debug $(ARGS); \
+	echo $$CONTAINER_NAME > $(PID_DIR)/debug.cid
+
 # Entry points
 preprocess_input:
 	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_input $(ARGS)
