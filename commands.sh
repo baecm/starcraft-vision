@@ -13,17 +13,15 @@
 make preprocess_input ARGS="--replays 36 212 438 522 1660 --include-components worker ground air building vision neutral resource terrain"
 make preprocess_input ARGS="--replays 1559 1628 2351 6219 11251 --include-components worker ground air building vision neutral resource terrain"
 make preprocess_input ARGS="--replays 275 1725 3613 4520 4664 --include-components worker ground air building vision neutral resource terrain"
-# make preprocess_input ARGS="--replays 6254 --include-components worker ground air building vision neutral resource terrain"
-# make preprocess_input ARGS="--replays 3529 3972 7191 7950 7970 9105 9301 9795 --include-components worker ground air building vision neutral resource terrain"
-make preprocess_input ARGS="--replays 6254 3529 3972 7191 7950 7970 9105 9301 9795 --include-components worker ground air building vision neutral resource terrain"
+make preprocess_input ARGS="--replays 6254 3529 3972 7191 7950 --include-components worker ground air building vision neutral resource terrain"
+make preprocess_input ARGS="--replays 7970 9105 9301 9795 --include-components worker ground air building vision neutral resource terrain"
 
 # Preprocess label
 make preprocess_label ARGS="--replays 36 212 438 522 1660 --method all_correct"
 make preprocess_label ARGS="--replays 1559 1628 2351 6219 11251 --method all_correct"
 make preprocess_label ARGS="--replays 275 1725 3613 4520 4664 --method all_correct"
-# make preprocess_label ARGS="--replays 6254 --method all_correct"
-# make preprocess_label ARGS="--replays 3529 3972 7191 7950 7970 9105 9301 9795 --method all_correct"
-make preprocess_label ARGS="--replays 6254 3529 3972 7191 7950 7970 9105 9301 9795 --method all_correct"
+make preprocess_label ARGS="--replays 6254 3529 3972 7191 7950 --method all_correct"
+make preprocess_label ARGS="--replays 7970 9105 9301 9795 --method all_correct"
 
 # Preprocess pair
 # make preprocess_pair ARGS="--replays 36 212 438 522 1660 --method legacy --output channel"
