@@ -64,7 +64,9 @@ debug:
 
 # Entry points
 preprocess_input:
-	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_input $(ARGS)
+# 	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_input $(ARGS)
+	$(call run_or_parallel,preprocess_input)
+
 
 preprocess_label:
 	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_label $(ARGS)
