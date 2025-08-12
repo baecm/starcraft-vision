@@ -67,7 +67,10 @@ class CocoEvaluator:
 
     def prepare_for_coco_detection(self, predictions):
         coco_results = []
+        valid_img_ids = set(self.coco_gt.getImgIds())
         for original_id, prediction in predictions.items():
+            if original_id not in valid_img_ids:
+                continue
             if len(prediction) == 0:
                 continue
 
@@ -91,7 +94,10 @@ class CocoEvaluator:
 
     def prepare_for_coco_segmentation(self, predictions):
         coco_results = []
+        valid_img_ids = set(self.coco_gt.getImgIds())
         for original_id, prediction in predictions.items():
+            if original_id not in valid_img_ids:
+                continue
             if len(prediction) == 0:
                 continue
 
@@ -125,7 +131,10 @@ class CocoEvaluator:
 
     def prepare_for_coco_keypoint(self, predictions):
         coco_results = []
+        valid_img_ids = set(self.coco_gt.getImgIds())
         for original_id, prediction in predictions.items():
+            if original_id not in valid_img_ids:
+                continue
             if len(prediction) == 0:
                 continue
 

@@ -99,7 +99,7 @@ class KBRS_MaskRCNN(MaskRCNN):
     def compute_kbrs_loss(self, features, targets, image_sizes):
         num_boxes_per_image = [t['boxes'].shape[0] for t in targets]
         if all(n == 0 for n in num_boxes_per_image):
-            Logger.debug("All images in this batch have 0 boxes. kbrs_loss will be 0.")
+            print("All images in this batch have 0 boxes. kbrs_loss will be 0.")
 
         if self.feature_map_name not in features:
             raise ValueError(f"Feature map '{self.feature_map_name}' not found. Available: {list(features.keys())}")
@@ -185,6 +185,8 @@ class KBRS_MaskRCNN(MaskRCNN):
 def get_model_instance_segmentation(num_classes: int, window_size: int = 1, in_channels: int = None, do_normalize=False, use_kbrs=False, kbrs_params=None, loss_weights=None):
     if in_channels is None:
         in_channels = 9 * window_size
+    print(f"Using {in_channels} input channels (window size: {window_size})")
+    
     
     if use_kbrs:
         if kbrs_params is None:

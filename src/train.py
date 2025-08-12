@@ -7,6 +7,7 @@ import utils
 import json
 import pickle
 import wandb
+from multiprocessing import Pool
 from ultralytics import settings
 from torch.utils.data import Subset
 
@@ -26,57 +27,76 @@ def get_transform(train):
     return T.Compose(transforms)
 
 
-def make_loader(ds, batch_size, shuffle):
+def make_loader(ds, batch_size, shuffle, num_workers):
     return torch.utils.data.DataLoader(
         ds,
         batch_size=batch_size,
         shuffle=shuffle,
-        num_workers=4,
+        num_workers=num_workers,
         collate_fn=utils.collate_fn
     )
 
-def preprocess_json_to_pickle(label_root, label_method, replay_ids, verbose=True):
+def _process_json_worker(args):
+    """Helper function for parallel JSON processing."""
+    rid, label_root, label_method = args
+    json_path = os.path.join(label_root, f"{rid}.rep", f"{label_method}.json")
+    pkl_path = os.path.join(label_root, f"{rid}.rep", f"{label_method}.pkl")
+
+    if not os.path.exists(json_path):
+        return f"Skipped {rid}: no JSON found."
+    if os.path.exists(pkl_path):
+        return f"Skipped {rid}: pickle already exists."
+
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            coco = json.load(f)
+
+        coco.setdefault("info", {"description": "auto-generated", "version": "1.0"})
+        coco.setdefault("licenses", [])
+        coco.setdefault("categories", [{"id": 1, "name": "viewport"}])
+        coco.setdefault("images", [])
+        coco.setdefault("annotations", [])
+
+        with open(pkl_path, "wb") as f:
+            pickle.dump({
+                "info": coco["info"],
+                "licenses": coco["licenses"],
+                "categories": coco["categories"],
+                "images": coco["images"],
+                "annotations": coco["annotations"],
+            }, f)
+        return f"Success {rid}: pickle created."
+    except Exception as e:
+        return f"Failed {rid}: {e}"
+
+
+def preprocess_json_to_pickle(label_root, label_method, replay_ids, num_workers, verbose=True):
     def log(msg):
         if verbose:
             Logger.info(f"[Preprocess] {msg}") if 'Logger' in globals() else print(f"[Preprocess] {msg}")
 
-    for rid in replay_ids:
-        json_path = os.path.join(label_root, f"{rid}.rep", f"{label_method}.json")
-        pkl_path  = os.path.join(label_root, f"{rid}.rep", f"{label_method}.pkl")
+    log(f"Starting JSON to Pickle conversion for {len(replay_ids)} replays using {num_workers} workers.")
+    
+    tasks = [(rid, label_root, label_method) for rid in replay_ids]
+    
+    with Pool(processes=num_workers) as pool:
+        results = list(tqdm.tqdm(pool.imap_unordered(_process_json_worker, tasks), total=len(tasks), desc="Preprocessing JSON to Pickle"))
 
-        if not os.path.exists(json_path):
-            log(f"Skipping {rid}: no JSON found.")
-            continue
-        if os.path.exists(pkl_path):
-            log(f"{rid}: pickle already exists.")
-            continue
+    # Optional: Log summary
+    success_count = sum(1 for r in results if r.startswith("Success"))
+    skipped_exist_count = sum(1 for r in results if "pickle already exists" in r)
+    skipped_no_json_count = sum(1 for r in results if "no JSON found" in r)
+    failed_count = sum(1 for r in results if r.startswith("Failed"))
 
-        try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                coco = json.load(f)
-
-            # 누락된 필드 자동 보완
-            coco.setdefault("info", {"description": "auto-generated", "version": "1.0"})
-            coco.setdefault("licenses", [])
-            coco.setdefault("categories", [{"id": 1, "name": "viewport"}])
-            coco.setdefault("images", [])
-            coco.setdefault("annotations", [])
-
-            with open(pkl_path, "wb") as f:
-                pickle.dump({
-                    "info": coco["info"],
-                    "licenses": coco["licenses"],
-                    "categories": coco["categories"],
-                    "images": coco["images"],
-                    "annotations": coco["annotations"],
-                }, f)
-
-            log(f"{rid}: pickle created.")
-        except Exception as e:
-            log(f"{rid}: failed to process JSON: {e}")
+    log(f"Preprocessing complete. Success: {success_count}, Skipped (existing): {skipped_exist_count}, Skipped (no JSON): {skipped_no_json_count}, Failed: {failed_count}")
+    
+    if failed_count > 0:
+        for r in results:
+            if r.startswith("Failed"):
+                log(r)
 
 
-def load_data(input_root, label_root, label_method, window_size, batch_size, replay_ids=None, train_replays=None, test_replays=None, test_size=50, sample_ratio=1.0, include_components=None):
+def load_data(input_root, label_root, label_method, window_size, batch_size, num_workers, replay_ids=None, train_replays=None, test_replays=None, test_size=50, sample_ratio=1.0, test_sample_ratio=1.0, include_components=None):
     Logger.info("[Stage] Loading data...")
     Logger.info(f"[Info] Input root: {input_root}")
     Logger.info(f"[Info] Label root: {label_root}, method: {label_method}")
@@ -108,21 +128,30 @@ def load_data(input_root, label_root, label_method, window_size, batch_size, rep
     train_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=train_ids, training=True, window_size=window_size, include_components=include_components)
     test_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=test_ids, training=False, window_size=window_size, include_components=include_components)
     Logger.info(f"[Info] Full dataset size: Train {len(train_dataset)}, Test {len(test_dataset)}")
-    
-    # Apply sample ratio using torch.utils.data.Subset to avoid re-creating datasets
+
+    # Apply sample ratio to the training dataset
     if sample_ratio < 1.0:
         n_train = len(train_dataset)
         train_idx = torch.randperm(n_train).tolist()[:int(n_train * sample_ratio)]
         train_dataset = Subset(train_dataset, train_idx)
-        
-        n_test = len(test_dataset)
-        test_idx = torch.randperm(n_test).tolist()[:int(n_test * sample_ratio)]
-        test_dataset = Subset(test_dataset, test_idx)
-        
-        Logger.info(f"[Info] Applied sampling (ratio={sample_ratio}): Train {len(train_dataset)}, Test {len(test_dataset)}")
+        Logger.info(f"[Info] Applied sampling to train data (ratio={sample_ratio}): Train {len(train_dataset)}")
 
-    train_loader = make_loader(train_dataset, batch_size, shuffle=True)
-    test_loader = make_loader(test_dataset, batch_size=1, shuffle=False)
+    # Apply sample ratio to the test dataset
+    if test_sample_ratio < 1.0:
+        n_test = len(test_dataset)
+        test_idx = torch.randperm(n_test).tolist()[:int(n_test * test_sample_ratio)]
+        test_dataset = Subset(test_dataset, test_idx)
+        Logger.info(f"[Info] Applied sampling to test data (ratio={test_sample_ratio}): Test {len(test_dataset)}")
+
+    # Limit test dataset size if test_size is provided
+    if test_size > 0 and len(test_dataset) > test_size:
+        Logger.info(f"[Info] Limiting test dataset from {len(test_dataset)} to {test_size} samples.")
+        indices = torch.randperm(len(test_dataset)).tolist()[:test_size]
+        test_dataset = Subset(test_dataset, indices)
+        Logger.info(f"[Info] New test dataset size: {len(test_dataset)}")
+    
+    train_loader = make_loader(train_dataset, batch_size, shuffle=True, num_workers=num_workers)
+    test_loader = make_loader(test_dataset, batch_size=1, shuffle=False, num_workers=num_workers)
     return train_loader, test_loader
 
 
@@ -173,6 +202,10 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
         
         # Save model checkpoint
         torch.save(model.state_dict(), os.path.join(save_dir, f"model_{epoch}.pth"))
+        try:
+            send_message(f"Epoch {epoch} completed. Model saved at {os.path.join(save_dir, f'model_{epoch}.pth')}.")
+        except Exception as e:
+            Logger.error(f"Failed to send message: {e}")
 
     Logger.info("[Stage] Training complete!")
     return final_eval_stats
@@ -203,7 +236,7 @@ def run_training(args):
     label_root = os.path.join(args.data_root, "label/dst")
     
     # Convert JSON labels to pickle format
-    preprocess_json_to_pickle(label_root=label_root, label_method=args.label_method, replay_ids=args.replays)
+    preprocess_json_to_pickle(label_root=label_root, label_method=args.label_method, replay_ids=args.replays, num_workers=args.num_workers)
 
     # Load data
     data_loader_train, data_loader_test = load_data(
@@ -212,10 +245,13 @@ def run_training(args):
         args.label_method,
         args.window_size,
         args.batch_size,
+        args.num_workers,
         replay_ids=args.replays,
         train_replays=args.train_replays,
         test_replays=args.test_replays,
+        test_size=args.test_size,
         sample_ratio=args.sample_ratio,
+        test_sample_ratio=args.test_sample_ratio,
         include_components=args.include_components
     )
 
@@ -240,7 +276,8 @@ def run_training(args):
         }
 
     train_ds = data_loader_train.dataset
-    in_channels = len(train_ds.dataset.channel_indices if isinstance(train_ds, Subset) else train_ds.channel_indices)
+    inner_ds = train_ds.dataset if isinstance(train_ds, Subset) else train_ds
+    in_channels = len(inner_ds.channel_indices) * inner_ds.window_size
     
     model = get_model_instance_segmentation(
         num_classes,
@@ -261,7 +298,7 @@ def run_training(args):
 
     # Finish wandb run and send success notification
     wandb.finish()
-    send_message(f"✅ Training run '{args.id_string}' completed successfully.")
+    send_message(f"Training run '{args.id_string}' completed successfully.")
 
 
 def parse_arguments():
@@ -274,6 +311,8 @@ def parse_arguments():
     group_data.add_argument("--test-replays", type=str, nargs="+", default=None, help="Subset of replay IDs to use for testing.")
     group_data.add_argument("--label-method", type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS, help="Label extraction method (folder name).")
     group_data.add_argument("--sample-ratio", type=float, default=1.0, help="Fraction of dataset to sample.")
+    group_data.add_argument("--test-size", type=int, default=50, help="Maximum number of samples for the test set. Set to 0 to disable.")
+    group_data.add_argument("--test-sample-ratio", type=float, default=0.05, help="Fraction of test dataset to sample.")
     group_data.add_argument("--data-root", type=str, default=os.path.join(os.getcwd(), "data"), help="Root directory for data.")
     group_data.add_argument("--include-components", type=str, nargs='+', default=['worker', 'ground', 'air', 'building', 'vision'], help="List of components to include.")
 
@@ -295,6 +334,7 @@ def parse_arguments():
     group_env.add_argument("--id-string", type=str, default="", help="Identifier string for the training run.")
     group_env.add_argument("--log-level", type=str, default="log", choices=["none", "log", "debug"], help="Logging level.")
     group_env.add_argument("--log-root", type=str, default=os.path.join(os.getcwd(), "models"), help="Root directory for saving models and logs.")
+    group_env.add_argument("--num-workers", type=int, default=os.cpu_count(), help="Number of CPU cores for data loading.")
     
     return parser.parse_args()
 
@@ -314,7 +354,10 @@ if __name__ == "__main__":
                 id_str += "_kbrs"
             args.id_string = id_str
             
-        error_message = f"❌ Training run '{args.id_string}' failed with an error: {e}"
+        error_message = f"Training run '{args.id_string}' failed with an error: {e}"
         Logger.error(error_message)
-        send_message(error_message)
+        try:
+            send_message(error_message)
+        except Exception as send_error:
+            Logger.error(f"Failed to send error message: {send_error}")
         raise  # Re-raise the exception after sending the notification
