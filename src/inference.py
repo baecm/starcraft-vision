@@ -8,6 +8,7 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader, Subset
 import tqdm
+import multiprocessing
 
 from model.maskrcnn_builder import get_model_instance_segmentation
 import detection.transforms as T
@@ -17,13 +18,17 @@ import config
 
 class InferenceDataset(Dataset):
     """
-    A custom dataset for Mask R-CNN inference that reads only input .npy files.
+    A custom dataset for Mask R-CNN inference that reads input .npy files with windowing.
     - Assumes that frames for each replay_id exist in 'data/input/dst/{replay_id}.rep/*.npy'.
+    - Creates sliding windows of size `window_size`.
     - __getitem__ returns a tuple: (image_tensor, (replay_id, frame_id)).
+      - The image_tensor is a stack of frames in the window (concatenated along channel axis).
+      - The frame_id corresponds to the *last* frame in the window.
     """
-    def __init__(self, input_root: str, replay_ids: list, include_components: list = None):
+    def __init__(self, input_root: str, replay_ids: list, window_size: int = 1, include_components: list = None):
         super().__init__()
         self.input_root = input_root
+        self.window_size = window_size
 
         if include_components:
             self.channel_indices = sorted(sum([config.COMPONENT_CHANNEL_MAP[c] for c in include_components], []))
@@ -33,8 +38,9 @@ class InferenceDataset(Dataset):
         value_to_name_map = {member.value: name for name, member in config.Channel.__members__.items()}
         channel_names = [value_to_name_map[i] for i in self.channel_indices]
         Logger.info(f"[InferenceDataset] Using {len(self.channel_indices)} channels: {channel_names}")
+        Logger.info(f"[InferenceDataset] Using window size: {self.window_size}")
 
-        # Create a list of (replay_id, frame_id:int, npy_path:str) tuples.
+        # Create a list of (replay_id, target_frame_id, [list_of_npy_paths_in_window]) tuples.
         self.indexes = []
         for rid in map(str, replay_ids):
             rep_dir = os.path.join(self.input_root, f"{rid}.rep")
@@ -47,35 +53,65 @@ class InferenceDataset(Dataset):
                 [f for f in os.listdir(rep_dir) if f.endswith(".npy")],
                 key=lambda s: int(os.path.splitext(s)[0])
             )
-            for fname in npy_files:
-                frame_id = int(os.path.splitext(fname)[0])
-                npy_path = os.path.join(rep_dir, fname)
-                self.indexes.append((rid, frame_id, npy_path))
+            
+            # Create sliding windows
+            if len(npy_files) >= self.window_size:
+                for i in range(len(npy_files) - self.window_size + 1):
+                    window_files = npy_files[i : i + self.window_size]
+                    window_paths = [os.path.join(rep_dir, f) for f in window_files]
+                    target_frame_id = int(os.path.splitext(window_files[-1])[0])
+                    self.indexes.append((rid, target_frame_id, window_paths))
 
         if len(self.indexes) == 0:
-            raise RuntimeError(f"No .npy files found for replays {replay_ids}. Aborting.")
+            raise RuntimeError(f"No .npy files or valid windows found for replays {replay_ids} with window size {self.window_size}. Aborting.")
 
     def __len__(self):
         return len(self.indexes)
 
     def __getitem__(self, idx):
-        rid, frame_id, npy_path = self.indexes[idx]
-        arr = np.load(npy_path)
-        arr = arr[self.channel_indices]
-        if arr.ndim != 3:
-            raise ValueError(f"Unexpected array shape {arr.shape} at {npy_path}")
-        img = torch.from_numpy(arr).float()
+        rid, target_frame_id, window_paths = self.indexes[idx]
+        
+        window_frames = []
+        for npy_path in window_paths:
+            arr = np.load(npy_path)
+            arr = arr[self.channel_indices]
+            if arr.ndim != 3:
+                raise ValueError(f"Unexpected array shape {arr.shape} at {npy_path}")
+            window_frames.append(arr)
+        
+        # Concatenate frames along the channel axis (C * window, H, W)
+        img = torch.from_numpy(np.concatenate(window_frames, axis=0)).float()
 
-        return img, (rid, frame_id)
+        return img, (rid, target_frame_id)
 
 
 def collate_fn(batch):
     """
-    A collate_fn for the DataLoader to bundle a batch into the format ([images], [metadata]).
+    Bundle a batch into the format ([images], [metadata]).
     The metadata is a list of (replay_id, frame_id) tuples.
     """
     images, metas = zip(*batch)
     return list(images), list(metas)
+
+
+def _available_cpu_count() -> int:
+    """Estimate usable CPU cores (affinity-aware if possible)."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except Exception:
+        return multiprocessing.cpu_count()
+
+
+def _auto_num_workers(device: torch.device) -> int:
+    """
+    Recommended DataLoader workers:
+    - GPU: max(1, avail-1)  to keep I/O pipeline busy without oversubscription
+    - CPU: max(0, avail-1)  to avoid contention with compute
+    """
+    avail = _available_cpu_count()
+    if device.type == "cuda":
+        return max(1, avail - 1)
+    return max(0, avail - 1)
 
 
 def run_inference(
@@ -86,23 +122,7 @@ def run_inference(
 ):
     """
     Runs inference on a given model and data loader.
-    
-    Sets the model to evaluation mode, iterates through all frames in the data_loader,
-    collects the predicted results (boxes, scores, labels, masks), and returns them
-    as a list of dictionaries.
-
-    Returns:
-        A list of dictionaries, where each dictionary represents a frame's predictions.
-        [
-            {
-              "frame_id": int,
-              "boxes": [[x1,y1,x2,y2], ...],
-              "scores": [s1, s2, ...],
-              "labels": [l1, l2, ...],
-              "masks": [binary_mask, ...],
-            },
-            ...
-        ]
+    Collects predicted results as a list of dictionaries (per-frame).
     """
     model.eval()
     replay_results = []
@@ -110,17 +130,17 @@ def run_inference(
     with torch.no_grad():
         for images, metas in tqdm.tqdm(data_loader, desc="Running inference for replay", unit="batch"):
             # images: list of tensors [C,H,W], metas: list of (rid, frame_id)
-            images = [img.to(device) for img in images]
+            images = [img.to(device, non_blocking=True) for img in images]
             outputs = model(images)  # list of dict, length = batch_size
 
             for output, (rid, frame_id) in zip(outputs, metas):
                 # Filter predictions based on the score threshold.
-                scores_all = output["scores"].cpu().numpy().tolist()
+                scores_all = output["scores"].detach().cpu().numpy().tolist()
                 keep_idx = [i for i, s in enumerate(scores_all) if s >= score_threshold]
 
-                boxes_all  = output["boxes"].cpu().numpy().tolist()
-                labels_all = output["labels"].cpu().numpy().tolist()
-                masks_all  = output["masks"].cpu().numpy()  # (N, 1, H, W)
+                boxes_all  = output["boxes"].detach().cpu().numpy().tolist()
+                labels_all = output["labels"].detach().cpu().numpy().tolist()
+                masks_all  = output["masks"].detach().cpu().numpy()  # (N, 1, H, W)
 
                 frame_boxes  = []
                 frame_scores = []
@@ -154,7 +174,6 @@ def save_predictions_as_coco(
 ):
     """
     Saves the inference results for a single replay to a COCO-formatted JSON file.
-    
     Example output file: output_dir/{replay_id}_predictions.json
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -220,12 +239,14 @@ def parse_args():
     group_model.add_argument("--model-name", type=str, required=True, help="Name of the model folder to use.")
     group_model.add_argument("--model-number", type=int, required=True, help="Checkpoint number to use (e.g., 4 for model_4.pth).")
     group_model.add_argument("--label-method", type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS, help="Label method for reference (not used in inference).")
+    group_model.add_argument("--window-size", type=int, default=1, help="Window size for input frames, consistent with the trained model.")
 
     # Inference Hyperparameters
     group_hyper = parser.add_argument_group("Inference Hyperparameters")
     group_hyper.add_argument("--batch-size", type=int, default=8, help="Batch size for inference.")
-    group_hyper.add_argument("--score-thr", type=float, default=0.5, help="Objectness score threshold for filtering predictions.")
+    group_hyper.add_argument("--score-threshold", type=float, default=0.5, help="Objectness score threshold for filtering predictions.")
     group_hyper.add_argument("--sample-ratio", type=float, default=1.0, help="Fraction of frames to sample for inference (0.0 < ratio <= 1.0).")
+    group_hyper.add_argument("--workers", type=int, default=-1, help="DataLoader workers. -1=auto(cpu_count-based).")
 
     return parser.parse_args()
 
@@ -249,12 +270,17 @@ def main():
     num_classes = 2  # background + viewport
     
     # Create a temporary dataset to determine the number of channels
-    # TODO: This can be improved for efficiency (e.g., by saving metadata with the model)
+    # This is necessary to correctly initialize the model's input layer.
     temp_input_root = os.path.join(args.data_root, "input", "dst")
-    temp_dataset = InferenceDataset(temp_input_root, [args.replays[0]], include_components=args.include_components)
-    in_channels = len(temp_dataset.channel_indices)
+    temp_dataset = InferenceDataset(
+        temp_input_root, 
+        [args.replays[0]], 
+        window_size=args.window_size,
+        include_components=args.include_components
+    )
+    in_channels = len(temp_dataset.channel_indices) * temp_dataset.window_size
     
-    model = get_model_instance_segmentation(num_classes, in_channels=in_channels, window_size=1)
+    model = get_model_instance_segmentation(num_classes, in_channels=in_channels, window_size=args.window_size)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     model.eval()
@@ -263,9 +289,14 @@ def main():
     input_root = os.path.join(args.data_root, "input", "dst")
     for replay_id in args.replays:
         Logger.info(f"--- Processing replay: {replay_id} ---")
-        
-        # Create dataset and dataloader
-        dataset = InferenceDataset(input_root, [replay_id], include_components=args.include_components)
+
+        # Create dataset and (optionally) sample
+        dataset = InferenceDataset(
+            input_root, 
+            [replay_id], 
+            window_size=args.window_size,
+            include_components=args.include_components
+        )
         
         if 0.0 < args.sample_ratio < 1.0:
             total_len = len(dataset)
@@ -274,20 +305,34 @@ def main():
             dataset = Subset(dataset, indices)
             Logger.info(f"[Inference] Applied sampling: {sample_size}/{len(dataset.dataset)} frames for replay {replay_id}")
 
-        data_loader = DataLoader(
-            dataset,
+        # Determine DataLoader parallelism & memory pinning
+        if args.workers is not None and args.workers >= 0:
+            num_workers = args.workers
+        else:
+            num_workers = _auto_num_workers(device)
+            
+        Logger.info(f"[Inference] Dataset frames for {replay_id}: {len(dataset)}; num_workers={num_workers}")
+
+        pin_memory = (device.type == "cuda")
+        dl_kwargs = dict(
             batch_size=args.batch_size,
             shuffle=False,
-            num_workers=4,
-            collate_fn=collate_fn
+            num_workers=num_workers,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+            persistent_workers=(num_workers > 0),
         )
+        if num_workers > 0:
+            dl_kwargs["prefetch_factor"] = 2  # safe default
+
+        data_loader = DataLoader(dataset, **dl_kwargs)
 
         # Run inference
         replay_results = run_inference(
             model=model,
             data_loader=data_loader,
             device=device,
-            score_threshold=args.score_thr
+            score_threshold=args.score_threshold
         )
 
         # Save results to JSON
@@ -302,5 +347,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
