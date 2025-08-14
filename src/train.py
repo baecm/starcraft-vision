@@ -334,7 +334,7 @@ def parse_arguments():
     group_env.add_argument("--id-string", type=str, default="", help="Identifier string for the training run.")
     group_env.add_argument("--log-level", type=str, default="log", choices=["none", "log", "debug"], help="Logging level.")
     group_env.add_argument("--log-root", type=str, default=os.path.join(os.getcwd(), "models"), help="Root directory for saving models and logs.")
-    group_env.add_argument("--num-workers", type=int, default=os.cpu_count(), help="Number of CPU cores for data loading.")
+    group_env.add_argument("--num-workers", type=int, default=os.cpu_count()//2, help="Number of CPU cores for data loading.")
     
     return parser.parse_args()
 
