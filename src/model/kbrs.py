@@ -17,6 +17,8 @@ def score_mixture(patch: np.ndarray) -> float:
     """활성 채널 수 (하나라도 값이 있는 채널 개수)"""
     channel_active = (patch.sum(axis=(1, 2)) > 0).astype(np.uint8)
     return channel_active.sum()
+    # """활성 채널 수 (하나라도 값이 있는 채널 개수) - 최적화 버전"""
+    # return np.count_nonzero(patch.sum(axis=(1, 2)) > 0)
 
 def score_centeredness(patch: np.ndarray) -> float:
     """중심 집중도 (중심 근처에 값이 많을수록 높음)"""
@@ -27,7 +29,7 @@ def score_centeredness(patch: np.ndarray) -> float:
     weight = np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma ** 2))  # (h, w)
     return (patch * weight[None, :, :]).sum()
 
-# 종합 score function 생성기
+# 종합 score function 생성기??
 def build_composite_score_fn(
     score_funcs: Dict[str, Callable[[np.ndarray], float]],
     weights: Dict[str, float]
