@@ -11,11 +11,12 @@ services:
     volumes:
       - ${WANDB_API_KEY}:/run/secrets/wandb_api_key:ro
       - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
+      - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
       - ${DATA_DIR}:/workspace/data
       - ${SRC_DIR}:/workspace/src
       - ${MODELS_DIR}:/workspace/models
       - ${PREDICTIONS_DIR}:/workspace/predictions
-      - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
+      - ${RESULTS_DIR}:/workspace/results
       - ./entrypoint.sh:/workspace/entrypoint.sh
     user: "${UID}:${GID}"
     shm_size: '4g'
