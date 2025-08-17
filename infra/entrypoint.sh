@@ -33,10 +33,6 @@ train)
   log "Training model..."
   exec python src/train.py "$@"
   ;;
-train_ddp)
-  log "Training model with DDP..."
-  exec torchrun --nproc_per_node=2 src/train_ddp.py "$@"
-  ;;
 inference)
   log "Running inference..."
   exec python src/inference.py "$@"
