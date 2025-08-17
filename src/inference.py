@@ -2,6 +2,7 @@
 # src/inference.py
 
 import os
+import gc
 import argparse
 import json
 import torch
@@ -113,6 +114,13 @@ def _auto_num_workers(device: torch.device) -> int:
         return max(1, avail - 1)
     return max(0, avail - 1)
 
+def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int, num_classes: int = 2):
+    model = get_model_instance_segmentation(num_classes, in_channels=in_channels, window_size=window_size)
+    state = torch.load(model_path, map_location=device)
+    model.load_state_dict(state)
+    model.to(device)
+    model.eval()
+    return model
 
 def run_inference(
     model: torch.nn.Module,
@@ -170,57 +178,78 @@ def run_inference(
 def save_predictions_as_coco(
     replay_id: str,
     replay_results: list,
+    label_method: str,
     output_dir: str
 ):
     """
-    Saves the inference results for a single replay to a COCO-formatted JSON file.
-    Example output file: output_dir/{replay_id}_predictions.json
+    Save a single replay's predictions in COCO format.
+
+    Output path (GT 미러링):
+        <run_dir>/<replay_id>.rep/<label_method>.json
+    예:
+        predictions/vanilla/all_correct_win4_b16_20250812_062928/36.rep/all_correct.json
     """
-    os.makedirs(output_dir, exist_ok=True)
+    out_dir = os.path.join(output_dir, f"{replay_id}.rep")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"{label_method}.json")
 
     categories = [{"id": 1, "name": "viewport", "supercategory": "viewport"}]
 
     coco = {
-        "info": {"description": f"Predictions for replay {replay_id}", "version": "1.0"},
+        "info": {
+            "description": f"Predictions for replay {replay_id}",
+            "version": "1.0",
+            "label_method": label_method,
+        },
         "licenses": [],
         "images": [],
         "annotations": [],
-        "categories": categories
+        "categories": categories,
     }
 
+    # 중복 frame 등록 방지용
+    seen_frames = set()
     ann_id = 1
+
     for item in replay_results:
-        fid = item["frame_id"]
-        coco["images"].append({
-            "id":   fid,
-            "file_name": f"{replay_id}.rep/{fid}.npy",
-            "width":  config.ORIGIN_SHAPE[1],
-            "height": config.ORIGIN_SHAPE[0]
-        })
+        fid = int(item["frame_id"])
+
+        # images: frame당 1개만
+        if fid not in seen_frames:
+            coco["images"].append({
+                "id": fid,
+                "file_name": f"{replay_id}.rep/{fid}.npy",
+                "width":  int(config.ORIGIN_SHAPE[1]),
+                "height": int(config.ORIGIN_SHAPE[0]),
+            })
+            seen_frames.add(fid)
+
+        # annotations
         for box, score, label, _mask in zip(
             item["boxes"], item["scores"], item["labels"], item["masks"]
         ):
             x1, y1, x2, y2 = map(int, box)
-            w = x2 - x1
-            h = y2 - y1
+            w = max(0, x2 - x1)
+            h = max(0, y2 - y1)
             segmentation = [[x1, y1, x1 + w, y1, x1 + w, y1 + h, x1, y1 + h]]
+
             coco["annotations"].append({
                 "id": ann_id,
                 "image_id": fid,
-                "category_id": int(label),
+                "category_id": int(label),   # 단일 클래스라면 1 고정도 가능
                 "bbox": [x1, y1, w, h],
                 "score": float(score),
-                "area": w * h,
+                "area": int(w * h),
                 "segmentation": segmentation,
-                "iscrowd": 0
+                "iscrowd": 0,
             })
             ann_id += 1
 
-    out_path = os.path.join(output_dir, f"{replay_id}_predictions.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(coco, f, indent=2, ensure_ascii=False)
 
     Logger.info(f"[Inference] Saved predictions for replay {replay_id} -> {out_path}")
+    return out_path
 
 
 def parse_args():
@@ -262,55 +291,57 @@ def main():
     # Create model load path
     model_folder = os.path.join(args.model_root, args.model_name)
     model_path = os.path.join(model_folder, f"model_{args.model_number}.pth")
-    Logger.info(f"[Inference] Loading model from: {model_path}")
+    Logger.info(f"[Inference] Checkpoint path: {model_path}")
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
-    # Load the model (once)
-    num_classes = 2  # background + viewport
-    
-    # Create a temporary dataset to determine the number of channels
-    # This is necessary to correctly initialize the model's input layer.
+    # ===== (변경점) 입력 채널 수는 한 번만 계산 =====
     temp_input_root = os.path.join(args.data_root, "input", "dst")
     temp_dataset = InferenceDataset(
-        temp_input_root, 
-        [args.replays[0]], 
+        temp_input_root,
+        [args.replays[0]],
         window_size=args.window_size,
         include_components=args.include_components
     )
     in_channels = len(temp_dataset.channel_indices) * temp_dataset.window_size
-    
-    model = get_model_instance_segmentation(num_classes, in_channels=in_channels, window_size=args.window_size)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.to(device)
-    model.eval()
+    del temp_dataset
 
-    # Sequentially run inference and save results for each replay
+    # ===== (변경점) 모델은 각 리플레이마다 새로 로드 =====
     input_root = os.path.join(args.data_root, "input", "dst")
     for replay_id in args.replays:
         Logger.info(f"--- Processing replay: {replay_id} ---")
 
-        # Create dataset and (optionally) sample
+        # 1) 모델 로드 (리플레이 단위)
+        model = _load_model(
+            model_path=model_path,
+            device=device,
+            in_channels=in_channels,
+            window_size=args.window_size,
+            num_classes=2  # background + viewport
+        )
+
+        # 2) 데이터셋 구성
         dataset = InferenceDataset(
-            input_root, 
-            [replay_id], 
+            input_root,
+            [replay_id],
             window_size=args.window_size,
             include_components=args.include_components
         )
-        
+
         if 0.0 < args.sample_ratio < 1.0:
             total_len = len(dataset)
             sample_size = int(total_len * args.sample_ratio)
             indices = torch.randperm(total_len).tolist()[:sample_size]
             dataset = Subset(dataset, indices)
-            Logger.info(f"[Inference] Applied sampling: {sample_size}/{len(dataset.dataset)} frames for replay {replay_id}")
+            # 주의: dataset이 Subset인 경우 원본 길이는 접근 시 조건부 처리
+            Logger.info(f"[Inference] Applied sampling: {sample_size}/{total_len} frames for replay {replay_id}")
 
-        # Determine DataLoader parallelism & memory pinning
+        # 3) DataLoader 구성
         if args.workers is not None and args.workers >= 0:
             num_workers = args.workers
         else:
             num_workers = _auto_num_workers(device)
-            
+
         Logger.info(f"[Inference] Dataset frames for {replay_id}: {len(dataset)}; num_workers={num_workers}")
 
         pin_memory = (device.type == "cuda")
@@ -323,11 +354,11 @@ def main():
             persistent_workers=(num_workers > 0),
         )
         if num_workers > 0:
-            dl_kwargs["prefetch_factor"] = 2  # safe default
+            dl_kwargs["prefetch_factor"] = 2
 
         data_loader = DataLoader(dataset, **dl_kwargs)
 
-        # Run inference
+        # 4) 추론
         replay_results = run_inference(
             model=model,
             data_loader=data_loader,
@@ -335,12 +366,23 @@ def main():
             score_threshold=args.score_threshold
         )
 
-        # Save results to JSON
+        # 5) 저장
         save_predictions_as_coco(
             replay_id=replay_id,
             replay_results=replay_results,
+            label_method=args.label_method,
             output_dir=args.output_dir
         )
+
+        # 6) (중요) 모델/캐시 정리 후 다음 리플레이로
+        del model, data_loader, dataset
+        gc.collect()
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
 
     Logger.info("[Inference] Complete!")
 
