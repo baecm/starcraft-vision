@@ -33,11 +33,11 @@ up:
 down:
 	docker compose -f $(COMPOSE_FILE) down --remove-orphans
 
-run:
-	CONTAINER_NAME=run_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher $(CMD) $(ARGS) \
-		> logs/$$CONTAINER_NAME.log 2>&1 & \
-	echo $$CONTAINER_NAME > $(PID_DIR)/run.cid
+# run:
+# 	CONTAINER_NAME=run_$(shell date +%Y%m%d_%H%M%S); \
+# 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher $(CMD) $(ARGS) \
+# 		> logs/$$CONTAINER_NAME.log 2>&1 & \
+# 	echo $$CONTAINER_NAME > $(PID_DIR)/run.cid
 
 train:
 	CONTAINER_NAME=train_$(shell date +%Y%m%d_%H%M%S); \
@@ -59,15 +59,12 @@ evaluate:
 
 debug:
 	CONTAINER_NAME=debug_$(shell date +%Y%m%d_%H%M%S); \
-	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher debug $(ARGS); \
-	echo $$CONTAINER_NAME > $(PID_DIR)/debug.cid
+	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher debug $(ARGS);
 
 # Entry points
 preprocess_input:
 # 	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_input $(ARGS)
 	$(call run_or_parallel,preprocess_input)
-
-
 preprocess_label:
 	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_label $(ARGS)
 
