@@ -1,235 +1,793 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
-import csv
+import json
 import argparse
-import glob
+import re
+import hashlib
+from datetime import datetime
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional, Tuple
+from collections import OrderedDict
+
 import numpy as np
 import pandas as pd
 import config
-import json
+from utils.logger import Logger  # Logger 사용
 
+
+# =========================
+# Fixed sets
+# =========================
 SET_REPLAYS = {
     "set_0": ["36", "212", "438", "522", "1660"],
     "set_1": ["1559", "1628", "2351", "6219", "11251"],
     "set_2": ["275", "1725", "3613", "4520", "4664"]
 }
 
-SET_USERS = {
+SET_GT_ANNOTATORS = {
     "set_0": ["bcm_allframes", "yws_allframes", "cyh_allframes", "pdh_allframes", "jht_allframes"],
     "set_1": ["1_allframes", "2_allframes", "3_allframes", "4_allframes", "5_allframes"],
     "set_2": ["6_allframes", "7_allframes", "8_allframes", "9_allframes", "10_allframes"]
 }
 
 
-def parse_arguments():
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    data_root = os.path.join(project_root, 'data')
-    model_root = os.path.join(project_root, 'models')
+# =========================
+# Grid config (SSOT)
+# =========================
+@dataclass(frozen=True)
+class Grid:
+    x_len: int = 20
+    y_len: int = 12
+    width: int = 128
+    height: int = 128
+    max_x: int = 3456
+    max_y: int = 3720
 
-    parser = argparse.ArgumentParser(description="Evaluate predicted viewports against human annotations.")
-
-    # Data and Model Specification
-    group_spec = parser.add_argument_group("Data and Model Specification")
-    group_spec.add_argument('--set', type=str, required=True, choices=SET_REPLAYS.keys(), help="Select which replay set to evaluate (e.g., set_0, set_1).")
-    group_spec.add_argument('--label-method', type=str, required=True, choices=config.LABEL_METHODS, help="Label extraction method.")
-    group_spec.add_argument('--data-root', type=str, default=data_root, help="Root directory for data (must contain 'label' subdir).")
-    group_spec.add_argument('--model-root', type=str, default=model_root, help="Root directory for model checkpoints.")
-    group_spec.add_argument("--include-components", type=str, nargs='+', default=['worker', 'ground', 'air', 'building', 'vision'], help="List of components to include.")
-
-    # Model Hyperparameters (for finding the folder)
-    group_hyper = parser.add_argument_group("Model Hyperparameters")
-    group_hyper.add_argument('--window-size', type=int, default=1, help="Window size used during training.")
-    group_hyper.add_argument('--batch-size', type=int, default=32, help="Batch size used during training.")
-    group_hyper.add_argument('--model-number', type=int, default=0, help="Checkpoint number to evaluate (for logging only).")
-
-    # Evaluation Settings
-    group_eval = parser.add_argument_group("Evaluation Settings")
-    group_eval.add_argument('--partial-length', type=float, default=1.0, help="Fraction of each replay to evaluate (0.0 - 1.0).")
-    group_eval.add_argument('--out-csv', type=str, default='./temp.csv', help="Path to output CSV file for results.")
-
-    return parser.parse_args()
-
-
-def find_model_folder(model_root, label_method, window_size, batch_size, date_string=None):
-    # Model folders are named like: <label_method>_win<window_size>_b<batch_size>_YYYYMMDD_HHMMSS
-    prefix = f"{label_method}_win{window_size}_b{batch_size}"
-    pattern = os.path.join(model_root, f"{prefix}*")
-    print(f">> Looking for model folder with prefix: {prefix}")
-    print(f">> Searching for model folder with pattern: {pattern}")
-    matches = sorted(glob.glob(pattern))
-    if not matches:
-        raise FileNotFoundError(f"No model folder matching '{prefix}*' under {model_root}")
-    return os.path.basename(matches[0])
-
-
-def load_viewport_data(test_names, annotator_dir, label_method):
-    """
-    → (수정된 버전) 
-    Load and concatenate all (x,y) viewport coordinates from each replay's single JSON:
-      annotator_dir/<replay>.rep/<label_method>.json
-    Returns: list of DataFrames (각 annotator별) 과 frame counts
-    """
-    data_list = []
-    frame_list = []
-
-    for replay in test_names:
-        # 1) 단일 JSON 파일 경로
-        json_path = os.path.join(annotator_dir, f"{replay}.rep", f"{label_method}.json")
-        if not os.path.isfile(json_path):
-            raise FileNotFoundError(f"Missing JSON: {json_path}")
-
-        with open(json_path, 'r', encoding='utf-8') as f:
-            coco = json.load(f)
-
-        # 2) JSON 내 images, annotations 읽기
-        #    images: [{"id": frame_id, "file_name": "...", "width": W, "height": H}, ...]
-        #    annotations: [{"id": ann_id, "image_id": frame_id, "bbox":[x,y,w,h], ...}, ...]
-        images_info = coco.get("images", [])
-        anns       = coco.get("annotations", [])
-
-        # 3) frame_id 순서대로 (x,y)를 모을 리스트
-        #    - annotation의 bbox에서 (x, y)만 꺼내서 list에 append
-        #    - 한 frame에 여러 annotation이 있으면(=여러 사람이 겹쳐 본다면) → 전부 append (멀티 인스턴스)
-        per_frame_coords = {}  # frame_id → [(x,y), (x,y), ...]
-        for ann in anns:
-            frame_id = int(ann["image_id"])
-            x, y, w, h = map(int, ann["bbox"])
-            # 기존 .vpds.npy가 (x, y)만 제공했으므로, 동일하게 (x,y)만 저장
-            per_frame_coords.setdefault(frame_id, []).append((x, y))
-
-        # 4) frames 개수: images_info에 있는 frame_id 중 최고값 + 1 혹은 images_info 길이
-        #    실제로 “프레임 수”는 images_info 개수(=json에 등록된 이미지 개수)와 동일하다고 가정
-        frame_count = len(images_info)
-
-        # 5) DataFrame 생성: 각 frame마다 (x,y) 좌표들을 순서대로 저장
-        #    - 사람이 여러 명일 수도 있으므로, “한 사람당 한 Series”로 관리하지 않고,
-        #      “frame별로 x,y만 모아서 DataFrame 생성”해 둔다. (한 annotator가 아니라, 단일 JSON 안의 모든 annotation)
-        arrs = []
-        for fid in range(frame_count):
-            # 만약 해당 frame_id에 annotation이 1개도 없다면, (0,0) 혹은 NaN 처리 → 일단 (0,0)으로 채움
-            coords_list = per_frame_coords.get(fid, [(0, 0)])
-            # 한 frame에 여러 annotation이 있을 수 있으므로, 평균 좌표로 대표하거나 첫 개체만 택할 수도 있다.
-            # 그러나 원본 .vpds.npy처럼 “한 frame당 한 사람”을 기준으로 삼고 싶다면, coords_list[0]만 사용한다.
-            x0, y0 = coords_list[0]
-            arrs.append((fid, x0, y0))
-
-        df = pd.DataFrame(arrs, columns=['frame', 'vpx', 'vpy'])
-        data_list.append(df)
-        frame_list.append(frame_count)
-
-    return data_list, frame_list
-
-
-def evaluate_intersection(test_names, annotations, lengths):
-    """
-    원본과 동일: 
-    x_len, y_len = 20, 12  ← viewport patch 크기 (kernel_shape)
-    width, height = 128,128  ← 화면 해상도 (origin_shape)
-    max_x, max_y = 3456,3720  ← 전체 맵 좌표 최대값 (기존 코드 기준)
-    """
-    x_len, y_len = 20, 12
-    width, height = 128, 128
-    max_x, max_y = 3456, 3720
-
-    results = {'i_any': [], 'i_30': [], 'i_50': []}
-    for idx, replay in enumerate(test_names):
-        dfs = [ann[idx] for ann in annotations]   # 여러 annotator DataFrame
-        limit = lengths[idx]
-        overlaps = []
-
-        for t in range(limit):
-            canvas = np.zeros((width, height), dtype=int)
-            # 1) 먼저 “비교 annotator”들(인덱스 1~N)을 캔버스에 누적
-            for df in dfs[1:]:
-                vpx = int(df.loc[t, 'vpx'])
-                vpy = int(df.loc[t, 'vpy'])
-                # 전체 맵 좌표 → 화면 좌표 비례 계산 (기존에 쓰던 방식 그대로)
-                x = int(vpx / max_x * (width - x_len))
-                y = int(vpy / max_y * (height - y_len))
-                canvas[x:x + x_len, y:y + y_len] += 1
-
-            # 2) 기준 annotator(인덱스 0) 위치
-            rx = int(dfs[0].loc[t, 'vpx'] / max_x * (width - x_len))
-            ry = int(dfs[0].loc[t, 'vpy'] / max_y * (height - y_len))
-            patch = canvas[rx:rx + x_len, ry:ry + y_len]
-            any_overlap = (patch > 0).mean()
-
-            results['i_any'].append(int(any_overlap > 0))
-            results['i_30'].append(int(any_overlap >= 0.3))
-            results['i_50'].append(int(any_overlap >= 0.5))
-            overlaps.append(any_overlap)
-
-        print(f"{replay}: {np.mean(overlaps):.4f}")
-
-    return results
-
-
-def run_evaluate(args):
-    model_folder = find_model_folder(
-        args.model_root,
-        args.label_method,
-        args.window_size,
-        args.batch_size
-    )
-    print("=== Evaluation Start ===")
-    print(
-        f"Model folder: {model_folder}, Method: {args.label_method}, "
-        f"Checkpoint: {args.model_number}, Set: {args.set}"
-    )
-
-    tests = SET_REPLAYS[args.set]
-    humans = SET_USERS[args.set]
-    partial = args.partial_length
-
-    overall = {'i_any': [], 'i_30': [], 'i_50': []}
-    for human in humans:
-        # (model_folder는 실제로 사람 annotator 이름이 아니므로, 이 부분은 기존 방식 그대로 두거나
-        #  필요한 경우 “사람 annotator 디렉토리”를 가리키도록 수정해야 할 수도 있습니다.)
-        group = [model_folder] + [h for h in humans if h != human]
-        annotations = []
-        lengths = [float('inf')] * len(tests)
-
-        for name in group:
-            # annotator_dir가 “data/label/dst” 밑에 있는 replay 폴더 구조를 가리켜야 함
-            annotator_dir = os.path.join(args.data_root, 'label', 'dst')
-            data, frames = load_viewport_data(
-                tests,
-                annotator_dir,
-                args.label_method
-            )
-            annotations.append(data)
-            lengths = [min(l, int(f * partial)) for l, f in zip(lengths, frames)]
-
-        res = evaluate_intersection(tests, annotations, lengths)
-        i_any_avg = np.mean(res['i_any'])
-        i_30_avg = np.mean(res['i_30'])
-        i_50_avg = np.mean(res['i_50'])
-        print(
-            f"{human}: i={i_any_avg:.4f}, "
-            f"0/30/50 = {i_any_avg:.2f}/{i_30_avg:.2f}/{i_50_avg:.2f}"
+    @classmethod
+    def from_args(cls, args) -> "Grid":
+        return cls(
+            x_len=args.kernel_x,
+            y_len=args.kernel_y,
+            width=args.grid_width,
+            height=args.grid_height,
+            max_x=args.max_x,
+            max_y=args.max_y,
         )
-        overall['i_any'].append(i_any_avg)
-        overall['i_30'].append(i_30_avg)
-        overall['i_50'].append(i_50_avg)
 
-    print("=== Final Result ===")
-    print(
-        f"0/30/50: {np.mean(overall['i_any']):.2f}/"
-        f"{np.mean(overall['i_30']):.2f}/"
-        f"{np.mean(overall['i_50']):.2f}"
+
+def _assert_dir(path: Path, what: str):
+    if not path.is_dir():
+        Logger.error(f"{what} not found or not a directory: {path}")
+        raise FileNotFoundError(f"{what} not found: {path}")
+
+
+# =========================
+# Helpers (time/slug/hash/keys)
+# =========================
+def _write_vpd(df: pd.DataFrame, out_path: Path, scale: int = 32,
+               clip_max: Optional[Tuple[int, int]] = None):
+    """
+    df: columns include ['frame','x','y']
+    Writes CSV with header: frame,vpx,vpy (ints), where vpx,vpy = round(x*scale), round(y*scale)
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    vpd = df[['frame', 'x', 'y']].copy()
+    vpd['frame'] = vpd['frame'].astype(int)
+
+    vpd['vpx'] = np.round(vpd['x'] * scale).astype(int)
+    vpd['vpy'] = np.round(vpd['y'] * scale).astype(int)
+
+    if clip_max is not None:
+        max_x, max_y = clip_max
+        vpd['vpx'] = vpd['vpx'].clip(lower=0, upper=max_x - 1)
+        vpd['vpy'] = vpd['vpy'].clip(lower=0, upper=max_y - 1)
+
+    vpd = vpd[['frame', 'vpx', 'vpy']]
+    vpd.to_csv(out_path, index=False)
+    Logger.info(f"Wrote VPD -> {out_path}")
+
+
+def _dump_vpd_for_tracks(pred_name: str,
+                         frame_select: str,
+                         replays: List[str],
+                         tracks: List[pd.DataFrame],
+                         vpd_root: Path,
+                         scale: int = 32,
+                         clip_max: Optional[Tuple[int, int]] = None):
+    """
+    저장 경로: <vpd_root>/<pred_name>/<frame_select>/<replay>.vpd
+    """
+    base = vpd_root / pred_name / frame_select
+    for rep, df in zip(replays, tracks):
+        out_path = base / f"{rep}.vpd"
+        _write_vpd(df, out_path, scale=scale, clip_max=clip_max)
+        
+
+def _now_utc_str() -> str:
+    return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+
+def _slugify(s: str) -> str:
+    s = re.sub(r"\s+", "-", s.strip())
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", s).strip("-._")
+
+
+def _short_hash(text: str, n: int = 8) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:n]
+
+
+def _abbr_label(label: str) -> str:
+    # e.g., "all_correct" -> "ac"
+    parts = [p[0] for p in label.split("_") if p]
+    return "".join(parts) or _slugify(label)[:6]
+
+
+def _abbr_fs(fs: str) -> str:
+    return {"first": "f", "top1": "t1", "avg": "a"}.get(fs, _slugify(fs)[:3])
+
+
+def _fs_code(fs_list: List[str]) -> str:
+    s = set(fs_list)
+    if s == {"first", "top1", "avg"} and len(fs_list) == 3:
+        return "all"
+    return "-".join(_abbr_fs(x) for x in fs_list)[:12]
+
+
+def _pct_code(p: float) -> str:
+    return f"{int(round(p * 100)):d}"
+
+
+def _replays_key(args) -> str:
+    if getattr(args, "set", None):
+        m = re.match(r"set_(\d+)", args.set)
+        return f"s{m.group(1)}" if m else _slugify(args.set)[:8]
+    return f"r{len(args.replays)}"
+
+
+def _pred_key(pred_names: List[str]) -> str:
+    if not pred_names:
+        return "gtloo"
+    if len(pred_names) == 1:
+        return _slugify(Path(pred_names[0]).name)[:24]
+    return f"multi{len(pred_names)}"
+
+
+def _thr_key(t: float) -> str:
+    # 0 -> "0", 0.1 -> "0_1", 0.75 -> "0_75"
+    s = f"{t:.6f}".rstrip("0").rstrip(".")
+    return s.replace(".", "_") if s else "0"
+
+def _ordered_metric_keys(ic_thresholds, has_baseline=False, has_ratio=False):
+    keys = []
+    for t in sorted(set(ic_thresholds)):
+        tk = _thr_key(t)  # 0.3 -> "0_3"
+        keys += [f"ic_at_{tk}", f"streak_at_{tk}"]
+        if has_baseline:
+            keys.append(f"streak_baseline_at_{tk}")
+        if has_ratio:
+            keys.append(f"streak_ratio_at_{tk}")
+    keys += ["ic_mean", "iou_mean", "dice_mean", "cr_mean"]
+    return keys
+
+def _order_row(row: dict, ic_thresholds) -> OrderedDict:
+    has_baseline = any(k.startswith("streak_baseline_at_") for k in row)
+    has_ratio    = any(k.startswith("streak_ratio_at_") for k in row)
+    metric_keys  = _ordered_metric_keys(ic_thresholds, has_baseline, has_ratio)
+
+    out = OrderedDict()
+    # 식별자 먼저
+    for k in ("target", "frame_select"):
+        if k in row:
+            out[k] = row[k]
+    # 메트릭을 원하는 순서로
+    for k in metric_keys:
+        if k in row:
+            out[k] = row[k]
+    # 혹시 남은 키가 있으면 끝에
+    for k, v in row.items():
+        if k not in out:
+            out[k] = v
+    return out
+
+# =========================
+# CLI
+# =========================
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description="Evaluate saved inference (COCO-style) against ground-truth annotations"
     )
 
-    os.makedirs(os.path.dirname(args.out_csv) or '.', exist_ok=True)
-    with open(args.out_csv, 'a', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            f"{np.mean(overall['i_any']):.4f}",
-            f"{np.mean(overall['i_30']):.4f}",
-            f"{np.mean(overall['i_50']):.4f}"
-        ])
+    # Data and I/O
+    group_data = parser.add_argument_group("Data and I/O")
+    mx = group_data.add_mutually_exclusive_group(required=True)
+    mx.add_argument("--set", type=str, choices=SET_REPLAYS.keys(),
+                    help="Replay set (e.g., set_0, set_1, set_2).")
+    mx.add_argument("--replays", nargs="+",
+                    help="Explicit list of replay IDs (e.g., 1559 1628 2351 ...).")
+
+    group_data.add_argument("--label-method", type=str,
+                            default=config.LABEL_METHODS[0],
+                            choices=config.LABEL_METHODS,
+                            help="JSON label filename without extension.")
+
+    group_data.add_argument("--gt-root", type=str,
+                            default=os.path.join(os.getcwd(), "data"),
+                            help="Ground-truth root (default: ./data). "
+                                 "GT JSONs at <gt-root>/label/dst/[<gt_annotator>/]{replay}.rep/<label>.json")
+
+    group_data.add_argument("--pred-root", type=str,
+                            default=os.path.join(os.getcwd(), "predictions"),
+                            help="Predictions root (default: ./predictions). "
+                                 "pred-names are resolved relative to this root.")
+
+    # Targets
+    group_targets = parser.add_argument_group("Targets")
+    group_targets.add_argument("--pred-names", nargs="+",
+                               help="Prediction run names (can include subdirs) relative to --pred-root, "
+                                    "e.g., 'vanilla/all_correct_win4_b16_20250812_062928'.")
+    group_targets.add_argument("--gt-loo", action="store_true",
+                               help="Leave-one-out using GT annotators (target=held-out GT). "
+                                    "If set, predictions are ignored.")
+
+    # Evaluation Options
+    group_eval = parser.add_argument_group("Evaluation Options")
+    group_eval.add_argument("--partial-length", type=float, default=1.0,
+                            help="Fraction (0,1] of frames per replay to evaluate.")
+    group_eval.add_argument(
+        "--frame-select", nargs="+",
+        choices=["first", "top1", "avg", "all"],
+        default=["first"],
+        help="Per-frame reduction: first/top1/avg or 'all' to evaluate all three."
+    )
+    group_eval.add_argument("--use-bbox-size", action="store_true",
+                            help="Use scaled bbox [w,h] as viewport; otherwise fixed kernel size.")
+    group_eval.add_argument("--ic-thresholds", type=float, nargs="+",
+                            default=[0.0, 0.3, 0.5],
+                            help="IC thresholds in [0,1] (e.g., 0 0.1 0.2 ... 0.9)")
+
+    # Grid / Scaling
+    group_grid = parser.add_argument_group("Grid / Scaling")
+    group_grid.add_argument("--grid-width", type=int, default=128)
+    group_grid.add_argument("--grid-height", type=int, default=128)
+    group_grid.add_argument("--kernel-x", type=int, default=20)
+    group_grid.add_argument("--kernel-y", type=int, default=12)
+    group_grid.add_argument("--max-x", type=int, default=3456)
+    group_grid.add_argument("--max-y", type=int, default=3720)
+
+    # Output artifacts
+    group_out = parser.add_argument_group("Output")
+    group_out.add_argument("--out-dir", type=str,
+                           default=os.path.join(os.getcwd(), "results"),
+                           help="Directory to write JSON artifact (with metadata).")
+    group_out.add_argument("--tag", type=str, default=None,
+                           help="Optional tag to include in artifact filename.")
+    group_out.add_argument("--dump-vpd", action="store_true",
+                       help="Also dump per-frame VPD files (frame,vpx,vpy) for each frame-select.")
+    group_out.add_argument("--vpd-dir", type=str,
+                        default=os.path.join(os.getcwd(), "results", "vpd"),
+                        help="Root directory to write VPD files (default: ./results/vpd).")
+    group_out.add_argument("--vpd-clip", action="store_true",
+                       help="Clip vpx/vpy to [0, max_x/max_y) using Grid.max_x/max_y.")
+
+    # Logging
+    group_log = parser.add_argument_group("Logging")
+    group_log.add_argument("--log-level", type=str, default="log",
+                           choices=["none", "log", "debug"],
+                           help="Logger level (default: log).")
+
+    args = parser.parse_args()
+
+    # ---- Post-parse normalization ----
+    if getattr(args, "set", None):
+        args.replays = list(SET_REPLAYS[args.set])
+    else:
+        args.replays = list(dict.fromkeys(args.replays))  # dedupe
+
+    # frame-select as list & expand all
+    if isinstance(args.frame_select, str):
+        args.frame_select = [args.frame_select]
+    if "all" in args.frame_select:
+        args.frame_select = ["first", "top1", "avg"]
+    args.frame_select = list(dict.fromkeys(args.frame_select))  # dedupe, keep order
+
+    # thresholds normalize/validate
+    args.ic_thresholds = sorted(set(round(t, 4) for t in args.ic_thresholds))
+    if any(t < 0.0 or t > 1.0 for t in args.ic_thresholds):
+        parser.error("--ic-thresholds must be within [0, 1].")
+
+    if not args.gt_loo and not args.pred_names:
+        parser.error("--pred-names is required unless --gt-loo is set.")
+    if not (0.0 < args.partial_length <= 1.0):
+        parser.error("--partial-length must be in (0, 1].")
+
+    return args
 
 
+# =========================
+# COCO loaders
+# =========================
+def _read_json(path: Path) -> dict:
+    with path.open('r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def load_coco_track(
+    root: Path, replay: str, label_method: str, frame_select: str
+) -> pd.DataFrame:
+    """
+    <root>/<replay>.rep/<label>.json → DataFrame[frame,x,y,w,h,img_w,img_h,score]
+    Frames aligned to 'images'; missing frames ffill/bfill.
+    """
+    jpath = root / f"{replay}.rep" / f"{label_method}.json"
+    if not jpath.is_file():
+        Logger.error(f"Missing JSON: {jpath}")
+        raise FileNotFoundError(f"Missing JSON: {jpath}")
+    coco = _read_json(jpath)
+
+    images = pd.DataFrame(coco.get("images", []))
+    anns   = pd.DataFrame(coco.get("annotations", []))
+
+    if images.empty:
+        Logger.warn(f"No images in {jpath}; returning empty track.")
+        return pd.DataFrame(columns=['frame','x','y','w','h','img_w','img_h','score'])
+
+    img_meta = images[['id','width','height']].rename(columns={'id':'frame','width':'img_w','height':'img_h'})
+
+    if 'bbox' in anns.columns and not anns.empty:
+        xywh = pd.DataFrame(anns['bbox'].tolist(), columns=['x','y','w','h'])
+        anns = pd.concat([anns.drop(columns=['bbox']), xywh], axis=1)
+    else:
+        anns = pd.DataFrame(columns=['image_id','x','y','w','h','score'])
+
+    if 'score' not in anns.columns:
+        anns['score'] = np.nan
+
+    anns = anns.rename(columns={'image_id': 'frame'})
+    anns = anns.sort_values(['frame', 'score'], ascending=[True, False])
+
+    if frame_select in ('first', 'top1'):
+        # frame별 score 내림차순에서 첫 행만
+        red = (
+            anns.drop_duplicates('frame', keep='first')
+                [['frame', 'x', 'y', 'w', 'h', 'score']]
+                .reset_index(drop=True)
+        )
+    else:  # 'avg' — 중심점/크기 평균으로 대표 bbox 계산
+        tmp = anns[['frame', 'x', 'y', 'w', 'h', 'score']].copy()
+        tmp['cx'] = tmp['x'] + tmp['w'] / 2
+        tmp['cy'] = tmp['y'] + tmp['h'] / 2
+        gb = (
+            tmp.groupby('frame', as_index=False)
+               .agg({'cx': 'mean', 'cy': 'mean', 'w': 'mean', 'h': 'mean', 'score': 'mean'})
+        )
+        gb['x'] = gb['cx'] - gb['w'] / 2
+        gb['y'] = gb['cy'] - gb['h'] / 2
+        red = gb[['frame', 'x', 'y', 'w', 'h', 'score']]
+
+    track = img_meta.merge(red, on='frame', how='left').sort_values('frame')
+    track[['x','y','w','h','score']] = track[['x','y','w','h','score']].ffill().bfill()
+    track['frame'] = track['frame'].astype(int)
+    return track[['frame','x','y','w','h','img_w','img_h','score']]
+
+
+def load_tracks_for_names(
+    root: Path, names: List[str], replays: List[str], label_method: str, frame_select: str
+) -> List[List[pd.DataFrame]]:
+    """
+    per-annotator 모드에서 사용: root/<name>/<replay>.rep/<label>.json
+    결과 형태: tracks_per_name[name_idx][replay_idx] -> DataFrame
+    """
+    tracks_per_name: List[List[pd.DataFrame]] = []
+    for name in names:
+        base = root / name
+        if not base.is_dir():
+            Logger.error(f"Annotator dir not found: {base}")
+            raise FileNotFoundError(f"Annotator dir not found: {base}")
+        per_replay = [load_coco_track(base, rep, label_method, frame_select) for rep in replays]
+        tracks_per_name.append(per_replay)
+    return tracks_per_name
+
+
+def load_tracks_flat(
+    root: Path, replays: List[str], label_method: str, frame_select: str
+) -> List[pd.DataFrame]:
+    """
+    flat 모드에서 사용: root/{replay}.rep/<label>.json
+    결과 형태: tracks[replay_idx] -> DataFrame
+    """
+    return [load_coco_track(root, rep, label_method, frame_select) for rep in replays]
+
+
+# =========================
+# Frame unification
+# =========================
+def unify_frames(
+    tracks_per_annotator: List[List[pd.DataFrame]], replays: List[str]
+) -> List[List[pd.DataFrame]]:
+    """
+    각 replay별로 전체 annotator의 frame union으로 reindex → ffill → bfill
+    """
+    out: List[List[pd.DataFrame]] = []
+    for per_replay in tracks_per_annotator:
+        ann_out: List[pd.DataFrame] = []
+        for r_idx, rep_df in enumerate(per_replay):
+            frames_union = sorted(set().union(*[t[r_idx]['frame'].tolist() for t in tracks_per_annotator]))
+            if not frames_union:
+                ann_out.append(rep_df.copy())
+                continue
+            cur = rep_df.set_index('frame').reindex(frames_union).ffill().bfill().reset_index()
+            ann_out.append(cur)
+        out.append(ann_out)
+    return out
+
+
+# =========================
+# Geometry helpers
+# =========================
+def _clip(v: int, lo: int, hi: int) -> int:
+    return lo if v < lo else hi if v > hi else v
+
+
+def to_grid_rect(x: float, y: float, w: float, h: float,
+                 img_w: Optional[float], img_h: Optional[float],
+                 g: Grid, use_bbox_size: bool) -> tuple[int, int, int, int]:
+    """
+    bbox [x,y,w,h] → grid rect (gx,gy,gw,gh)
+    - img_w/img_h 있으면 그것으로 스케일, 없으면 (g.max_x,g.max_y) 사용
+    - use_bbox_size=False면 gw,gh는 (g.x_len,g.y_len) 고정
+    """
+    sx = (g.width  / float(img_w)) if (img_w and img_w > 0) else (g.width  / g.max_x)
+    sy = (g.height / float(img_h)) if (img_h and img_h > 0) else (g.height / g.max_y)
+
+    gx = int(round(x * sx))
+    gy = int(round(y * sy))
+
+    if use_bbox_size:
+        gw = max(1, int(round(w * sx)))
+        gh = max(1, int(round(h * sy)))
+    else:
+        gw, gh = g.x_len, g.y_len
+
+    gx = _clip(gx, 0, g.width - 1)
+    gy = _clip(gy, 0, g.height - 1)
+    gx2 = _clip(gx + gw, 0, g.width)
+    gy2 = _clip(gy + gh, 0, g.height)
+    gw = max(1, gx2 - gx)
+    gh = max(1, gy2 - gy)
+    return gx, gy, gw, gh
+
+
+# =========================
+# Core evaluation
+# =========================
+def _mean(xs): return float(np.mean(xs)) if xs else 0.0
+
+
+def _mean_streak(bools):
+    # bool 리스트에서 True 연속 길이들의 평균
+    if not bools:
+        return 0.0
+    streaks, cur = [], 0
+    for v in bools:
+        if v:
+            cur += 1
+        elif cur:
+            streaks.append(cur)
+            cur = 0
+    if cur:
+        streaks.append(cur)
+    return float(np.mean(streaks)) if streaks else 0.0
+
+
+def evaluate_intersection(
+    replays: List[str],
+    per_annotator_tracks: List[List[pd.DataFrame]],  # [target, ref1, ref2, ...]
+    partial_length: float,
+    g: Grid,
+    use_bbox_size: bool,
+    ic_thresholds: Optional[List[float]] = None,
+) -> dict:
+    ic_thresholds = sorted(set(ic_thresholds or [0.0, 0.3, 0.5]))
+
+    # 누적 버퍼
+    ovls, ious, dices, recalls = [], [], [], []
+    ic_hits = {t: [] for t in ic_thresholds}          # 프레임 hit (True/False)
+    # streaks_per_rep = {t: [] for t in ic_thresholds}  # 리플레이별 streak 평균
+
+    # replay별 최소 길이 × partial-length
+    min_lengths = []
+    for r_idx, _ in enumerate(replays):
+        lens = [len(a[r_idx]) for a in per_annotator_tracks]
+        T = int(min(lens) * partial_length) if lens else 0
+        min_lengths.append(max(0, T))
+
+    for r_idx, _ in enumerate(replays):
+        target = per_annotator_tracks[0][r_idx]
+        refs   = [a[r_idx] for a in per_annotator_tracks[1:]]
+        T = min_lengths[r_idx]
+        if T <= 0 or target.empty or any(r.empty for r in refs):
+            continue
+
+        # union 마스크 hit 누적(리플레이별 streak 계산용)
+        # rep_hits = {t: [] for t in ic_thresholds}
+
+        for t in range(T):
+            canvas = np.zeros((g.height, g.width), dtype=np.int16)
+            for r in refs:
+                row = r.iloc[t]
+                px, py, pw, ph = to_grid_rect(row.x, row.y, row.w, row.h, row.img_w, row.img_h, g, use_bbox_size)
+                canvas[py:py+ph, px:px+pw] += 1
+
+            union = (canvas > 0)
+
+            rowt = target.iloc[t]
+            rx, ry, rw, rh = to_grid_rect(rowt.x, rowt.y, rowt.w, rowt.h, rowt.img_w, rowt.img_h, g, use_bbox_size)
+            patch = np.zeros_like(union, dtype=bool)
+            patch[ry:ry+rh, rx:rx+rw] = True
+
+            I  = np.logical_and(patch, union).sum()
+            Ap = patch.sum()
+            Ar = union.sum()
+            U  = Ap + Ar - I
+
+            ovl = (I / Ap) if Ap > 0 else 0.0               # 현재 쓰는 지표(precision 유사)
+            iou = (I / U)  if U  > 0 else 0.0               # 대칭형
+            dice= (2*I/(Ap+Ar)) if (Ap+Ar) > 0 else 0.0     # 대칭형
+            cr  = (I / Ar) if Ar > 0 else 0.0               # recall 유사
+
+            ovls.append(ovl); ious.append(iou); dices.append(dice); recalls.append(cr)
+
+            for thr in ic_thresholds:
+                hit = (ovl >= thr) if thr > 0 else (ovl > 0.0)
+                ic_hits[thr].append(hit)
+                # rep_hits[thr].append(hit)
+
+        # 리플레이별 streak 평균(τ별)
+        # for thr in ic_thresholds:
+        #     streaks_per_rep[thr].append(_mean_streak(rep_hits[thr]))
+
+    # 집계
+    out = {}
+    # IC@τ (프레임 비율) + Streak
+    for thr in ic_thresholds:
+        key = f"ic_at_{_thr_key(thr)}"
+        out[key] = _mean(ic_hits[thr])
+        # out[f"streak_at_{_thr_key(thr)}"] = _mean(streaks_per_rep[thr])
+
+    # 추가 평균 지표
+    out["ic_mean"]   = _mean(ovls)    # = IC 커브 AUC
+    out["iou_mean"]  = _mean(ious)
+    out["dice_mean"] = _mean(dices)
+    out["cr_mean"]   = _mean(recalls)
+
+    return out
+
+
+def detect_gt_structure(gt_dst_dir: Path) -> str:
+    """
+    Returns 'flat' if <dst> contains {rep}.rep dirs directly,
+            'per_annotator' if it contains annotator subdirs.
+    """
+    if not gt_dst_dir.is_dir():
+        Logger.error(f"GT directory not found: {gt_dst_dir}")
+        raise FileNotFoundError(f"GT directory not found: {gt_dst_dir}")
+
+    children = [p for p in gt_dst_dir.iterdir() if p.is_dir()]
+    if any(c.name.endswith(".rep") for c in children):
+        return "flat"
+    if any(not c.name.endswith(".rep") for c in children):
+        return "per_annotator"
+    return "flat"
+
+
+def _summary_ic_line(stats: dict, thrs: List[float]) -> str:
+    left = "IC@" + "/".join(str(t).rstrip("0").rstrip(".") for t in thrs)
+    vals = []
+    for t in thrs:
+        k = f"ic_at_{_thr_key(t)}"
+        vals.append(f"{stats.get(k, 0.0):.2f}")
+    right = "/".join(vals)
+    return f"{left} = {right}"
+
+
+# =========================
+# Orchestration
+# =========================
+def run_evaluate(args):
+    g = Grid.from_args(args)
+
+    replays = args.replays
+    gt_base = Path(args.gt_root)            # e.g., /workspace/data
+    gt_dst  = gt_base / "label" / "dst"     # /workspace/data/label/dst
+    pred_root = Path(args.pred_root)        # e.g., /workspace/predictions
+
+    _assert_dir(gt_base, "GT base")
+    _assert_dir(gt_dst,  "GT dst (expected <gt-root>/label/dst)")
+    _assert_dir(pred_root, "Predictions root")
+
+    if not args.gt_loo:
+        missing = []
+        for name in args.pred_names:
+            p = (pred_root / name).resolve()
+            if not p.is_dir():
+                missing.append(str(p))
+        if missing:
+            Logger.error("Prediction run directory(ies) not found:")
+            for m in missing:
+                Logger.error(f"  - {m}")
+            raise FileNotFoundError("One or more prediction run directories are missing.")
+
+    gt_mode = detect_gt_structure(gt_dst)
+
+    Logger.log("=== Evaluation (predictions vs Ground Truth) ===")
+    Logger.log(f"Replays = {replays}")
+    Logger.log(f"Label   = {args.label_method} | frame-selects = {args.frame_select} | partial = {args.partial_length}")
+    Logger.log(f"IC thresholds = {args.ic_thresholds}")
+    Logger.log(f"GT base = {gt_base}  (mode: {gt_mode})")
+    Logger.log(f"Pred root = {pred_root}")
+    Logger.log(f"Pred names = {args.pred_names if args.pred_names else 'N/A (GT LOO)'}")
+    Logger.log("-" * 60)
+
+    rows = []
+
+    # FS 루프
+    for fs in args.frame_select:
+        # --- GT 로딩 (refs) ---
+        if gt_mode == "flat":
+            gt_tracks_flat = load_tracks_flat(gt_dst, replays, args.label_method, fs)
+            gt_refs = [gt_tracks_flat]  # wrap as a single "annotator"
+        else:
+            gt_annotators = SET_GT_ANNOTATORS[args.set] if getattr(args, "set", None) else []
+            gt_refs = load_tracks_for_names(gt_dst, gt_annotators, replays,
+                                            args.label_method, fs)
+            
+        if args.gt_loo:
+            # (원하면 GT LOO도 FS별로 구현 가능)
+            Logger.error("GT LOO mode not implemented in multi-FS loop (set --pred-names instead).")
+            raise RuntimeError("GT LOO mode currently not supported when looping multiple frame-selects.")
+        else:
+            # evaluate each prediction run vs GT
+            for pred in args.pred_names:
+                pred_tracks = load_tracks_for_names(pred_root, [pred], replays,
+                                                    args.label_method, fs)[0]
+
+                per_annotator_tracks = [pred_tracks] + gt_refs
+                per_annotator_tracks = unify_frames(per_annotator_tracks, replays)
+                stats = evaluate_intersection(
+                    replays, per_annotator_tracks, args.partial_length, g, args.use_bbox_size,
+                    ic_thresholds=args.ic_thresholds
+                )
+                rows.append({'target': pred, 'frame_select': fs, **stats})
+                
+                if args.dump_vpd:
+                    clip_max = (g.max_x, g.max_y) if args.vpd_clip else None
+                    _dump_vpd_for_tracks(
+                        pred_name=pred,
+                        frame_select=fs,
+                        replays=replays,
+                        tracks=pred_tracks,
+                        vpd_root=Path(args.vpd_dir),
+                        scale=32,
+                        clip_max=clip_max
+                    )
+                Logger.log(f"[PRED {pred} | FS={fs}] " + _summary_ic_line(stats, args.ic_thresholds))
+
+    # === Final aggregation & JSON artifact ===
+    if not rows:
+        Logger.warn("No results.")
+        return
+
+    df_out = pd.DataFrame(rows)
+
+    # 전체 평균
+    metric_cols = [c for c in df_out.columns if c not in ("target", "frame_select")]
+    mean_overall = {m: float(df_out[m].mean()) for m in metric_cols if m in df_out}
+
+    # FS별 평균
+    mean_by_fs = {}
+    for fs in args.frame_select:
+        sub = df_out[df_out["frame_select"] == fs]
+        mean_by_fs[fs] = {m: float(sub[m].mean()) for m in metric_cols if m in sub}
+
+    # 보기 좋은 테이블 로그 (선택)
+    for fs in args.frame_select:
+        sub = df_out[df_out["frame_select"] == fs].copy()
+        # 컬럼명 예쁘게
+        rename_map = {f"ic_at_{_thr_key(t)}": f"IC@{t:g}" for t in args.ic_thresholds}
+        # rename_map.update({f"streak_at_{_thr_key(t)}": f"Streak@{t:g}" for t in args.ic_thresholds})
+        rename_map.update({
+            "ic_mean": "IC_mean",
+            "iou_mean": "IoU_mean",
+            "dice_mean": "Dice_mean",
+            "cr_mean": "CR_mean"
+        })
+        Logger.log(f"--- FrameSelect = {fs} ---")
+        Logger.log(sub.rename(columns=rename_map).to_string(index=False))
+
+    # 메타 + 아티팩트 JSON
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = _now_utc_str()
+    replay_str = ",".join(args.replays)
+    pred_join  = ",".join(args.pred_names) if args.pred_names else "GT_LOO"
+
+    meta = {
+        "timestamp_utc": timestamp,
+        "gt_root": str(Path(args.gt_root).resolve()),
+        "pred_root": str(Path(args.pred_root).resolve()),
+        "gt_mode": gt_mode,
+        "replays": args.replays,
+        "label_method": args.label_method,
+        "frame_selects": args.frame_select,
+        "partial_length": args.partial_length,
+        "use_bbox_size": bool(args.use_bbox_size),
+        "grid": {
+            "width": g.width, "height": g.height,
+            "kernel_x": g.x_len, "kernel_y": g.y_len,
+            "max_x": g.max_x, "max_y": g.max_y,
+        },
+        "pred_names": args.pred_names if args.pred_names else [],
+        "gt_loo": bool(args.gt_loo),
+        "tag": args.tag,
+        "script": "evaluate.py",
+        "version": "1.1",
+        "ic_thresholds": args.ic_thresholds,
+    }
+
+    # 1) by_target 정렬
+    rows_ordered = [_order_row(r, args.ic_thresholds) for r in rows]
+
+    # 2) mean_overall / mean_by_frame_select 도 같은 순서로
+    def _order_metric_dict(d: dict, ic_thresholds) -> OrderedDict:
+        has_baseline = any(k.startswith("streak_baseline_at_") for k in d)
+        has_ratio    = any(k.startswith("streak_ratio_at_") for k in d)
+        keys         = _ordered_metric_keys(ic_thresholds, has_baseline, has_ratio)
+        out = OrderedDict()
+        for k in ("target","frame_select"):
+            if k in d: out[k] = d[k]
+        for k in keys:
+            if k in d: out[k] = d[k]
+        for k, v in d.items():
+            if k not in out: out[k] = v
+        return out
+
+    mean_overall_ordered = _order_metric_dict(mean_overall, args.ic_thresholds)
+    mean_by_fs_ordered   = {fs: _order_metric_dict(v, args.ic_thresholds) for fs, v in mean_by_fs.items()}
+
+    payload = {
+        "meta": meta,
+        "results": {
+            "by_target": rows_ordered,
+            "mean_overall": mean_overall_ordered,
+            "mean_by_frame_select": mean_by_fs_ordered,
+        },
+    }
+
+    # 간결한 파일명
+    lab = _abbr_label(args.label_method)
+    fs_code = _fs_code(args.frame_select)
+    pct = _pct_code(args.partial_length)
+    rkey = _replays_key(args)
+    pkey = _pred_key(args.pred_names or [])
+    h = _short_hash("|".join([pred_join, replay_str, args.label_method, ",".join(args.frame_select)]), 6)
+    artifact_name = f"{timestamp}_{lab}_{fs_code}_{pct}_{rkey}_{pkey}-{h}.json"
+    artifact_json = out_dir / artifact_name
+
+    with artifact_json.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    Logger.info(f"Wrote artifact JSON -> {artifact_json}")
+
+
+# =========================
+# Entrypoint
+# =========================
 def main():
     args = parse_arguments()
+    Logger.set_level(args.log_level)
     run_evaluate(args)
 
 
