@@ -59,7 +59,8 @@ make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-
 make evaluate ARGS=" \
   --replays 36 212 438 522 1660 \
   --label-method all_correct \
-  --pred-names vanilla/all_correct_win4_b16_20250812_062928  \
+  --pred-names vanilla/all_correct_win4_b16_20250812_062928 \
+  --model-number 14 \
   --ic-thresholds 0 0.3 0.5 \
   --frame-select first \
   --dump-vpd \
@@ -70,11 +71,11 @@ make evaluate ARGS=" \
 make inference ARGS=" \
   --replays 36 212 438 522 1660 6254 \
   --include-components worker ground air building vision \
-  --model-name all_correct_win4_b16_20250812_062928 \
+  --model-name all_correct_win4_b8_20250815_073611 \
   --model-number 14 \
   --window-size 4 \
   --label-method all_correct \
-  --batch-size 8 \
+  --batch-size 16 \
   --score-threshold 0.0 \
   --sample-ratio 1.0 \
   --output-dir /workspace/predictions \
