@@ -31,7 +31,7 @@ make preprocess_label ARGS="--replays 36 212 438 522 1660 1559 1628 2351 6219 11
 # Training with specific replays
 # make train ARGS="--replays 36 212 438 522 1660 --label-method legacy --sample-ratio 0.1 --log-level log"
 
-make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-epoch 5 --batch-size 8 --sample-ratio 0.1 --log-level log"
+make train ARGS="--replays 36 212 --label-method all_correct --max-epoch 1 --window-size 4 --batch-size 8 --sample-ratio 0.1 --log-level log --use-kbrs"
 make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-epoch 5 --batch-size 8 --window-size 4 --sample-ratio 0.05 --log-level log"
 make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-epoch 15 --batch-size 8 --learning-rate 0.005 --sample-ratio 1.0 --log-level log"
 make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-epoch 15 --batch-size 8 --learning-rate 0.005 --sample-ratio 1.0 --log-level log --use-kbrs"
@@ -59,7 +59,18 @@ make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-
 make evaluate ARGS=" \
   --replays 36 212 438 522 1660 \
   --label-method all_correct \
-  --pred-names vanilla/all_correct_win4_b16_20250812_062928 \
+  --pred-names all_correct_win4_b8_20250815_073611 \
+  --model-number 14 \
+  --ic-thresholds 0 0.3 0.5 \
+  --frame-select first \
+  --dump-vpd \
+  --log-level log \
+  "
+
+make evaluate ARGS=" \
+  --replays 6254 \
+  --label-method all_correct \
+  --pred-names all_correct_win4_b8_20250815_073611 \
   --model-number 14 \
   --ic-thresholds 0 0.3 0.5 \
   --frame-select first \
