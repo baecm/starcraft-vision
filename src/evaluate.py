@@ -192,6 +192,7 @@ def _order_row(row: dict, ic_thresholds) -> OrderedDict:
             out[k] = v
     return out
 
+
 # =========================
 # CLI
 # =========================
@@ -228,6 +229,8 @@ def parse_arguments():
     group_targets.add_argument("--pred-names", nargs="+",
                                help="Prediction run names (can include subdirs) relative to --pred-root, "
                                     "e.g., 'vanilla/all_correct_win4_b16_20250812_062928'.")
+    group_targets.add_argument("--model-number", type=int,
+                               help="Model number to evaluate. If set, will read from '<pred-name>/model_<N>/'.")
     group_targets.add_argument("--gt-loo", action="store_true",
                                help="Leave-one-out using GT annotators (target=held-out GT). "
                                     "If set, predictions are ignored.")
@@ -437,7 +440,7 @@ def to_grid_rect(x: float, y: float, w: float, h: float,
     """
     bbox [x,y,w,h] → grid rect (gx,gy,gw,gh)
     - img_w/img_h 있으면 그것으로 스케일, 없으면 (g.max_x,g.max_y) 사용
-    - use_bbox_size=False면 gw,gh는 (g.x_len,g.y_len) 고정
+    - use_bBox_size=False면 gw,gh는 (g.x_len,g.y_len) 고정
     """
     sx = (g.width  / float(img_w)) if (img_w and img_w > 0) else (g.width  / g.max_x)
     sy = (g.height / float(img_h)) if (img_h and img_h > 0) else (g.height / g.max_y)
@@ -551,14 +554,14 @@ def evaluate_intersection(
 
     # 집계
     out = {}
-    # IC@τ (프레임 비율) + Streak
+    # IC@τ (프레임 비율)
     for thr in ic_thresholds:
         key = f"ic_at_{_thr_key(thr)}"
         out[key] = _mean(ic_hits[thr])
         # out[f"streak_at_{_thr_key(thr)}"] = _mean(streaks_per_rep[thr])
 
     # 추가 평균 지표
-    out["ic_mean"]   = _mean(ovls)    # = IC 커브 AUC
+    out["ic_mean"]   = _mean(ovls)    # = IC 커브 AUC(정확히는 프레임 평균)
     out["iou_mean"]  = _mean(ious)
     out["dice_mean"] = _mean(dices)
     out["cr_mean"]   = _mean(recalls)
@@ -608,12 +611,15 @@ def run_evaluate(args):
     _assert_dir(gt_dst,  "GT dst (expected <gt-root>/label/dst)")
     _assert_dir(pred_root, "Predictions root")
 
+    # 예측 런 디렉터리 확인 (model_number 반영)
     if not args.gt_loo:
         missing = []
         for name in args.pred_names:
-            p = (pred_root / name).resolve()
-            if not p.is_dir():
-                missing.append(str(p))
+            base = pred_root / name
+            if args.model_number is not None:
+                base = base / f"model_{args.model_number}"
+            if not base.is_dir():
+                missing.append(str(base))
         if missing:
             Logger.error("Prediction run directory(ies) not found:")
             for m in missing:
@@ -627,7 +633,10 @@ def run_evaluate(args):
     Logger.log(f"Label   = {args.label_method} | frame-selects = {args.frame_select} | partial = {args.partial_length}")
     Logger.log(f"IC thresholds = {args.ic_thresholds}")
     Logger.log(f"GT base = {gt_base}  (mode: {gt_mode})")
-    Logger.log(f"Pred root = {pred_root}")
+    if args.model_number is not None:
+        Logger.log(f"Pred root = {pred_root} (using model_{args.model_number} subfolders)")
+    else:
+        Logger.log(f"Pred root = {pred_root}")
     Logger.log(f"Pred names = {args.pred_names if args.pred_names else 'N/A (GT LOO)'}")
     Logger.log("-" * 60)
 
@@ -645,14 +654,16 @@ def run_evaluate(args):
                                             args.label_method, fs)
             
         if args.gt_loo:
-            # (원하면 GT LOO도 FS별로 구현 가능)
             Logger.error("GT LOO mode not implemented in multi-FS loop (set --pred-names instead).")
             raise RuntimeError("GT LOO mode currently not supported when looping multiple frame-selects.")
         else:
             # evaluate each prediction run vs GT
             for pred in args.pred_names:
-                pred_tracks = load_tracks_for_names(pred_root, [pred], replays,
-                                                    args.label_method, fs)[0]
+                # pred_root / "<pred>/model_<N>" / "<replay>.rep/<label>.json"
+                pred_name_for_loader = f"{pred}/model_{args.model_number}" if args.model_number is not None else pred
+                pred_tracks = load_tracks_for_names(
+                    pred_root, [pred_name_for_loader], replays, args.label_method, fs
+                )[0]
 
                 per_annotator_tracks = [pred_tracks] + gt_refs
                 per_annotator_tracks = unify_frames(per_annotator_tracks, replays)
@@ -665,7 +676,7 @@ def run_evaluate(args):
                 if args.dump_vpd:
                     clip_max = (g.max_x, g.max_y) if args.vpd_clip else None
                     _dump_vpd_for_tracks(
-                        pred_name=pred,
+                        pred_name=pred_name_for_loader,   # VPD 경로에도 model_<N> 반영
                         frame_select=fs,
                         replays=replays,
                         tracks=pred_tracks,
@@ -673,7 +684,9 @@ def run_evaluate(args):
                         scale=32,
                         clip_max=clip_max
                     )
-                Logger.log(f"[PRED {pred} | FS={fs}] " + _summary_ic_line(stats, args.ic_thresholds))
+
+                tag = pred_name_for_loader
+                Logger.log(f"[PRED {tag} | FS={fs}] " + _summary_ic_line(stats, args.ic_thresholds))
 
     # === Final aggregation & JSON artifact ===
     if not rows:
@@ -695,9 +708,7 @@ def run_evaluate(args):
     # 보기 좋은 테이블 로그 (선택)
     for fs in args.frame_select:
         sub = df_out[df_out["frame_select"] == fs].copy()
-        # 컬럼명 예쁘게
         rename_map = {f"ic_at_{_thr_key(t)}": f"IC@{t:g}" for t in args.ic_thresholds}
-        # rename_map.update({f"streak_at_{_thr_key(t)}": f"Streak@{t:g}" for t in args.ic_thresholds})
         rename_map.update({
             "ic_mean": "IC_mean",
             "iou_mean": "IoU_mean",
@@ -731,6 +742,7 @@ def run_evaluate(args):
             "max_x": g.max_x, "max_y": g.max_y,
         },
         "pred_names": args.pred_names if args.pred_names else [],
+        "model_number": args.model_number,         # ← 모델 번호 기록
         "gt_loo": bool(args.gt_loo),
         "tag": args.tag,
         "script": "evaluate.py",
@@ -767,14 +779,15 @@ def run_evaluate(args):
         },
     }
 
-    # 간결한 파일명
+    # 간결한 파일명 (모델 번호 반영)
     lab = _abbr_label(args.label_method)
     fs_code = _fs_code(args.frame_select)
     pct = _pct_code(args.partial_length)
     rkey = _replays_key(args)
     pkey = _pred_key(args.pred_names or [])
     h = _short_hash("|".join([pred_join, replay_str, args.label_method, ",".join(args.frame_select)]), 6)
-    artifact_name = f"{timestamp}_{lab}_{fs_code}_{pct}_{rkey}_{pkey}-{h}.json"
+    model_suffix = f"-m{args.model_number}" if args.model_number is not None else ""
+    artifact_name = f"{timestamp}_{lab}_{fs_code}_{pct}_{rkey}_{pkey}{model_suffix}-{h}.json"
     artifact_json = out_dir / artifact_name
 
     with artifact_json.open("w", encoding="utf-8") as f:
