@@ -1,21 +1,23 @@
 import os
 import argparse
 import time
-import torch
 import tqdm
 import utils
 import json
 import pickle
-import wandb
 from multiprocessing import Pool
-from ultralytics import settings
+
+import torch
 from torch.utils.data import Subset
+import wandb
+from ultralytics import settings
 
 import detection.transforms as T
-import config
 from detection.engine import train_one_epoch, evaluate
 from dataset.custom_penn_fudan import CustomPennFudanDataset
 from model.maskrcnn_builder import get_model_instance_segmentation
+
+import config
 from utils.logger import Logger
 from utils.synology_chat import send_message
 
