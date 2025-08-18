@@ -12,9 +12,11 @@ import tqdm
 import multiprocessing
 
 from model.maskrcnn_builder import get_model_instance_segmentation
-import detection.transforms as T
-from utils.logger import Logger
+# import detection.transforms as T  # (unused)
 import config
+
+from utils.logger import Logger
+from utils.synology_chat import send_message
 
 
 class InferenceDataset(Dataset):
@@ -35,7 +37,7 @@ class InferenceDataset(Dataset):
             self.channel_indices = sorted(sum([config.COMPONENT_CHANNEL_MAP[c] for c in include_components], []))
         else:
             self.channel_indices = list(range(len(config.Channel)))
-        
+
         value_to_name_map = {member.value: name for name, member in config.Channel.__members__.items()}
         channel_names = [value_to_name_map[i] for i in self.channel_indices]
         Logger.info(f"[InferenceDataset] Using {len(self.channel_indices)} channels: {channel_names}")
@@ -54,24 +56,27 @@ class InferenceDataset(Dataset):
                 [f for f in os.listdir(rep_dir) if f.endswith(".npy")],
                 key=lambda s: int(os.path.splitext(s)[0])
             )
-            
+
             # Create sliding windows
             if len(npy_files) >= self.window_size:
                 for i in range(len(npy_files) - self.window_size + 1):
-                    window_files = npy_files[i : i + self.window_size]
+                    window_files = npy_files[i: i + self.window_size]
                     window_paths = [os.path.join(rep_dir, f) for f in window_files]
                     target_frame_id = int(os.path.splitext(window_files[-1])[0])
                     self.indexes.append((rid, target_frame_id, window_paths))
 
         if len(self.indexes) == 0:
-            raise RuntimeError(f"No .npy files or valid windows found for replays {replay_ids} with window size {self.window_size}. Aborting.")
+            raise RuntimeError(
+                f"No .npy files or valid windows found for replays {replay_ids} "
+                f"with window size {self.window_size}. Aborting."
+            )
 
     def __len__(self):
         return len(self.indexes)
 
     def __getitem__(self, idx):
         rid, target_frame_id, window_paths = self.indexes[idx]
-        
+
         window_frames = []
         for npy_path in window_paths:
             arr = np.load(npy_path)
@@ -79,7 +84,7 @@ class InferenceDataset(Dataset):
             if arr.ndim != 3:
                 raise ValueError(f"Unexpected array shape {arr.shape} at {npy_path}")
             window_frames.append(arr)
-        
+
         # Concatenate frames along the channel axis (C * window, H, W)
         img = torch.from_numpy(np.concatenate(window_frames, axis=0)).float()
 
@@ -114,6 +119,7 @@ def _auto_num_workers(device: torch.device) -> int:
         return max(1, avail - 1)
     return max(0, avail - 1)
 
+
 def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int, num_classes: int = 2):
     model = get_model_instance_segmentation(num_classes, in_channels=in_channels, window_size=window_size)
     state = torch.load(model_path, map_location=device)
@@ -121,6 +127,7 @@ def _load_model(model_path: str, device: torch.device, in_channels: int, window_
     model.to(device)
     model.eval()
     return model
+
 
 def run_inference(
     model: torch.nn.Module,
@@ -131,11 +138,12 @@ def run_inference(
     """
     Runs inference on a given model and data loader.
     Collects predicted results as a list of dictionaries (per-frame).
+    NOTE: masks are NOT stored to avoid memory blow-up.
     """
     model.eval()
     replay_results = []
 
-    with torch.no_grad():
+    with torch.inference_mode():
         for images, metas in tqdm.tqdm(data_loader, desc="Running inference for replay", unit="batch"):
             # images: list of tensors [C,H,W], metas: list of (rid, frame_id)
             images = [img.to(device, non_blocking=True) for img in images]
@@ -146,31 +154,25 @@ def run_inference(
                 scores_all = output["scores"].detach().cpu().numpy().tolist()
                 keep_idx = [i for i, s in enumerate(scores_all) if s >= score_threshold]
 
-                boxes_all  = output["boxes"].detach().cpu().numpy().tolist()
+                boxes_all = output["boxes"].detach().cpu().numpy().tolist()
                 labels_all = output["labels"].detach().cpu().numpy().tolist()
-                masks_all  = output["masks"].detach().cpu().numpy()  # (N, 1, H, W)
 
-                frame_boxes  = []
-                frame_scores = []
-                frame_labels = []
-                frame_masks  = []
-
+                frame_boxes, frame_scores, frame_labels = [], [], []
                 for idx in keep_idx:
                     frame_boxes.append(boxes_all[idx])
                     frame_scores.append(scores_all[idx])
                     frame_labels.append(labels_all[idx])
-                    # Convert mask to a binary format.
-                    binary_mask = (masks_all[idx, 0] >= 0.5).astype(np.uint8).tolist()
-                    frame_masks.append(binary_mask)
 
                 entry = {
                     "frame_id": frame_id,
-                    "boxes":    frame_boxes,
-                    "scores":   frame_scores,
-                    "labels":   frame_labels,
-                    "masks":    frame_masks
+                    "boxes": frame_boxes,
+                    "scores": frame_scores,
+                    "labels": frame_labels,
                 }
                 replay_results.append(entry)
+
+            # free per-batch refs
+            del outputs, images
 
     return replay_results
 
@@ -182,11 +184,11 @@ def save_predictions_as_coco(
     output_dir: str
 ):
     """
-    Save a single replay's predictions in COCO format.
+    Save a single replay's predictions in COCO format (masks omitted for compactness).
 
-    Output path (GT 미러링):
+    Output path (GT mirror):
         <run_dir>/<replay_id>.rep/<label_method>.json
-    예:
+    e.g.:
         predictions/vanilla/all_correct_win4_b16_20250812_062928/36.rep/all_correct.json
     """
     out_dir = os.path.join(output_dir, f"{replay_id}.rep")
@@ -207,27 +209,25 @@ def save_predictions_as_coco(
         "categories": categories,
     }
 
-    # 중복 frame 등록 방지용
+    # prevent duplicate image entries
     seen_frames = set()
     ann_id = 1
 
     for item in replay_results:
         fid = int(item["frame_id"])
 
-        # images: frame당 1개만
+        # images: single per frame
         if fid not in seen_frames:
             coco["images"].append({
                 "id": fid,
                 "file_name": f"{replay_id}.rep/{fid}.npy",
-                "width":  int(config.ORIGIN_SHAPE[1]),
+                "width": int(config.ORIGIN_SHAPE[1]),
                 "height": int(config.ORIGIN_SHAPE[0]),
             })
             seen_frames.add(fid)
 
-        # annotations
-        for box, score, label, _mask in zip(
-            item["boxes"], item["scores"], item["labels"], item["masks"]
-        ):
+        # annotations (bbox-only; polygon is derived from bbox for viewer compatibility)
+        for box, score, label in zip(item["boxes"], item["scores"], item["labels"]):
             x1, y1, x2, y2 = map(int, box)
             w = max(0, x2 - x1)
             h = max(0, y2 - y1)
@@ -236,7 +236,7 @@ def save_predictions_as_coco(
             coco["annotations"].append({
                 "id": ann_id,
                 "image_id": fid,
-                "category_id": int(label),   # 단일 클래스라면 1 고정도 가능
+                "category_id": int(label),   # single class -> 1 also OK
                 "bbox": [x1, y1, w, h],
                 "score": float(score),
                 "area": int(w * h),
@@ -261,6 +261,9 @@ def parse_args():
     group_data.add_argument("--data-root", type=str, default=os.path.join(os.getcwd(), "data"), help="Root directory for data.")
     group_data.add_argument("--output-dir", type=str, default=os.path.join(os.getcwd(), "predictions"), help="Directory to save prediction JSON files.")
     group_data.add_argument("--include-components", type=str, nargs='+', default=['worker', 'ground', 'air', 'building', 'vision'], help="List of components to include.")
+    group_data.add_argument("--run-name", type=str, default=None,
+                            help="Subdirectory under --output-dir to save predictions. "
+                                 "If omitted, defaults to '<model_name>/model_<model_number>'.")
 
     # Model Loading
     group_model = parser.add_argument_group("Model Loading")
@@ -288,14 +291,19 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     Logger.info(f"[Inference] Using device: {device}")
 
-    # Create model load path
+    # Checkpoint path
     model_folder = os.path.join(args.model_root, args.model_name)
     model_path = os.path.join(model_folder, f"model_{args.model_number}.pth")
     Logger.info(f"[Inference] Checkpoint path: {model_path}")
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
-    # ===== (변경점) 입력 채널 수는 한 번만 계산 =====
+    # Decide output run dir
+    run_name = args.run_name or os.path.join(args.model_name, f"model_{args.model_number}")
+    run_dir = os.path.join(args.output_dir, run_name)
+    Logger.info(f"[Inference] Output run dir: {run_dir}")
+
+    # Infer input channels once from a small temp dataset (first replay)
     temp_input_root = os.path.join(args.data_root, "input", "dst")
     temp_dataset = InferenceDataset(
         temp_input_root,
@@ -306,21 +314,20 @@ def main():
     in_channels = len(temp_dataset.channel_indices) * temp_dataset.window_size
     del temp_dataset
 
-    # ===== (변경점) 모델은 각 리플레이마다 새로 로드 =====
+    # Load model ONCE (reuse across replays)
+    model = _load_model(
+        model_path=model_path,
+        device=device,
+        in_channels=in_channels,
+        window_size=args.window_size,
+        num_classes=2  # background + viewport
+    )
+
     input_root = os.path.join(args.data_root, "input", "dst")
     for replay_id in args.replays:
         Logger.info(f"--- Processing replay: {replay_id} ---")
 
-        # 1) 모델 로드 (리플레이 단위)
-        model = _load_model(
-            model_path=model_path,
-            device=device,
-            in_channels=in_channels,
-            window_size=args.window_size,
-            num_classes=2  # background + viewport
-        )
-
-        # 2) 데이터셋 구성
+        # Build dataset for this replay
         dataset = InferenceDataset(
             input_root,
             [replay_id],
@@ -333,10 +340,9 @@ def main():
             sample_size = int(total_len * args.sample_ratio)
             indices = torch.randperm(total_len).tolist()[:sample_size]
             dataset = Subset(dataset, indices)
-            # 주의: dataset이 Subset인 경우 원본 길이는 접근 시 조건부 처리
             Logger.info(f"[Inference] Applied sampling: {sample_size}/{total_len} frames for replay {replay_id}")
 
-        # 3) DataLoader 구성
+        # Dataloader setup (conservative to avoid RAM issues)
         if args.workers is not None and args.workers >= 0:
             num_workers = args.workers
         else:
@@ -344,21 +350,17 @@ def main():
 
         Logger.info(f"[Inference] Dataset frames for {replay_id}: {len(dataset)}; num_workers={num_workers}")
 
-        pin_memory = (device.type == "cuda")
         dl_kwargs = dict(
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=num_workers,
             collate_fn=collate_fn,
-            pin_memory=pin_memory,
-            persistent_workers=(num_workers > 0),
+            pin_memory=False,            # safer for long runs
+            persistent_workers=False,    # ensure cleanup per replay
         )
-        if num_workers > 0:
-            dl_kwargs["prefetch_factor"] = 2
-
         data_loader = DataLoader(dataset, **dl_kwargs)
 
-        # 4) 추론
+        # Run inference
         replay_results = run_inference(
             model=model,
             data_loader=data_loader,
@@ -366,23 +368,31 @@ def main():
             score_threshold=args.score_threshold
         )
 
-        # 5) 저장
+        # Save predictions (COCO-style, bbox-only)
         save_predictions_as_coco(
             replay_id=replay_id,
             replay_results=replay_results,
             label_method=args.label_method,
-            output_dir=args.output_dir
+            output_dir=run_dir
         )
 
-        # 6) (중요) 모델/캐시 정리 후 다음 리플레이로
-        del model, data_loader, dataset
+        # Cleanup per-replay
+        del data_loader, dataset, replay_results
         gc.collect()
         if device.type == "cuda":
             torch.cuda.empty_cache()
-            try:
-                torch.cuda.ipc_collect()
-            except Exception:
-                pass
+
+        # Notify (best-effort)
+        try:
+            send_message(f"[Inference] Completed {replay_id}. Predictions saved at {run_dir}")
+        except Exception as e:
+            Logger.error(f"[Inference] Error sending message: {e}")
+
+    # Final cleanup
+    del model
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
     Logger.info("[Inference] Complete!")
 
