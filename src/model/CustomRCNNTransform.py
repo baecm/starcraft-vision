@@ -1,6 +1,5 @@
+# src/model/CustomRCNNTransform.py
 from torchvision.models.detection.transform import GeneralizedRCNNTransform, ImageList
-
-from utils.logger import Logger
 
 class CustomRCNNTransform(GeneralizedRCNNTransform):
     def __init__(self, *args, do_normalize=True, **kwargs):

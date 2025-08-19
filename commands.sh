@@ -31,7 +31,7 @@ make preprocess_label ARGS="--replays 36 212 438 522 1660 1559 1628 2351 6219 11
 # Training with specific replays
 # make train ARGS="--replays 36 212 438 522 1660 --label-method legacy --sample-ratio 0.1 --log-level log"
 
-make train ARGS="--replays 36 212 --label-method all_correct --max-epoch 1 --window-size 4 --batch-size 8 --sample-ratio 0.1 --log-level log --use-kbrs"
+make train ARGS="--replays 36 --train-replays 36 --test-replays 6254 --label-method all_correct --max-epoch 1 --window-size 4 --batch-size 8 --sample-ratio 0.1 --log-level log --use-kbrs"
 make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-epoch 5 --batch-size 8 --window-size 4 --sample-ratio 0.05 --log-level log"
 make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-epoch 15 --batch-size 8 --learning-rate 0.005 --sample-ratio 1.0 --log-level log"
 make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-epoch 15 --batch-size 8 --learning-rate 0.005 --sample-ratio 1.0 --log-level log --use-kbrs"
@@ -56,6 +56,36 @@ make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-
 #   --out-csv results.csv \
 #   "
 
+# Training
+make train ARGS=" \
+  --replays 36 212 438 522 1660 6254 \
+  --train-replays 36 212 438 522 1660 \
+  --test-replays 6254 \
+  --include-components worker ground air building vision \
+  --label-method all_correct \
+  --max-epoch 15 \
+  --window-size 4 \
+  --batch-size 8 \
+  --sample-ratio 1.0 \
+  --log-level log \
+  --use-kbrs \
+  "
+
+# Inference
+make inference ARGS=" \
+  --replays 36 212 438 522 1660 6254 \
+  --include-components worker ground air building vision \
+  --model-name all_correct_win4_b8_20250815_073611 \
+  --model-number 14 \
+  --window-size 4 \
+  --label-method all_correct \
+  --batch-size 16 \
+  --score-threshold 0.0 \
+  --sample-ratio 1.0 \
+  --output-dir /workspace/predictions \
+  "
+
+# Evaluation
 make evaluate ARGS=" \
   --replays 36 212 438 522 1660 \
   --label-method all_correct \
@@ -76,18 +106,4 @@ make evaluate ARGS=" \
   --frame-select first \
   --dump-vpd \
   --log-level log \
-  "
-
-# Inference
-make inference ARGS=" \
-  --replays 36 212 438 522 1660 6254 \
-  --include-components worker ground air building vision \
-  --model-name all_correct_win4_b8_20250815_073611 \
-  --model-number 14 \
-  --window-size 4 \
-  --label-method all_correct \
-  --batch-size 16 \
-  --score-threshold 0.0 \
-  --sample-ratio 1.0 \
-  --output-dir /workspace/predictions \
   "

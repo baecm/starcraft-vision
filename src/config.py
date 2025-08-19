@@ -3,12 +3,6 @@ DEVICE = "cuda"
 NUM_CLASSES = 2  # 0: background, 1: unit
 WINDOW_SIZE = 1
 DO_NORMALIZE = False
-KBRS_PARAMS = {
-    "weights": {"density": 1.0, "mixture": 0.7, "centeredness": 1.2},
-    "loss_weight": 0.5,
-    "region_size": (20, 12),
-    "feature_map_name": "pool"  # FPN을 사용하므로 'pool' 특징맵 사용
-}
 
 # TRAIN CONFIGURATION
 TRAIN_BATCH_SIZE = 8
@@ -61,4 +55,38 @@ COMPONENT_CHANNEL_MAP = {
     'resource': [Channel.Resource.value],
     'vision': [Channel.Vision.value],
     'terrain': [Channel.Terrain.value],
+}
+
+KBRS_PARAMS = {
+    "feature_map_name": "smallest",
+    "scorer_impl": "conv",
+    "detach_scorer_input": False,
+    'weights': {"loss_kbrs": 0.25,
+                "density": 0.3,
+                "mixture": 3.0,
+                "centeredness": 0.3},
+    'region_size': (20, 12),
+    'learnable': 'static',
+    'loss_scale': 4.0,
+    'use_entropy': False,
+    'projections': [{'name': 'A', 'channels': [0, 1, 2, 3]},
+                    {'name': 'B', 'channels': [4, 5, 6, 7]}],
+    'mixture_between': ('A', 'B'),
+    # 게이트(vision-like): window_size>1이면 자동 확장됨
+    'gate_channels': [8],
+    'gate_reduce': 'mean',
+    'gate_gain': 0.8,
+    # scorer 해상도/속도
+    "score_stride": 1,
+    "downsample_before": None,
+    "log_into_losses": False,
+    # 혼합도 설정(중요)
+    "mixture_mode": "confusion",     # "confusion" | "entropy" | "agreement"
+    "mixture_power": 2.0,            # p≈0.5 근처 강조
+    # builder가 주입
+    # "window_size": window_size,
+    # "per_window": 9,
+    "viz_components": True,
+    "accumulate_epoch": True,
+    "component_losses": True,
 }

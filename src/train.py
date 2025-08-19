@@ -8,7 +8,10 @@ import pickle
 from multiprocessing import Pool
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Subset
+from torchvision.utils import make_grid
+
 import wandb
 from ultralytics import settings
 
@@ -176,14 +179,18 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
         }
 
         if use_kbrs:
-            if hasattr(train_stats, 'loss_kbrs'):
-                log_dict["Loss/kbrs"] = train_stats.loss_kbrs.global_avg
-            if hasattr(train_stats, 'loss_kbrs_density'):
-                log_dict["Loss/kbrs_density"] = train_stats.loss_kbrs_density.global_avg
-            if hasattr(train_stats, 'loss_kbrs_mixture'):
-                log_dict["Loss/kbrs_mixture"] = train_stats.loss_kbrs_mixture.global_avg
-            if hasattr(train_stats, 'loss_kbrs_centeredness'):
-                log_dict["Loss/kbrs_centeredness"] = train_stats.loss_kbrs_centeredness.global_avg
+            meters = getattr(train_stats, "meters", {})
+            # 기본 키들은 이미 log_dict에 올렸으니 스킵
+            skip = {
+                "loss_classifier", "loss_box_reg", "loss_mask",
+                "loss_objectness", "loss_rpn_box_reg", "loss"
+            }
+            for k, meter in meters.items():
+                if k.startswith("loss_") and k not in skip and hasattr(meter, "global_avg"):
+                    # loss_kbrs -> Loss/kbrs, loss_kbrs_density -> Loss/kbrs_density ...
+                    log_dict[f"Loss/{k[5:]}"] = float(meter.global_avg)
+
+        wandb.log(log_dict)
 
         # Log evaluation stats
         # The evaluate function returns a CocoEvaluator object, from which we can extract stats.
@@ -195,10 +202,47 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
                     metric_name = f"Eval/{iou_type}/{name}"
                     metric_value = coco_eval.stats[i]
                     metric_dict[metric_name] = metric_value
+                    
         ## Log metric_dict using Logger
         Logger.info(f"[Eval] Epoch {epoch}: {metric_dict}")
         log_dict.update(metric_dict)
         wandb.log(log_dict)
+        
+        if hasattr(model, "consume_epoch_kbrs"):
+            scalars, cache = model.consume_epoch_kbrs()
+
+            if scalars:
+                wandb.log(scalars, step=epoch)
+
+            if cache is not None:
+                def _minmax01(t, eps=1e-6):
+                    t = t.float()
+                    mn = t.amin(dim=(-2, -1), keepdim=True)
+                    mx = t.amax(dim=(-2, -1), keepdim=True)
+                    return (t - mn) / (mx - mn + eps)
+
+                def _to_rgb(gray01):    # (1,H,W)->(3,H,W)
+                    return gray01.expand(3, -1, -1)
+
+                def _to_wandb_image(t3hw):  # (3,H,W)->HWC
+                    return t3hw.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+
+                total = cache["score_total"]
+                comps = cache["comp_maps"]
+
+                wandb.log({"kbrs_epoch/total": wandb.Image(_to_wandb_image(_to_rgb(_minmax01(total))))}, step=epoch)
+
+                for name, m in comps.items():
+                    wandb.log({f"kbrs_epoch/{name}": wandb.Image(_to_wandb_image(_to_rgb(_minmax01(m))))}, step=epoch)
+
+                # (선택) 그리드 요약
+                keys = ["density", "mixture", "centeredness"]
+                panels = [_to_rgb(_minmax01(total))] + [
+                    _to_rgb(_minmax01(comps[k])) for k in keys if k in comps
+                ]
+                if panels:
+                    grid = make_grid(panels, nrow=len(panels))
+                    wandb.log({"kbrs_epoch/grid": wandb.Image(_to_wandb_image(grid))}, step=epoch)
         
         final_eval_stats = metric_dict
         
@@ -239,7 +283,7 @@ def run_training(args):
     
     # Convert JSON labels to pickle format
     preprocess_json_to_pickle(label_root=label_root, label_method=args.label_method, replay_ids=args.replays, num_workers=args.num_workers)
-
+    Logger.info("[Info] JSON to Pickle conversion completed.")
     # Load data
     data_loader_train, data_loader_test = load_data(
         input_root,
@@ -256,7 +300,8 @@ def run_training(args):
         test_sample_ratio=args.test_sample_ratio,
         include_components=args.include_components
     )
-
+    Logger.info(f"[Info] Data loaded: Train {len(data_loader_train.dataset)}, Test {len(data_loader_test.dataset)}")
+    
     Logger.info("[Stage] Initializing model...")
     num_classes = 2  # background + viewport
     
@@ -264,23 +309,19 @@ def run_training(args):
     if args.loss_weight:
         for name, weight in args.loss_weight:
             loss_weights[name] = float(weight)
-
+    Logger.info(f"[Info] Loss weights: {loss_weights}")
     kbrs_params = None
     if args.use_kbrs:
         if 'loss_kbrs' not in loss_weights and 'kbrs_loss_weight' in args and args.kbrs_loss_weight is not None:
             loss_weights['loss_kbrs'] = args.kbrs_loss_weight
 
-        kbrs_params = {
-            'weights': {"density": 1.0, "mixture": 0.7, "centeredness": 1.2},
-            'region_size': config.KERNEL_SHAPE,
-            'feature_map_name': '0',  # Use the first feature map from FPN
-            'top_k_ratio': 0.5  # Use top 50% of GT boxes based on K-BRS score
-        }
-
+        kbrs_params = config.KBRS_PARAMS.copy()
+        Logger.info(f"[Info] Using KBRS parameters: {kbrs_params}")
+        
     train_ds = data_loader_train.dataset
     inner_ds = train_ds.dataset if isinstance(train_ds, Subset) else train_ds
     in_channels = len(inner_ds.channel_indices) * inner_ds.window_size
-    
+    Logger.info(f"[Info] Input channels: {in_channels} (window size: {inner_ds.window_size})")
     model = get_model_instance_segmentation(
         num_classes,
         window_size=args.window_size,
@@ -290,8 +331,9 @@ def run_training(args):
         kbrs_params=kbrs_params,
         loss_weights=loss_weights
     )
+    Logger.info(f"[Info] Model initialized with {num_classes} classes and {in_channels} input channels.")
     model.to(device)
-
+    Logger.info(f"[Info] Model moved to device: {device}")
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=args.learning_rate, momentum=0.9, weight_decay=0.0005)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
@@ -325,11 +367,6 @@ def parse_arguments():
     group_hyper.add_argument("--learning-rate", type=float, default=config.TRAIN_LEARNING_RATE, help="Initial learning rate.")
     group_hyper.add_argument("--max-epoch", type=int, default=config.TRAIN_EPOCHS, help="Maximum number of training epochs.")
     
-    # KBRS Specific
-    group_kbrs = parser.add_argument_group("KBRS Specific")
-    group_kbrs.add_argument("--use-kbrs", action='store_true', help="Use KBRS loss during training.")
-    group_kbrs.add_argument('--loss-weight', nargs=2, action='append', metavar=('LOSS_NAME', 'WEIGHT'), help='Set a weight for a specific loss. Can be used multiple times.')
-
     # Environment and Logging
     group_env = parser.add_argument_group("Environment and Logging")
     group_env.add_argument("--cuda", action='store_true', default=True, help="Enable CUDA training.")
@@ -337,6 +374,11 @@ def parse_arguments():
     group_env.add_argument("--log-level", type=str, default="log", choices=["none", "log", "debug"], help="Logging level.")
     group_env.add_argument("--log-root", type=str, default=os.path.join(os.getcwd(), "models"), help="Root directory for saving models and logs.")
     group_env.add_argument("--num-workers", type=int, default=os.cpu_count()//2, help="Number of CPU cores for data loading.")
+
+    # KBRS Specific
+    group_kbrs = parser.add_argument_group("KBRS Specific")
+    group_kbrs.add_argument("--use-kbrs", action='store_true', help="Use KBRS loss during training.")
+    group_kbrs.add_argument('--loss-weight', nargs=2, action='append', metavar=('LOSS_NAME', 'WEIGHT'), help='Set a weight for a specific loss. Can be used multiple times.')
     
     return parser.parse_args()
 
