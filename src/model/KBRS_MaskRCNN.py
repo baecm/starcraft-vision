@@ -203,7 +203,7 @@ class KBRS_MaskRCNN(MaskRCNN):
         comp_keys = ["density", "mixture", "centeredness"]  # 필요시 "proj_A","proj_B","proj_mixture","gate_gain"도 가능
         comp_losses = {}
         if use_comp_losses:
-            per_tau = {"density": 0.5, "mixture": 1.0, "centeredness": 0.5}
+            per_tau = {"density": 0.5, "mixture": 1.2, "centeredness": 0.5}
             for ck in ["density", "mixture", "centeredness"]:
                 if ck in comp_maps:
                     losses[f"loss_kbrs_{ck}"] = aux_boost_loss(
