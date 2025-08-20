@@ -120,10 +120,14 @@ def _auto_num_workers(device: torch.device) -> int:
     return max(0, avail - 1)
 
 
-def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int, num_classes: int = 2):
-    model = get_model_instance_segmentation(num_classes, in_channels=in_channels, window_size=window_size)
+def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int, num_classes: int = 2, use_kbrs: bool = False, kbrs_params: dict = None):
+    model = get_model_instance_segmentation(num_classes, in_channels=in_channels, window_size=window_size, use_kbrs=use_kbrs, kbrs_params=kbrs_params)
     state = torch.load(model_path, map_location=device)
-    model.load_state_dict(state)
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if len(missing) > 0:
+        Logger.warn(f"[Inference] Missing keys: {missing}")
+    if len(unexpected) > 0:
+        Logger.warn(f"[Inference] Unexpected keys: {unexpected}")
     model.to(device)
     model.eval()
     return model
@@ -272,6 +276,7 @@ def parse_args():
     group_model.add_argument("--model-number", type=int, required=True, help="Checkpoint number to use (e.g., 4 for model_4.pth).")
     group_model.add_argument("--label-method", type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS, help="Label method for reference (not used in inference).")
     group_model.add_argument("--window-size", type=int, default=1, help="Window size for input frames, consistent with the trained model.")
+    group_model.add_argument("--use-kbrs", action="store_true", help="Use KBRS (Key-Frame Based Replay Sampling) if available in the model.")
 
     # Inference Hyperparameters
     group_hyper = parser.add_argument_group("Inference Hyperparameters")
@@ -320,7 +325,9 @@ def main():
         device=device,
         in_channels=in_channels,
         window_size=args.window_size,
-        num_classes=2  # background + viewport
+        num_classes=2,
+        use_kbrs=args.use_kbrs,
+        kbrs_params=config.KBRS_PARAMS if args.use_kbrs else None
     )
 
     input_root = os.path.join(args.data_root, "input", "dst")
