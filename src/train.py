@@ -168,8 +168,9 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
         lr_scheduler.step()
         eval_stats = evaluate(model, data_loader_test, device=device)
 
-        # Log losses
-        log_dict = {
+        # 1) 한 군데에서만 누적해서 로그할 딕셔너리 구성
+        final_log = {
+            "epoch": epoch,
             "Loss/train": train_stats.loss.global_avg,
             "Loss/class": train_stats.loss_classifier.global_avg,
             "Loss/box_reg": train_stats.loss_box_reg.global_avg,
@@ -178,35 +179,48 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
             "Loss/rpn_box_reg": train_stats.loss_rpn_box_reg.global_avg,
         }
 
-        if use_kbrs:
-            meters = getattr(train_stats, "meters", {})
-            # 기본 키들은 이미 log_dict에 올렸으니 스킵
-            skip = {
-                "loss_classifier", "loss_box_reg", "loss_mask",
-                "loss_objectness", "loss_rpn_box_reg", "loss"
-            }
-            for k, meter in meters.items():
-                if k.startswith("loss_") and k not in skip and hasattr(meter, "global_avg"):
-                    # loss_kbrs -> Loss/kbrs, loss_kbrs_density -> Loss/kbrs_density ...
-                    log_dict[f"Loss/{k[5:]}"] = float(meter.global_avg)
-
-        wandb.log(log_dict)
-
-        # Log evaluation stats
-        # The evaluate function returns a CocoEvaluator object, from which we can extract stats.
-        metric_dict = {}
         if hasattr(eval_stats, 'coco_eval'):
             stat_names = ['AP', 'AP50', 'AP75', 'APs', 'APm', 'APl', 'AR1', 'AR10', 'AR100', 'ARs', 'ARm', 'ARl']
             for iou_type, coco_eval in eval_stats.coco_eval.items():
                 for i, name in enumerate(stat_names):
-                    metric_name = f"Eval/{iou_type}/{name}"
-                    metric_value = coco_eval.stats[i]
-                    metric_dict[metric_name] = metric_value
-                    
-        ## Log metric_dict using Logger
-        Logger.info(f"[Eval] Epoch {epoch}: {metric_dict}")
-        log_dict.update(metric_dict)
-        wandb.log(log_dict)
+                    final_log[f"Eval/{iou_type}/{name}"] = coco_eval.stats[i]
+
+        if use_kbrs:
+            meters = getattr(train_stats, "meters", {})
+            skip = {"loss_classifier","loss_box_reg","loss_mask","loss_objectness","loss_rpn_box_reg","loss"}
+            for k, meter in meters.items():
+                if k.startswith("loss_") and k not in skip and hasattr(meter, "global_avg"):
+                    final_log[f"Loss/{k[5:]}"] = float(meter.global_avg)
+
+        # 2) kbrs 스칼라/이미지 처리: 이미지 등 큰 객체는 별도 로그하되 같은 step으로 commit=False
+        if hasattr(model, "consume_epoch_kbrs"):
+            scalars, cache = model.consume_epoch_kbrs()
+            if scalars:
+                wandb.log(scalars | {"epoch": epoch}, step=epoch, commit=False)
+
+            if cache is not None:
+                def _minmax01(t, eps=1e-6):
+                    t = t.float()
+                    mn = t.amin(dim=(-2, -1), keepdim=True)
+                    mx = t.amax(dim=(-2, -1), keepdim=True)
+                    return (t - mn) / (mx - mn + eps)
+
+                def _to_rgb(gray01):    # (1,H,W)->(3,H,W)
+                    return gray01.expand(3, -1, -1)
+
+                def _to_wandb_image(t3hw):
+                    return t3hw.permute(1,2,0).clamp(0,1).cpu().numpy()
+
+                total = cache["score_total"]
+                comps = cache["comp_maps"]
+                wandb.log({"kbrs_epoch/total": wandb.Image(_to_wandb_image(_to_rgb(_minmax01(total)))),
+                        "epoch": epoch}, step=epoch, commit=False)
+                for name, m in comps.items():
+                    wandb.log({f"kbrs_epoch/{name}": wandb.Image(_to_wandb_image(_to_rgb(_minmax01(m)))),
+                            "epoch": epoch}, step=epoch, commit=False)
+
+        # 3) 마지막에 한 번만 commit (이 줄이 그 epoch의 유일 커밋)
+        wandb.log(final_log, step=epoch)  # commit=True (기본값)
         
         if hasattr(model, "consume_epoch_kbrs"):
             scalars, cache = model.consume_epoch_kbrs()
@@ -259,6 +273,8 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
 
 def run_training(args):
     settings.update({"wandb": True})
+    # wandb.define_metric("epoch")
+    # wandb.define_metric("*", step_metric="epoch")
     Logger.info("[Stage] Preparing environment...")
     device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
     Logger.info(f"[Info] Using device: {device}")
