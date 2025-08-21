@@ -78,14 +78,14 @@ class KBRS_MaskRCNN(MaskRCNN):
     def forward(self, images, targets=None):
         """
         Full forward (train/eval):
-          1) transform
-          2) backbone(FPN)
-          3) pick FPN feature & compute KBRS score_map
-          4) (optional) gate with vision-like channels (from raw inputs)
-          5) RPN -> proposals
-          6) ROI heads -> detections
-          7) postprocess or assemble losses (+ KBRS losses)
-          8) (optional) apply (learnable) loss weights
+        1) transform
+        2) backbone(FPN)
+        3) pick FPN feature & compute KBRS score_map
+        4) (optional) gate with vision-like channels (from raw inputs)
+        5) RPN -> proposals
+        6) ROI heads -> detections
+        7) postprocess or assemble losses (+ KBRS losses)
+        8) (optional) apply (learnable) loss weights
         """
         if self.training and targets is None:
             raise ValueError("In training mode, targets should be passed")
@@ -106,7 +106,9 @@ class KBRS_MaskRCNN(MaskRCNN):
 
         # projections normalize & scorer init (once)
         in_channels_total = self._per_window * self._window_size
-        proj_norm = normalize_projections(self._projections_cfg, self._window_size, self._per_window, in_channels_total)
+        proj_norm = normalize_projections(
+            self._projections_cfg, self._window_size, self._per_window, in_channels_total
+        )
 
         if self.kbrs_scorer is None:
             if self._scorer_impl == 'conv':
@@ -130,7 +132,6 @@ class KBRS_MaskRCNN(MaskRCNN):
                     mixture_between=self._mixture_between,
                     mask_channel=None
                 )
-
         self.kbrs_scorer = self.kbrs_scorer.to(fmap.device, dtype=fmap.dtype)
 
         # scorer 입력 detach 옵션
@@ -140,7 +141,9 @@ class KBRS_MaskRCNN(MaskRCNN):
         score_map, comp_maps = self.kbrs_scorer(fmap_for_kbrs)
 
         # 4) Vision-like 게이트 (원본 입력 기반)
-        gate_channels = auto_expand_indices(self._gate_channels_cfg, self._window_size, self._per_window, in_channels_total)
+        gate_channels = auto_expand_indices(
+            self._gate_channels_cfg, self._window_size, self._per_window, in_channels_total
+        )
         if len(gate_channels) > 0:
             gain = compute_gate_from_raw_inputs(
                 raw_images, score_map.unsqueeze(1), gate_channels,
@@ -149,7 +152,7 @@ class KBRS_MaskRCNN(MaskRCNN):
             score_map = score_map * gain
             comp_maps["gate_gain"] = gain
 
-        # === per-component logging ===
+        # === per-component statistics (scalar) ===
         want_keys = ["density", "mixture", "centeredness", "proj_A", "proj_B", "proj_mixture", "gate_gain"]
         logs = {}
         for k in want_keys:
@@ -158,8 +161,7 @@ class KBRS_MaskRCNN(MaskRCNN):
                 for stat_name, vec in stats.items():
                     logs[f"{k}/{stat_name}"] = vec
         scalar_logs = {f"{name}_meanB": val.mean() for name, val in logs.items()}
-        self.kbrs_last_logs = scalar_logs
-        log_losses = {f"log_{k}": v for k, v in scalar_logs.items()} if self.log_into_losses else {}
+        self.kbrs_last_logs = scalar_logs  # epoch 누적에 사용
 
         # --- cache one sample (1장) for WANDB viz ---
         if self._viz_components:
@@ -189,38 +191,36 @@ class KBRS_MaskRCNN(MaskRCNN):
         if not self.training:
             return detections
 
-        # assemble losses
+        # ===== Assemble losses (train) =====
         losses: Dict[str, torch.Tensor] = {}
         losses.update(detector_losses)
         losses.update(proposal_losses)
 
-        # KBRS auxiliary losses
+        # --- KBRS: 메인 손실만 최적화 반영 ---
         tau = float(self.kbrs_params.get("loss_scale", 2.0))
-        use_comp_losses = bool(self.kbrs_params.get("component_losses", True))
-
-        comp_keys = ["density", "mixture", "centeredness"]  # 필요시 "proj_A","proj_B","proj_mixture","gate_gain"도 가능
-        comp_losses = {}
-        if use_comp_losses:
-            per_tau = {"density": 0.5, "mixture": 1.2, "centeredness": 0.5}
-            for ck in ["density", "mixture", "centeredness"]:
-                if ck in comp_maps:
-                    losses[f"loss_kbrs_{ck}"] = aux_boost_loss(
-                        comp_maps[ck], tau=per_tau.get(ck, 1.0), norm="zscore"
-            )
-
         losses["loss_kbrs"] = aux_boost_loss(score_map, tau=tau)
+
+        # (옵션) 엔트로피 항은 최적화 반영 여부를 설정으로 제어
         if bool(self.kbrs_params.get("use_entropy", False)):
             losses["loss_kbrs_entropy"] = aux_entropy_sharp(score_map)
 
-        # 컴포넌트 보조손실 합치기
-        if use_comp_losses and comp_losses:
-            losses.update(comp_losses)
+        # --- 컴포넌트 손실은 '로그 전용'으로만 계산 (총손실 미포함) ---
+        if bool(self.kbrs_params.get("component_losses", True)):
+            per_tau = {"density": 0.5, "mixture": 1.2, "centeredness": 0.5}
+            with torch.no_grad():
+                for ck in ["density", "mixture", "centeredness"]:
+                    if ck in comp_maps:
+                        val = aux_boost_loss(
+                            comp_maps[ck], tau=per_tau.get(ck, 1.0), norm="zscore"
+                        )
+                        # wandb에 보낼 스칼라 형태로만 저장 (총손실에는 포함되지 않음)
+                        self.kbrs_last_logs[f"comp_loss/{ck}"] = float(val.detach())
 
-        # (optional) add logs into losses (default weight 0.0)
-        if self.log_into_losses:
-            losses.update(log_losses)
+        # (선택) log_*를 손실에 주입하지 않음: 로그만 남기고 최적화에는 영향 X
+        # if self.log_into_losses:
+        #     losses.update({f"log_{k}": v for k, v in self.kbrs_last_logs.items()})
 
-        # apply weights
+        # --- apply weights (learnable or static) ---
         self._maybe_init_loss_head(losses.keys(), images.tensors.device)
         if self.learnable_loss_weights and self._loss_weight_head is not None:
             w = {k: self._loss_weight_head[k] for k in losses.keys()}
@@ -228,8 +228,8 @@ class KBRS_MaskRCNN(MaskRCNN):
                 losses[k] = losses[k] * w.get(k, torch.tensor(1.0, device=images.tensors.device))
         else:
             for k in list(losses.keys()):
-                default_w = 0.0 if k.startswith("log_") else 1.0
+                # log_*가 없으므로 기본 1.0 경로가 대부분. 필요 시 외부에서 loss_weights로 조정.
+                default_w = 1.0
                 losses[k] = losses[k] * float(self.static_loss_weights.get(k, default_w))
 
-        # print(losses)
         return losses
