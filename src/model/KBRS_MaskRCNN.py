@@ -195,8 +195,6 @@ class KBRS_MaskRCNN(MaskRCNN):
         losses.update(proposal_losses)
 
         # KBRS auxiliary losses
-        
-
         tau = float(self.kbrs_params.get("loss_scale", 2.0))
         use_comp_losses = bool(self.kbrs_params.get("component_losses", True))
 
