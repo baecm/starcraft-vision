@@ -49,9 +49,21 @@ class CustomPennFudanDataset(BasePennFudanDataset):
             # Sort image IDs numerically to ensure correct frame sequence
             sorted_image_ids = sorted(image_dict.keys())
 
-            for i in range(0, len(sorted_image_ids) - self.window_size + 1, self.interval):
-                window_image_ids = sorted_image_ids[i : i + self.window_size]
-                if all(os.path.exists(os.path.join(input_dir, f"{img_id}.npy")) for img_id in window_image_ids):
+            # --- NEW: window generation with (interval, window_size) rule ---
+            # window indices: [s] + [s + m*interval - 1 for m=1..W-1]
+            # successive windows start at s += (interval - 1)
+            N = len(sorted_image_ids)
+            step_start = max(1, self.interval - 1)
+
+            for s_pos in range(0, N, step_start):
+                # positions within the sorted list (clipped to N-1)
+                pos_list = [s_pos] + [min(N - 1, s_pos + m * self.interval - 1)
+                                    for m in range(1, self.window_size)]
+                window_image_ids = [sorted_image_ids[p] for p in pos_list]
+
+                # 모든 프레임(.npy)이 존재해야만 유효 윈도우로 채택
+                if all(os.path.exists(os.path.join(input_dir, f"{img_id}.npy"))
+                    for img_id in window_image_ids):
                     self.files.append((rid, window_image_ids, image_dict, ann_dict))
 
         if not self.files:
