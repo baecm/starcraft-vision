@@ -1,3 +1,4 @@
+# src/dataset/custom_penn_fudan.py
 import os
 import re
 import pickle
@@ -14,11 +15,12 @@ def natural_sort_key(s):
 
 
 class CustomPennFudanDataset(BasePennFudanDataset):
-    def __init__(self, input_root: str, label_root: str, label_method: str, training_ids: list, window_size: int = 1, indices: list = None, training: bool = True, verbose: bool = True, include_components: list = None):
+    def __init__(self, input_root: str, label_root: str, label_method: str, training_ids: list, window_size: int = 1, interval: int = 1, indices: list = None, training: bool = True, verbose: bool = True, include_components: list = None):
         self.input_root = input_root
         self.training = training
         self.verbose = verbose
         self.window_size = window_size
+        self.interval = max(1, int(interval))
         self.files = []  # Stores tuples of (rid, [image_ids_in_window], image_dict, ann_dict)
 
         if include_components:
@@ -47,10 +49,8 @@ class CustomPennFudanDataset(BasePennFudanDataset):
             # Sort image IDs numerically to ensure correct frame sequence
             sorted_image_ids = sorted(image_dict.keys())
 
-            # Create sliding windows
-            for i in range(len(sorted_image_ids) - self.window_size + 1):
+            for i in range(0, len(sorted_image_ids) - self.window_size + 1, self.interval):
                 window_image_ids = sorted_image_ids[i : i + self.window_size]
-                # Ensure all frames in the window exist on disk
                 if all(os.path.exists(os.path.join(input_dir, f"{img_id}.npy")) for img_id in window_image_ids):
                     self.files.append((rid, window_image_ids, image_dict, ann_dict))
 

@@ -2,6 +2,7 @@
 DEVICE = "cuda"
 NUM_CLASSES = 2  # 0: background, 1: unit
 WINDOW_SIZE = 1
+INTERVAL = 1
 DO_NORMALIZE = False
 
 # TRAIN CONFIGURATION
@@ -16,7 +17,6 @@ TRAIN_LR_SCHEDULER_GAMMA = 0.1
 TRAIN_LOG_INTERVAL = 10
 TRAIN_SAVE_INTERVAL = 1
 
-
 LABEL_METHODS = [
     "legacy",
     "consider_previous",
@@ -29,7 +29,6 @@ OUTPUT_TYPES = ["coord", "channel"]
 KERNEL_SHAPE = (20, 12)
 ORIGIN_SHAPE = (128, 128)
 TILE_SIZE = 32
-INTERVAL = 1
 
 from enum import Enum
 

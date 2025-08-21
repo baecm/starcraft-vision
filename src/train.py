@@ -1,3 +1,4 @@
+# src/train.py
 import os
 import argparse
 import time
@@ -101,7 +102,7 @@ def preprocess_json_to_pickle(label_root, label_method, replay_ids, num_workers,
                 log(r)
 
 
-def load_data(input_root, label_root, label_method, window_size, batch_size, num_workers, replay_ids=None, train_replays=None, test_replays=None, test_size=50, sample_ratio=1.0, test_sample_ratio=1.0, include_components=None):
+def load_data(input_root, label_root, label_method, window_size, interval, batch_size, num_workers, replay_ids=None, train_replays=None, test_replays=None, test_size=50, sample_ratio=1.0, test_sample_ratio=1.0, include_components=None):
     Logger.info("[Stage] Loading data...")
     Logger.info(f"[Info] Input root: {input_root}")
     Logger.info(f"[Info] Label root: {label_root}, method: {label_method}")
@@ -130,9 +131,10 @@ def load_data(input_root, label_root, label_method, window_size, batch_size, num
         Logger.info(f"[Info] No train-replays provided; using all replays for train and test: {all_ids}")
 
     # Build datasets
-    train_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=train_ids, training=True, window_size=window_size, include_components=include_components)
-    test_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=test_ids, training=False, window_size=window_size, include_components=include_components)
+    train_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=train_ids, training=True, window_size=window_size, interval=interval, include_components=include_components)
+    test_dataset = CustomPennFudanDataset(input_root, label_root, label_method, training_ids=test_ids, training=False, window_size=window_size, interval=interval, include_components=include_components)
     Logger.info(f"[Info] Full dataset size: Train {len(train_dataset)}, Test {len(test_dataset)}")
+    Logger.info(f"[Info] Window size: {window_size}, Interval: {interval}")
 
     # Apply sample ratio to the training dataset
     if sample_ratio < 1.0:
@@ -306,6 +308,7 @@ def run_training(args):
         label_root,
         args.label_method,
         args.window_size,
+        args.interval,
         args.batch_size,
         args.num_workers,
         replay_ids=args.replays,
@@ -325,11 +328,11 @@ def run_training(args):
     if args.loss_weight:
         for name, weight in args.loss_weight:
             loss_weights[name] = float(weight)
-    Logger.info(f"[Info] Loss weights: {loss_weights}")
     kbrs_params = None
     if args.use_kbrs:
         if 'loss_kbrs' not in loss_weights and 'kbrs_loss_weight' in args and args.kbrs_loss_weight is not None:
             loss_weights['loss_kbrs'] = args.kbrs_loss_weight
+            Logger.info(f"[Info] Loss weights: {loss_weights}")
 
         kbrs_params = config.KBRS_PARAMS.copy()
         Logger.info(f"[Info] Using KBRS parameters: {kbrs_params}")
@@ -375,6 +378,7 @@ def parse_arguments():
     group_data.add_argument("--test-sample-ratio", type=float, default=0.05, help="Fraction of test dataset to sample.")
     group_data.add_argument("--data-root", type=str, default=os.path.join(os.getcwd(), "data"), help="Root directory for data.")
     group_data.add_argument("--include-components", type=str, nargs='+', default=['worker', 'ground', 'air', 'building', 'vision'], help="List of components to include.")
+    group_data.add_argument("--interval", type=int, default=config.INTERVAL, help="Sampling interval for frame windows (1 = use every index).")
 
     # Model Hyperparameters
     group_hyper = parser.add_argument_group("Model Hyperparameters")
