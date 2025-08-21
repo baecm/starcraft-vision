@@ -164,7 +164,7 @@ class KBRS_MaskRCNN(MaskRCNN):
         self.kbrs_last_logs = scalar_logs  # epoch 누적에 사용
 
         # --- cache one sample (1장) for WANDB viz ---
-        if self._viz_components:
+        if self._viz_components and self.training:  # ← eval 때는 캐시하지 않음
             with torch.no_grad():
                 self.kbrs_cache = {
                     "score_total": score_map[:1].detach().cpu(),
@@ -172,7 +172,7 @@ class KBRS_MaskRCNN(MaskRCNN):
                 }
 
         # --- accumulate epoch scalars ---
-        if self._acc_epoch:
+        if self._acc_epoch and self.training:       # ← eval 때는 누적하지 않음
             if not hasattr(self, "_kbrs_epoch_sums"):
                 self._kbrs_epoch_sums = {}
                 self._kbrs_epoch_count = 0
