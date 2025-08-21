@@ -110,19 +110,19 @@ class Viewport:
 
     def preprocess_argmax_kernel_sum(self, dataframe, num_vpds):
         return preprocess_argmax_kernel_sum_parallel(
-            dataframe, num_vpds, config.KERNEL_SHAPE, config.ORIGIN_SHAPE, config.INTERVAL
+            dataframe, num_vpds, config.KERNEL_SHAPE, config.ORIGIN_SHAPE, 1
         )
 
     def preprocess_unique_local_maximums(self, dataframe, num_vpds):
         from local_peaks import get_local_maximums, get_unique_peaks2
         return preprocess_unique_local_maximums_parallel(
-            dataframe, num_vpds, config.KERNEL_SHAPE, config.ORIGIN_SHAPE, config.INTERVAL,
+            dataframe, num_vpds, config.KERNEL_SHAPE, config.ORIGIN_SHAPE, 1,
             get_local_maximums, get_unique_peaks2
         )
 
     def preprocess_all_correct(self, dataframe, num_vpds):
         return preprocess_all_correct_parallel(
-            dataframe, num_vpds, config.INTERVAL
+            dataframe, num_vpds, 1
         )
 
     def preprocess_consider_previous(self, dataframe: pd.DataFrame, num_vpds: int):
@@ -139,7 +139,7 @@ class Viewport:
         result = []
         previous_viewport = None
 
-        total_frames = range(0, len(dataframe), config.INTERVAL)
+        total_frames = range(0, len(dataframe), 1)
         for t in tqdm.tqdm(
             total_frames,
             desc="Processing viewport(consider previous)",
