@@ -260,7 +260,7 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
                     grid = make_grid(panels, nrow=len(panels))
                     wandb.log({"kbrs_epoch/grid": wandb.Image(_to_wandb_image(grid))}, step=epoch)
         
-        final_eval_stats = metric_dict
+        final_eval_stats = eval_stats
         
         # Save model checkpoint
         torch.save(model.state_dict(), os.path.join(save_dir, f"model_{epoch}.pth"))
