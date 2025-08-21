@@ -58,13 +58,14 @@ make train ARGS="--replays 36 212 438 522 1660 --label-method all_correct --max-
 
 # Training
 make train ARGS=" \
-  --replays 36 212 438 522 1660 6254 \
+  --replays 36 212 438 522 1660 \
   --train-replays 36 212 438 522 1660 \
   --test-replays 6254 \
   --include-components worker ground air building vision \
   --label-method all_correct \
   --max-epoch 15 \
   --window-size 4 \
+  --interval 8 \
   --batch-size 8 \
   --sample-ratio 1.0 \
   --log-level log \
