@@ -283,7 +283,7 @@ def parse_args():
     group_hyper.add_argument("--batch-size", type=int, default=8, help="Batch size for inference.")
     group_hyper.add_argument("--score-threshold", type=float, default=0.5, help="Objectness score threshold for filtering predictions.")
     group_hyper.add_argument("--sample-ratio", type=float, default=1.0, help="Fraction of frames to sample for inference (0.0 < ratio <= 1.0).")
-    group_hyper.add_argument("--workers", type=int, default=-1, help="DataLoader workers. -1=auto(cpu_count-based).")
+    group_hyper.add_argument("--workers", type=int, default=os.cpu_count()//4, help="DataLoader workers. -1=auto(cpu_count-based).")
 
     return parser.parse_args()
 
@@ -360,7 +360,7 @@ def main():
         dl_kwargs = dict(
             batch_size=args.batch_size,
             shuffle=False,
-            num_workers=num_workers,
+            num_workers=args.workers,
             collate_fn=collate_fn,
             pin_memory=False,            # safer for long runs
             persistent_workers=False,    # ensure cleanup per replay
