@@ -8,7 +8,7 @@ from collections import OrderedDict
 from typing import Dict, List
 
 from .kbrs import KBRSConvScorer, KBRSUnfoldScorer
-from .utils import *
+from .utils import pick_feature_map, normalize_projections, auto_expand_indices, compute_gate_from_raw_inputs, reduce_map_stats, aux_boost_loss, aux_entropy_sharp
 
 
 class KBRS_MaskRCNN(MaskRCNN):
