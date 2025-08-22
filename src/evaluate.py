@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# /src/evaluate.py
 
 import os
 import json
@@ -90,17 +89,18 @@ def _write_vpd(df: pd.DataFrame, out_path: Path, scale: int = 32,
     Logger.info(f"Wrote VPD -> {out_path}")
 
 
-def _dump_vpd_for_tracks(pred_name: str,
-                         frame_select: str,
-                         replays: List[str],
-                         tracks: List[pd.DataFrame],
-                         vpd_root: Path,
-                         scale: int = 32,
-                         clip_max: Optional[Tuple[int, int]] = None):
+def _dump_vpd_for_tracks(
+    frame_select: str,
+    replays: List[str],
+    tracks: List[pd.DataFrame],
+    vpd_root: Path,
+    scale: int = 32,
+    clip_max: Optional[Tuple[int, int]] = None
+):
     """
-    저장 경로: <vpd_root>/<pred_name>/<frame_select>/<replay>.vpd
+    저장 경로: <vpd_root>/<frame_select>/<replay>.vpd
     """
-    base = vpd_root / pred_name / frame_select
+    base = vpd_root / frame_select
     for rep, df in zip(replays, tracks):
         out_path = base / f"{rep}.vpd"
         _write_vpd(df, out_path, scale=scale, clip_max=clip_max)
@@ -602,6 +602,7 @@ def _summary_ic_line(stats: dict, thrs: List[float]) -> str:
 def run_evaluate(args):
     g = Grid.from_args(args)
 
+    timestamp = _now_utc_str()
     replays = args.replays
     gt_base = Path(args.gt_root)            # e.g., /workspace/data
     gt_dst  = gt_base / "label" / "dst"     # /workspace/data/label/dst
@@ -657,9 +658,8 @@ def run_evaluate(args):
             Logger.error("GT LOO mode not implemented in multi-FS loop (set --pred-names instead).")
             raise RuntimeError("GT LOO mode currently not supported when looping multiple frame-selects.")
         else:
-            # evaluate each prediction run vs GT
             for pred in args.pred_names:
-                # pred_root / "<pred>/model_<N>" / "<replay>.rep/<label>.json"
+                # pred 로더용 경로(모델 번호 포함해 읽음)
                 pred_name_for_loader = f"{pred}/model_{args.model_number}" if args.model_number is not None else pred
                 pred_tracks = load_tracks_for_names(
                     pred_root, [pred_name_for_loader], replays, args.label_method, fs
@@ -672,21 +672,27 @@ def run_evaluate(args):
                     ic_thresholds=args.ic_thresholds
                 )
                 rows.append({'target': pred, 'frame_select': fs, **stats})
-                
+
+                # --- 여기서 pred별 출력 루트 생성 ---
+                pred_out_root = Path(args.out_dir) / pred
+                if args.model_number is not None:
+                    pred_out_root = pred_out_root / f"model_{args.model_number}"
+                pred_out_root = pred_out_root / timestamp
+                pred_out_root.mkdir(parents=True, exist_ok=True)
+
                 if args.dump_vpd:
                     clip_max = (g.max_x, g.max_y) if args.vpd_clip else None
+                    vpd_root = pred_out_root / "vpd"
                     _dump_vpd_for_tracks(
-                        pred_name=pred_name_for_loader,   # VPD 경로에도 model_<N> 반영
                         frame_select=fs,
                         replays=replays,
                         tracks=pred_tracks,
-                        vpd_root=Path(args.vpd_dir),
+                        vpd_root=vpd_root,
                         scale=32,
                         clip_max=clip_max
                     )
 
-                tag = pred_name_for_loader
-                Logger.log(f"[PRED {tag} | FS={fs}] " + _summary_ic_line(stats, args.ic_thresholds))
+                Logger.log(f"[PRED {pred_name_for_loader} | FS={fs}] " + _summary_ic_line(stats, args.ic_thresholds))
 
     # === Final aggregation & JSON artifact ===
     if not rows:
@@ -699,13 +705,9 @@ def run_evaluate(args):
     metric_cols = [c for c in df_out.columns if c not in ("target", "frame_select")]
     mean_overall = {m: float(df_out[m].mean()) for m in metric_cols if m in df_out}
 
-    # FS별 평균
-    mean_by_fs = {}
-    for fs in args.frame_select:
-        sub = df_out[df_out["frame_select"] == fs]
-        mean_by_fs[fs] = {m: float(sub[m].mean()) for m in metric_cols if m in sub}
+    df_out = pd.DataFrame(rows)
 
-    # 보기 좋은 테이블 로그 (선택)
+    # 보기 좋은 테이블 로그 (기존 출력 유지)
     for fs in args.frame_select:
         sub = df_out[df_out["frame_select"] == fs].copy()
         rename_map = {f"ic_at_{_thr_key(t)}": f"IC@{t:g}" for t in args.ic_thresholds}
@@ -718,15 +720,9 @@ def run_evaluate(args):
         Logger.log(f"--- FrameSelect = {fs} ---")
         Logger.log(sub.rename(columns=rename_map).to_string(index=False))
 
-    # 메타 + 아티팩트 JSON
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = _now_utc_str()
-    replay_str = ",".join(args.replays)
-    pred_join  = ",".join(args.pred_names) if args.pred_names else "GT_LOO"
-
-    meta = {
+    # 공통 메타 (pred별 result.json 안에 동일하게 포함)
+    gt_mode = detect_gt_structure(Path(args.gt_root) / "label" / "dst")
+    meta_common = {
         "timestamp_utc": timestamp,
         "gt_root": str(Path(args.gt_root).resolve()),
         "pred_root": str(Path(args.pred_root).resolve()),
@@ -741,58 +737,63 @@ def run_evaluate(args):
             "kernel_x": g.x_len, "kernel_y": g.y_len,
             "max_x": g.max_x, "max_y": g.max_y,
         },
-        "pred_names": args.pred_names if args.pred_names else [],
-        "model_number": args.model_number,         # ← 모델 번호 기록
+        "model_number": args.model_number,
         "gt_loo": bool(args.gt_loo),
         "tag": args.tag,
         "script": "evaluate.py",
         "version": "1.1",
         "ic_thresholds": args.ic_thresholds,
     }
+    
+    # --- pred 별로 result.json 쓰기 ---
+    for pred in (args.pred_names or []):
+        pred_rows = [r for r in rows if r.get("target") == pred]
+        if not pred_rows:
+            continue
+        pred_df = pd.DataFrame(pred_rows)
 
-    # 1) by_target 정렬
-    rows_ordered = [_order_row(r, args.ic_thresholds) for r in rows]
+        metric_cols = [c for c in pred_df.columns if c not in ("target", "frame_select")]
+        mean_overall = {m: float(pred_df[m].mean()) for m in metric_cols if m in pred_df}
 
-    # 2) mean_overall / mean_by_frame_select 도 같은 순서로
-    def _order_metric_dict(d: dict, ic_thresholds) -> OrderedDict:
-        has_baseline = any(k.startswith("streak_baseline_at_") for k in d)
-        has_ratio    = any(k.startswith("streak_ratio_at_") for k in d)
-        keys         = _ordered_metric_keys(ic_thresholds, has_baseline, has_ratio)
-        out = OrderedDict()
-        for k in ("target","frame_select"):
-            if k in d: out[k] = d[k]
-        for k in keys:
-            if k in d: out[k] = d[k]
-        for k, v in d.items():
-            if k not in out: out[k] = v
-        return out
+        mean_by_fs = {}
+        for fs in args.frame_select:
+            sub = pred_df[pred_df["frame_select"] == fs]
+            mean_by_fs[fs] = {m: float(sub[m].mean()) for m in metric_cols if m in sub}
 
-    mean_overall_ordered = _order_metric_dict(mean_overall, args.ic_thresholds)
-    mean_by_fs_ordered   = {fs: _order_metric_dict(v, args.ic_thresholds) for fs, v in mean_by_fs.items()}
+        rows_ordered = [_order_row(r, args.ic_thresholds) for r in pred_rows]
 
-    payload = {
-        "meta": meta,
-        "results": {
-            "by_target": rows_ordered,
-            "mean_overall": mean_overall_ordered,
-            "mean_by_frame_select": mean_by_fs_ordered,
-        },
-    }
+        def _order_metric_dict(d: dict, ic_thresholds) -> OrderedDict:
+            has_baseline = any(k.startswith("streak_baseline_at_") for k in d)
+            has_ratio    = any(k.startswith("streak_ratio_at_") for k in d)
+            keys         = _ordered_metric_keys(ic_thresholds, has_baseline, has_ratio)
+            out = OrderedDict()
+            for k in ("target","frame_select"):
+                if k in d: out[k] = d[k]
+            for k in keys:
+                if k in d: out[k] = d[k]
+            for k, v in d.items():
+                if k not in out: out[k] = v
+            return out
 
-    # 간결한 파일명 (모델 번호 반영)
-    lab = _abbr_label(args.label_method)
-    fs_code = _fs_code(args.frame_select)
-    pct = _pct_code(args.partial_length)
-    rkey = _replays_key(args)
-    pkey = _pred_key(args.pred_names or [])
-    h = _short_hash("|".join([pred_join, replay_str, args.label_method, ",".join(args.frame_select)]), 6)
-    model_suffix = f"-m{args.model_number}" if args.model_number is not None else ""
-    artifact_name = f"{timestamp}_{lab}_{fs_code}_{pct}_{rkey}_{pkey}{model_suffix}-{h}.json"
-    artifact_json = out_dir / artifact_name
+        payload = {
+            "meta": {**meta_common, "pred_names": [pred]},  # 이 파일은 해당 pred 전용
+            "results": {
+                "by_target": rows_ordered,
+                "mean_overall": _order_metric_dict(mean_overall, args.ic_thresholds),
+                "mean_by_frame_select": {fs: _order_metric_dict(v, args.ic_thresholds) for fs, v in mean_by_fs.items()},
+            },
+        }
 
-    with artifact_json.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    Logger.info(f"Wrote artifact JSON -> {artifact_json}")
+        pred_out_root = Path(args.out_dir) / pred
+        if args.model_number is not None:
+            pred_out_root = pred_out_root / f"model_{args.model_number}"
+        pred_out_root = pred_out_root / timestamp
+        pred_out_root.mkdir(parents=True, exist_ok=True)
+
+        artifact_json = pred_out_root / "result.json"
+        with artifact_json.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        Logger.info(f"Wrote artifact JSON -> {artifact_json}")
 
 
 # =========================
