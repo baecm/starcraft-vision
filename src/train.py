@@ -228,9 +228,17 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
                         f"kbrs_epoch/{name}": wandb.Image(_to_wandb_image(_to_rgb(_minmax01(m))))
                     }, commit=False)
 
-        # 마지막에 한 번만 커밋
         wandb.log(log_dict, commit=True)
-
+        
+        if (epoch + 1) % 5 == 0 or (epoch + 1) == num_epochs:
+            save_path = os.path.join(save_dir, f"model_{epoch+1:03d}.pth")
+            torch.save(model.state_dict(), save_path)
+            Logger.info(f"[Info] Saved model checkpoint: {save_path}")
+            
+        try:
+            send_message(f"Epoch {epoch+1} completed.")
+        except Exception as e:
+            Logger.error(f"Failed to send message: {e}")
 
 def run_training(args):
     settings.update({"wandb": True})
