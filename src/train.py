@@ -88,7 +88,6 @@ def preprocess_json_to_pickle(label_root, label_method, replay_ids, num_workers,
     with Pool(processes=num_workers) as pool:
         results = list(tqdm.tqdm(pool.imap_unordered(_process_json_worker, tasks), total=len(tasks), desc="Preprocessing JSON to Pickle"))
 
-    # Optional: Log summary
     success_count = sum(1 for r in results if r.startswith("Success"))
     skipped_exist_count = sum(1 for r in results if "pickle already exists" in r)
     skipped_no_json_count = sum(1 for r in results if "no JSON found" in r)
@@ -125,7 +124,6 @@ def load_data(input_root, label_root, label_method, window_size, interval, batch
             test_ids = [str(r) for r in test_replays]
         Logger.info(f"[Info] Train IDs: {train_ids}, Test IDs: {test_ids}")
     else:
-        # No explicit train/test split provided: use all replays for both training and testing
         train_ids = all_ids
         test_ids = all_ids
         Logger.info(f"[Info] No train-replays provided; using all replays for train and test: {all_ids}")
@@ -170,9 +168,8 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
         lr_scheduler.step()
         eval_stats = evaluate(model, data_loader_test, device=device)
 
-        # 1) 한 군데에서만 누적해서 로그할 딕셔너리 구성
         log_dict = {
-            "epoch": epoch,  # ★ 모든 로그에 epoch 포함
+            "epoch": epoch,
             "Loss/train": train_stats.loss.global_avg,
             "Loss/class": train_stats.loss_classifier.global_avg,
             "Loss/box_reg": train_stats.loss_box_reg.global_avg,
@@ -181,7 +178,6 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
             "Loss/rpn_box_reg": train_stats.loss_rpn_box_reg.global_avg,
         }
 
-        # (use_kbrs일 때 추가 손실들)
         if use_kbrs:
             meters = getattr(train_stats, "meters", {})
             skip = {"loss_classifier","loss_box_reg","loss_mask","loss_objectness","loss_rpn_box_reg","loss"}
@@ -189,7 +185,6 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
                 if k.startswith("loss_") and k not in skip and hasattr(meter, "global_avg"):
                     log_dict[f"Loss/{k[5:]}"] = float(meter.global_avg)
 
-        # 평가 지표 합치기
         metric_dict = {}
         if hasattr(eval_stats, 'coco_eval'):
             stat_names = ['AP','AP50','AP75','APs','APm','APl','AR1','AR10','AR100','ARs','ARm','ARl']
@@ -201,11 +196,9 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
         if hasattr(model, "consume_epoch_kbrs"):
             scalars, cache = model.consume_epoch_kbrs()
             if scalars:
-                # 모든 scalars에 epoch 키 추가
                 scalars = {**{k: v for k, v in scalars.items()}, "epoch": epoch}
                 log_dict.update(scalars)
 
-            # 이미지(시각화)는 별도로 올리되, 동일 step을 명시
             if cache is not None:
                 def _minmax01(t, eps=1e-6):
                     t = t.float()
@@ -242,8 +235,6 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_t
 
 def run_training(args):
     settings.update({"wandb": True})
-    # wandb.define_metric("epoch")
-    # wandb.define_metric("*", step_metric="epoch")
     Logger.info("[Stage] Preparing environment...")
     device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
     Logger.info(f"[Info] Using device: {device}")
@@ -258,18 +249,14 @@ def run_training(args):
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
 
-    # Initialize wandb
     wandb.init(project="starcraft", name=args.id_string, config=args)
 
-
-    # Define data roots
     input_root = os.path.join(args.data_root, "input/dst")
     label_root = os.path.join(args.data_root, "label/dst")
     
-    # Convert JSON labels to pickle format
     preprocess_json_to_pickle(label_root=label_root, label_method=args.label_method, replay_ids=args.replays, num_workers=args.num_workers)
     Logger.info("[Info] JSON to Pickle conversion completed.")
-    # Load data
+
     data_loader_train, data_loader_test = load_data(
         input_root,
         label_root,
@@ -297,7 +284,7 @@ def run_training(args):
             loss_weights[name] = float(weight)
     kbrs_params = None
     if args.use_kbrs:
-        if 'loss_kbrs' not in loss_weights and 'kbrs_loss_weight' in args and args.kbrs_loss_weight is not None:
+        if 'loss_kbrs' not in loss_weights and hasattr(args, 'kbrs_loss_weight') and args.kbrs_loss_weight is not None:
             loss_weights['loss_kbrs'] = args.kbrs_loss_weight
             Logger.info(f"[Info] Loss weights: {loss_weights}")
 
@@ -308,11 +295,19 @@ def run_training(args):
     inner_ds = train_ds.dataset if isinstance(train_ds, Subset) else train_ds
     in_channels = len(inner_ds.channel_indices) * inner_ds.window_size
     Logger.info(f"[Info] Input channels: {in_channels} (window size: {inner_ds.window_size})")
+
+    # --- 새 옵션들을 빌더에 전달 ---
     model = get_model_instance_segmentation(
-        num_classes,
+        num_classes=num_classes,
         window_size=args.window_size,
         in_channels=in_channels,
-        do_normalize=False,
+        do_normalize=args.do_normalize,
+        normalize_mean=args.normalize_mean,
+        normalize_std=args.normalize_std,
+        resize_mode=args.resize_mode,           # "resize" or "keep"
+        min_sizes=args.min_sizes,               # e.g. [800] or multiscale
+        max_size=args.max_size,
+        rpn_small_anchors=args.rpn_small_anchors if args.resize_mode == "keep" else False,
         use_kbrs=args.use_kbrs,
         kbrs_params=kbrs_params,
         loss_weights=loss_weights
@@ -320,13 +315,13 @@ def run_training(args):
     Logger.info(f"[Info] Model initialized with {num_classes} classes and {in_channels} input channels.")
     model.to(device)
     Logger.info(f"[Info] Model moved to device: {device}")
+
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=args.learning_rate, momentum=0.9, weight_decay=0.0005)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
     train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_test, device, args.max_epoch, log_save_path, use_kbrs=args.use_kbrs)
 
-    # Finish wandb run and send success notification
     wandb.finish()
     send_message(f"Training run '{args.id_string}' completed successfully.")
 
@@ -354,6 +349,18 @@ def parse_arguments():
     group_hyper.add_argument("--learning-rate", type=float, default=config.TRAIN_LEARNING_RATE, help="Initial learning rate.")
     group_hyper.add_argument("--max-epoch", type=int, default=config.TRAIN_EPOCHS, help="Maximum number of training epochs.")
     
+    # Transform / Resize / Normalize
+    group_tf = parser.add_argument_group("Transform / Resize / Normalize")
+    group_tf.add_argument("--resize-mode", type=str, choices=["resize", "keep"], default="resize",
+                          help="'resize'면 old 스타일(권장), 'keep'이면 원본 크기 유지.")
+    group_tf.add_argument("--min-sizes", type=int, nargs="+", default=[800],
+                          help="멀티스케일 예: 640 800 896 960 1024 (resize-mode=resize 일 때만 의미)")
+    group_tf.add_argument("--max-size", type=int, default=1333)
+    group_tf.add_argument("--do-normalize", action="store_true", help="채널별 mean/std 정규화 사용")
+    group_tf.add_argument("--normalize-mean", type=float, nargs="+", help="정규화 mean (길이 = in_channels)")
+    group_tf.add_argument("--normalize-std", type=float, nargs="+", help="정규화 std (길이 = in_channels)")
+    group_tf.add_argument("--rpn-small-anchors", action="store_true", help="resize-mode=keep 일 때 작은 앵커 사용")
+
     # Environment and Logging
     group_env = parser.add_argument_group("Environment and Logging")
     group_env.add_argument("--cuda", action='store_true', default=True, help="Enable CUDA training.")
@@ -378,7 +385,6 @@ if __name__ == "__main__":
         Logger.info("[Entry] Starting training script...")
         run_training(args)
     except Exception as e:
-        # Ensure the id_string is available for the message
         if not args.id_string:
             id_str = f"{args.label_method}_win{args.window_size}_b{args.batch_size}"
             if args.use_kbrs:
@@ -391,4 +397,4 @@ if __name__ == "__main__":
             send_message(error_message)
         except Exception as send_error:
             Logger.error(f"Failed to send error message: {send_error}")
-        raise  # Re-raise the exception after sending the notification
+        raise

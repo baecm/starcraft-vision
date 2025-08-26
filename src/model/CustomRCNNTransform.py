@@ -2,9 +2,14 @@
 from torchvision.models.detection.transform import GeneralizedRCNNTransform, ImageList
 
 class CustomRCNNTransform(GeneralizedRCNNTransform):
-    def __init__(self, *args, do_normalize=True, **kwargs):
+    def __init__(self, *args, do_normalize=True, do_resize=True, **kwargs):
+        """
+        do_normalize: True면 mean/std로 normalize, False면 스킵
+        do_resize   : True면 부모의 resize() 수행, False면 원본 크기 유지
+        """
         super().__init__(*args, **kwargs)
         self.do_normalize = do_normalize
+        self.do_resize = do_resize
 
     def forward(self, images, targets=None):
         images = [img for img in images]
@@ -20,11 +25,11 @@ class CustomRCNNTransform(GeneralizedRCNNTransform):
 
             if self.do_normalize:
                 image = self.normalize(image)
-            else:
-                # Logger.info("Skipping normalization of images as do_normalize is set to False.")
-                pass
 
-            image, target_index = self.resize(image, target_index)
+            if self.do_resize:
+                image, target_index = self.resize(image, target_index)
+            # else: no-op (원본 크기 유지)
+
             images[i] = image
             if targets is not None and target_index is not None:
                 targets[i] = target_index
