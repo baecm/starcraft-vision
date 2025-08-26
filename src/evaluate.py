@@ -618,7 +618,7 @@ def run_evaluate(args):
         for name in args.pred_names:
             base = pred_root / name
             if args.model_number is not None:
-                base = base / f"model_{args.model_number}"
+                base = base / f"model_{args.model_number:03d}"
             if not base.is_dir():
                 missing.append(str(base))
         if missing:
@@ -635,7 +635,7 @@ def run_evaluate(args):
     Logger.log(f"IC thresholds = {args.ic_thresholds}")
     Logger.log(f"GT base = {gt_base}  (mode: {gt_mode})")
     if args.model_number is not None:
-        Logger.log(f"Pred root = {pred_root} (using model_{args.model_number} subfolders)")
+        Logger.log(f"Pred root = {pred_root} (using model_{args.model_number:03d} subfolders)")
     else:
         Logger.log(f"Pred root = {pred_root}")
     Logger.log(f"Pred names = {args.pred_names if args.pred_names else 'N/A (GT LOO)'}")
@@ -660,7 +660,7 @@ def run_evaluate(args):
         else:
             for pred in args.pred_names:
                 # pred 로더용 경로(모델 번호 포함해 읽음)
-                pred_name_for_loader = f"{pred}/model_{args.model_number}" if args.model_number is not None else pred
+                pred_name_for_loader = f"{pred}/model_{args.model_number:03d}" if args.model_number is not None else pred
                 pred_tracks = load_tracks_for_names(
                     pred_root, [pred_name_for_loader], replays, args.label_method, fs
                 )[0]
@@ -676,7 +676,7 @@ def run_evaluate(args):
                 # --- 여기서 pred별 출력 루트 생성 ---
                 pred_out_root = Path(args.out_dir) / pred
                 if args.model_number is not None:
-                    pred_out_root = pred_out_root / f"model_{args.model_number}"
+                    pred_out_root = pred_out_root / f"model_{args.model_number:03d}"
                 pred_out_root = pred_out_root / timestamp
                 pred_out_root.mkdir(parents=True, exist_ok=True)
 
@@ -786,7 +786,7 @@ def run_evaluate(args):
 
         pred_out_root = Path(args.out_dir) / pred
         if args.model_number is not None:
-            pred_out_root = pred_out_root / f"model_{args.model_number}"
+            pred_out_root = pred_out_root / f"model_{args.model_number:03d}"
         pred_out_root = pred_out_root / timestamp
         pred_out_root.mkdir(parents=True, exist_ok=True)
 
