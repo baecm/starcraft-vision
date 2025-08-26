@@ -298,13 +298,13 @@ def main():
 
     # Checkpoint path
     model_folder = os.path.join(args.model_root, args.model_name)
-    model_path = os.path.join(model_folder, f"model_{args.model_number}.pth")
+    model_path = os.path.join(model_folder, f"model_{args.model_number:03d}.pth")
     Logger.info(f"[Inference] Checkpoint path: {model_path}")
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
     # Decide output run dir
-    run_name = args.run_name or os.path.join(args.model_name, f"model_{args.model_number}")
+    run_name = args.run_name or os.path.join(args.model_name, f"model_{args.model_number:03d}")
     run_dir = os.path.join(args.output_dir, run_name)
     Logger.info(f"[Inference] Output run dir: {run_dir}")
 
