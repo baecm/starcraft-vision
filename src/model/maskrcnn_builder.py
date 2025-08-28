@@ -1,4 +1,7 @@
 # src/model/maskrcnn_builder.py
+import argparse
+import torch
+
 import torch.nn as nn
 import torchvision
 
@@ -102,3 +105,84 @@ def get_model_instance_segmentation(num_classes: int,
     assert len(model.transform.image_mean) == in_channels
     assert len(model.transform.image_std) == in_channels
     return model
+
+if __name__ == "__main__":
+
+    def count_params(m):
+        total = sum(p.numel() for p in m.parameters())
+        trainable = sum(p.numel() for p in m.parameters() if p.requires_grad)
+        return total, trainable
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--num-classes", type=int, default=2)
+    parser.add_argument("--window-size", type=int, default=4)
+    parser.add_argument("--in-channels", type=int, default=9)
+    parser.add_argument("--do-normalize", action="store_true")
+    parser.add_argument("--normalize-mean", type=float, nargs="*", default=None)
+    parser.add_argument("--normalize-std", type=float, nargs="*", default=None)
+    parser.add_argument("--resize-mode", choices=["resize", "keep"], default="resize")
+    parser.add_argument("--min-sizes", type=int, nargs="*", default=None)
+    parser.add_argument("--max-size", type=int, default=1333)
+    parser.add_argument("--rpn-small-anchors", action="store_true")
+    parser.add_argument("--use-kbrs", action="store_true")
+    args = parser.parse_args()
+
+    model = get_model_instance_segmentation(
+        num_classes=args.num_classes,
+        window_size=args.window_size,
+        in_channels=args.in_channels,
+        do_normalize=args.do_normalize,
+        normalize_mean=args.normalize_mean,
+        normalize_std=args.normalize_std,
+        resize_mode=args.resize_mode,
+        min_sizes=args.min_sizes,
+        max_size=args.max_size,
+        rpn_small_anchors=args.rpn_small_anchors,
+        use_kbrs=args.use_kbrs,
+        kbrs_params=None,
+        loss_weights=None,
+    )
+
+    # ── 기본 구조 출력 ──────────────────────────────────────────────────────────
+    print("\n===== Model Structure =====")
+    print(model)
+
+    # ── transform / anchor / head 요약 ─────────────────────────────────────────
+    print("\n===== Transform Config =====")
+    T = model.transform
+    print(f"do_resize: {getattr(T, 'do_resize', True)}")
+    print(f"min_size: {getattr(T, 'min_size', None)}")
+    print(f"max_size: {getattr(T, 'max_size', None)}")
+    print(f"do_normalize: {getattr(T, 'do_normalize', True)}")
+    print(f"image_mean(len={len(T.image_mean)}): [first 5] {T.image_mean[:5] if hasattr(T,'image_mean') else None}")
+    print(f"image_std (len={len(T.image_std)}): [first 5] {T.image_std[:5] if hasattr(T,'image_std') else None}")
+
+    print("\n===== RPN / Anchors =====")
+    ag = model.rpn.anchor_generator
+    try:
+        sizes = tuple(tuple(int(s) for s in sz) for sz in ag.sizes)
+    except Exception:
+        sizes = ag.sizes
+    print(f"anchor sizes: {sizes}")
+    print(f"anchor aspect_ratios: {ag.aspect_ratios}")
+
+    print("\n===== ROI Heads =====")
+    print(f"box_predictor in_features: {model.roi_heads.box_predictor.cls_score.in_features}")
+    print(f"mask_predictor in_channels: {model.roi_heads.mask_predictor.conv5_mask.in_channels}")
+
+    # ── 파라미터 수 ────────────────────────────────────────────────────────────
+    total, trainable = count_params(model)
+    print("\n===== Parameters =====")
+    print(f"Total params:     {total:,}")
+    print(f"Trainable params: {trainable:,}")
+
+    # ── 선택: torchinfo summary (설치되어 있으면) ─────────────────────────────
+    try:
+        from torchinfo import summary as torchinfo_summary
+        # 더미 입력 채널 추출
+        c_in = model.backbone.body.conv1.in_channels
+        # 입력 크기(배치1, 채널, H, W) — H,W는 대략적인 값
+        print("\n===== torchinfo.summary (dummy input 1xCx512x512) =====")
+        torchinfo_summary(model, input_size=(1, c_in, 512, 512), verbose=0, col_names=("input_size","output_size","num_params","kernel_size","mult_adds"))
+    except Exception as e:
+        print("\n(torchinfo 미설치 또는 실행 생략:", str(e), ")")
