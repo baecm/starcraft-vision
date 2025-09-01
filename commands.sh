@@ -28,9 +28,7 @@ make preprocess_label ARGS="--replays 36 212 438 522 1660 1559 1628 2351 6219 11
 # Training with specific replays
 # set 1: all_correct_win4_b16_20250823_060441
 make train ARGS=" \
-  --replays 36 212 438 522 1660 1559 1628 2351 6219 11251 275 1725 3613 4520 4664\
-  --train-replays 36 212 438 522 1660 1559 1628 2351 6219 11251 \
-  --test-replays 275 1725 3613 4520 4664 \
+  --replays 36 212 438 522 1660 1559 1628 2351 6219 11251 \
   --include-components worker ground air building vision \
   --label-method all_correct \
   --max-epoch 30 \
@@ -42,9 +40,7 @@ make train ARGS=" \
   "
 # set 2: all_correct_win4_b16_20250823_060459
 make train ARGS=" \
-  --replays 36 212 438 522 1660 1559 1628 2351 6219 11251 275 1725 3613 4520 4664\
-  --train-replays 36 212 438 522 1660 275 1725 3613 4520 4664\
-  --test-replays 1559 1628 2351 6219 11251 \
+  --replays 36 212 438 522 1660 275 1725 3613 4520 4664\
   --include-components worker ground air building vision \
   --label-method all_correct \
   --max-epoch 30 \
@@ -56,9 +52,7 @@ make train ARGS=" \
   "
 # set 3: all_correct_win4_b16_20250823_060525
 make train ARGS=" \
-  --replays 36 212 438 522 1660 1559 1628 2351 6219 11251 275 1725 3613 4520 4664\
-  --train-replays 1559 1628 2351 6219 11251 275 1725 3613 4520 4664 \
-  --test-replays 36 212 438 522 1660 \
+  --replays 1559 1628 2351 6219 11251 275 1725 3613 4520 4664 \
   --include-components worker ground air building vision \
   --label-method all_correct \
   --max-epoch 30 \

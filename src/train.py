@@ -109,15 +109,15 @@ def preprocess_json_to_pickle(label_root, label_method, replay_ids, num_workers,
 
 
 def load_data(input_root, label_root, label_method, window_size, interval, batch_size,
-              num_workers, train_replays, sample_ratio=1.0, include_components=None, val_count=1000):
+              num_workers, replays, sample_ratio=1.0, include_components=None, val_count=1000):
     Logger.info("[Stage] Loading data...")
     Logger.info(f"[Info] Input root: {input_root}")
     Logger.info(f"[Info] Label root: {label_root}, method: {label_method}")
 
-    # 필수: train_replays
-    if not train_replays:
-        raise ValueError("--train-replays 를 1개 이상 지정해야 합니다.")
-    train_ids = [str(r) for r in train_replays]
+    # 필수: replays
+    if not replays:
+        raise ValueError("--replays 를 1개 이상 지정해야 합니다.")
+    train_ids = [str(r) for r in replays]
     Logger.info(f"[Info] Train IDs: {train_ids}")
 
     # Build dataset (train only; test 분리 없음)
@@ -248,11 +248,11 @@ def run_training(args):
     input_root = os.path.join(args.data_root, "input/dst")
     label_root = os.path.join(args.data_root, "label/dst")
 
-    # JSON→Pickle 전처리 대상도 train_replays만 사용
+    # JSON→Pickle 전처리 대상도 replays만 사용
     preprocess_json_to_pickle(
         label_root=label_root,
         label_method=args.label_method,
-        replay_ids=args.train_replays,
+        replay_ids=args.replays,
         num_workers=args.num_workers
     )
     Logger.info("[Info] JSON to Pickle conversion completed.")
@@ -265,7 +265,7 @@ def run_training(args):
         args.interval,
         args.batch_size,
         args.num_workers,
-        train_replays=args.train_replays,
+        replays=args.replays,
         sample_ratio=args.sample_ratio,
         include_components=args.include_components,
         val_count=args.val_count
@@ -332,7 +332,7 @@ def parse_arguments():
 
     # Data and Labeling
     group_data = parser.add_argument_group("Data and Labeling")
-    group_data.add_argument("--train-replays", type=str, nargs="+", required=True,
+    group_data.add_argument("--replays", type=str, nargs="+", required=True,
                             help="List of replay IDs to use (train set = whole set).")
     group_data.add_argument("--label-method", type=str, default=config.LABEL_METHODS[0],
                             choices=config.LABEL_METHODS, help="Label extraction method (folder name).")
