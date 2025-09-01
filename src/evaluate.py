@@ -169,7 +169,7 @@ def _ordered_metric_keys(ic_thresholds, has_baseline=False, has_ratio=False):
             keys.append(f"streak_baseline_at_{tk}")
         if has_ratio:
             keys.append(f"streak_ratio_at_{tk}")
-    keys += ["ic_mean", "iou_mean", "dice_mean", "cr_mean"]
+    keys += ["ic_mean", "ic_multi_mean", "iou_mean", "dice_mean", "cr_mean"]
     return keys
 
 def _order_row(row: dict, ic_thresholds) -> OrderedDict:
@@ -407,23 +407,43 @@ def load_tracks_flat(
 # =========================
 # Frame unification
 # =========================
-def unify_frames(
-    tracks_per_annotator: List[List[pd.DataFrame]], replays: List[str]
-) -> List[List[pd.DataFrame]]:
+def unify_frames(tracks_per_annotator: List[List[pd.DataFrame]], replays: List[str]) -> List[List[pd.DataFrame]]:
     """
-    각 replay별로 전체 annotator의 frame union으로 reindex → ffill → bfill
+    tracks_per_annotator[a_idx][r_idx]  # a_idx: annotator, r_idx: replay
+    각 replay r_idx 별로 모든 annotator의 프레임 union을 만든 뒤,
+    각 annotator 트랙을 그 union에 reindex → ffill/bfill
     """
-    out: List[List[pd.DataFrame]] = []
-    for per_replay in tracks_per_annotator:
-        ann_out: List[pd.DataFrame] = []
-        for r_idx, rep_df in enumerate(per_replay):
-            frames_union = sorted(set().union(*[t[r_idx]['frame'].tolist() for t in tracks_per_annotator]))
-            if not frames_union:
-                ann_out.append(rep_df.copy())
-                continue
-            cur = rep_df.set_index('frame').reindex(frames_union).ffill().bfill().reset_index()
-            ann_out.append(cur)
-        out.append(ann_out)
+    if not tracks_per_annotator:
+        return []
+
+    num_ann = len(tracks_per_annotator)
+    num_rep = len(replays)
+
+    out: List[List[pd.DataFrame]] = [[] for _ in range(num_ann)]
+
+    for r_idx in range(num_rep):
+        frames_union = sorted(
+            set().union(*[
+                t[r_idx]['frame'].tolist()
+                for t in tracks_per_annotator
+                if not t[r_idx].empty
+            ])
+        )
+        if not frames_union:
+            # 그대로 밀어넣기
+            for a_idx in range(num_ann):
+                out[a_idx].append(tracks_per_annotator[a_idx][r_idx].copy())
+            continue
+
+        for a_idx in range(num_ann):
+            cur = tracks_per_annotator[a_idx][r_idx]
+            cur = (cur.set_index('frame')
+                       .reindex(frames_union)
+                       .ffill()
+                       .bfill()
+                       .reset_index())
+            out[a_idx].append(cur)
+
     return out
 
 
@@ -499,6 +519,7 @@ def evaluate_intersection(
     ovls, ious, dices, recalls = [], [], [], []
     ic_hits = {t: [] for t in ic_thresholds}          # 프레임 hit (True/False)
     # streaks_per_rep = {t: [] for t in ic_thresholds}  # 리플레이별 streak 평균
+    multi_overlaps = []   # ← 추가: intersect_multi (이진화 전 평균, 0..#GT)
 
     # replay별 최소 길이 × partial-length
     min_lengths = []
@@ -530,6 +551,12 @@ def evaluate_intersection(
             rx, ry, rw, rh = to_grid_rect(rowt.x, rowt.y, rowt.w, rowt.h, rowt.img_w, rowt.img_h, g, use_bbox_size)
             patch = np.zeros_like(union, dtype=bool)
             patch[ry:ry+rh, rx:rx+rw] = True
+            
+            # 예측 패치 내에서 '겹친 사람 수' 평균 (= 이전 코드의 intersect_multi)
+            # canvas는 참조자 수를 누적한 정수 맵이므로, 패치 영역을 잘라 평균을 구한다.
+            patch_counts = canvas[ry:ry+rh, rx:rx+rw].astype(np.float32)
+            multi_val = float(patch_counts.mean()) if patch_counts.size else 0.0
+            multi_overlaps.append(multi_val)
 
             I  = np.logical_and(patch, union).sum()
             Ap = patch.sum()
@@ -565,6 +592,7 @@ def evaluate_intersection(
     out["iou_mean"]  = _mean(ious)
     out["dice_mean"] = _mean(dices)
     out["cr_mean"]   = _mean(recalls)
+    out["ic_multi_mean"] = _mean(multi_overlaps)   # ← 추가: intersect_multi의 프레임 평균
 
     return out
 
@@ -713,6 +741,7 @@ def run_evaluate(args):
         rename_map = {f"ic_at_{_thr_key(t)}": f"IC@{t:g}" for t in args.ic_thresholds}
         rename_map.update({
             "ic_mean": "IC_mean",
+            "ic_multi_mean": "IC_multi_mean",  # ← 추가
             "iou_mean": "IoU_mean",
             "dice_mean": "Dice_mean",
             "cr_mean": "CR_mean"
