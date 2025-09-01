@@ -8,7 +8,7 @@ import hashlib
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 from collections import OrderedDict
 
 import numpy as np
@@ -498,7 +498,6 @@ def evaluate_intersection(
     # 누적 버퍼
     ovls, ious, dices, recalls = [], [], [], []
     ic_hits = {t: [] for t in ic_thresholds}          # 프레임 hit (True/False)
-    # streaks_per_rep = {t: [] for t in ic_thresholds}  # 리플레이별 streak 평균
 
     # replay별 최소 길이 × partial-length
     min_lengths = []
@@ -513,9 +512,6 @@ def evaluate_intersection(
         T = min_lengths[r_idx]
         if T <= 0 or target.empty or any(r.empty for r in refs):
             continue
-
-        # union 마스크 hit 누적(리플레이별 streak 계산용)
-        # rep_hits = {t: [] for t in ic_thresholds}
 
         for t in range(T):
             canvas = np.zeros((g.height, g.width), dtype=np.int16)
@@ -536,7 +532,7 @@ def evaluate_intersection(
             Ar = union.sum()
             U  = Ap + Ar - I
 
-            ovl = (I / Ap) if Ap > 0 else 0.0               # 현재 쓰는 지표(precision 유사)
+            ovl = (I / Ap) if Ap > 0 else 0.0               # precision 유사 (사용 지표)
             iou = (I / U)  if U  > 0 else 0.0               # 대칭형
             dice= (2*I/(Ap+Ar)) if (Ap+Ar) > 0 else 0.0     # 대칭형
             cr  = (I / Ar) if Ar > 0 else 0.0               # recall 유사
@@ -546,27 +542,191 @@ def evaluate_intersection(
             for thr in ic_thresholds:
                 hit = (ovl >= thr) if thr > 0 else (ovl > 0.0)
                 ic_hits[thr].append(hit)
-                # rep_hits[thr].append(hit)
-
-        # 리플레이별 streak 평균(τ별)
-        # for thr in ic_thresholds:
-        #     streaks_per_rep[thr].append(_mean_streak(rep_hits[thr]))
 
     # 집계
     out = {}
-    # IC@τ (프레임 비율)
     for thr in ic_thresholds:
         key = f"ic_at_{_thr_key(thr)}"
         out[key] = _mean(ic_hits[thr])
-        # out[f"streak_at_{_thr_key(thr)}"] = _mean(streaks_per_rep[thr])
 
-    # 추가 평균 지표
-    out["ic_mean"]   = _mean(ovls)    # = IC 커브 AUC(정확히는 프레임 평균)
+    out["ic_mean"]   = _mean(ovls)    # 프레임 평균
     out["iou_mean"]  = _mean(ious)
     out["dice_mean"] = _mean(dices)
     out["cr_mean"]   = _mean(recalls)
 
     return out
+
+
+def evaluate_per_person(
+    replays: List[str],
+    per_annotator_tracks: List[List[pd.DataFrame]],  # [target, ref1, ref2, ...]
+    partial_length: float,
+    g: Grid,
+    use_bbox_size: bool,
+    ic_thresholds: Optional[List[float]] = None,
+) -> List[dict]:
+    """
+    각 '참조자(ref)'를 한 사람으로 보고, target(=pred)과 1:1로 비교해
+    사람별 metric을 산출한다. (모든 리플레이 평균)
+    반환: [{person_idx: 0, ic_at_*, ic_mean, iou_mean, dice_mean, cr_mean}, ...]
+    """
+    ic_thresholds = sorted(set(ic_thresholds or [0.0, 0.3, 0.5]))
+
+    n_person = max(0, len(per_annotator_tracks) - 1)
+    results_per_person: List[dict] = []
+
+    # replay별 최소 길이 × partial-length
+    min_lengths = []
+    for r_idx, _ in enumerate(replays):
+        lens = [len(a[r_idx]) for a in per_annotator_tracks]
+        T = int(min(lens) * partial_length) if lens else 0
+        min_lengths.append(max(0, T))
+
+    # 사람 루프 (ref_k: 1..N)
+    for k in range(1, n_person + 1):
+        ovls, ious, dices, recalls = [], [], [], []
+        ic_hits = {t: [] for t in ic_thresholds}
+
+        for r_idx, _ in enumerate(replays):
+            target = per_annotator_tracks[0][r_idx]
+            ref    = per_annotator_tracks[k][r_idx]
+            T = min_lengths[r_idx]
+            if T <= 0 or target.empty or ref.empty:
+                continue
+
+            for t in range(T):
+                canvas = np.zeros((g.height, g.width), dtype=np.int16)
+                row = ref.iloc[t]
+                px, py, pw, ph = to_grid_rect(row.x, row.y, row.w, row.h, row.img_w, row.img_h, g, use_bbox_size)
+                canvas[py:py+ph, px:px+pw] += 1
+                union = (canvas > 0)
+
+                rowt = target.iloc[t]
+                rx, ry, rw, rh = to_grid_rect(rowt.x, rowt.y, rowt.w, rowt.h, rowt.img_w, rowt.img_h, g, use_bbox_size)
+                patch = np.zeros_like(union, dtype=bool)
+                patch[ry:ry+rh, rx:rx+rw] = True
+
+                I  = np.logical_and(patch, union).sum()
+                Ap = patch.sum()
+                Ar = union.sum()
+                U  = Ap + Ar - I
+
+                ovl  = (I / Ap) if Ap > 0 else 0.0
+                iou  = (I / U ) if U  > 0 else 0.0
+                dice = (2*I/(Ap+Ar)) if (Ap+Ar) > 0 else 0.0
+                cr   = (I / Ar) if Ar > 0 else 0.0
+
+                ovls.append(ovl); ious.append(iou); dices.append(dice); recalls.append(cr)
+
+                for thr in ic_thresholds:
+                    hit = (ovl >= thr) if thr > 0 else (ovl > 0.0)
+                    ic_hits[thr].append(hit)
+
+        row = {"person_idx": k-1}
+        for thr in ic_thresholds:
+            row[f"ic_at_{_thr_key(thr)}"] = float(np.mean(ic_hits[thr])) if ic_hits[thr] else 0.0
+        row["ic_mean"]   = float(np.mean(ovls))    if ovls else 0.0
+        row["iou_mean"]  = float(np.mean(ious))    if ious else 0.0
+        row["dice_mean"] = float(np.mean(dices))   if dices else 0.0
+        row["cr_mean"]   = float(np.mean(recalls)) if recalls else 0.0
+
+        results_per_person.append(row)
+
+    return results_per_person
+
+
+def evaluate_per_person_by_replay(
+    replays: List[str],
+    per_annotator_tracks: List[List[pd.DataFrame]],  # [target, ref1, ref2, ...]
+    partial_length: float,
+    g: Grid,
+    use_bbox_size: bool,
+    ic_thresholds: Optional[List[float]] = None,
+) -> Dict[str, List[dict]]:
+    """
+    리플레이별로, 각 사람(ref)과 target(=pred)을 1:1 비교한 메트릭 목록을 반환.
+    반환:
+      {
+        "<replay_id>": [
+          {"person_idx": 0, "ic_at_0_3": ..., "ic_mean": ..., "iou_mean": ..., "dice_mean": ..., "cr_mean": ...},
+          ...
+        ],
+        ...
+      }
+    """
+    ic_thresholds = sorted(set(ic_thresholds or [0.0, 0.3, 0.5]))
+    n_person = max(0, len(per_annotator_tracks) - 1)
+
+    # replay별 최소 길이 × partial-length
+    min_lengths = []
+    for r_idx, _ in enumerate(replays):
+        lens = [len(a[r_idx]) for a in per_annotator_tracks]
+        T = int(min(lens) * partial_length) if lens else 0
+        min_lengths.append(max(0, T))
+
+    out_by_rep: Dict[str, List[dict]] = {}
+
+    for r_idx, rep_id in enumerate(replays):
+        T = min_lengths[r_idx]
+        if T <= 0:
+            out_by_rep[rep_id] = []
+            continue
+
+        target = per_annotator_tracks[0][r_idx]
+        if target.empty:
+            out_by_rep[rep_id] = []
+            continue
+
+        per_person_rows: List[dict] = []
+
+        for k in range(1, n_person + 1):
+            ref = per_annotator_tracks[k][r_idx]
+            if ref.empty:
+                continue
+
+            ovls, ious, dices, recalls = [], [], [], []
+            ic_hits = {t: [] for t in ic_thresholds}
+
+            for t in range(T):
+                canvas = np.zeros((g.height, g.width), dtype=np.int16)
+                row = ref.iloc[t]
+                px, py, pw, ph = to_grid_rect(row.x, row.y, row.w, row.h, row.img_w, row.img_h, g, use_bbox_size)
+                canvas[py:py+ph, px:px+pw] += 1
+                union = (canvas > 0)
+
+                rowt = target.iloc[t]
+                rx, ry, rw, rh = to_grid_rect(rowt.x, rowt.y, rowt.w, rowt.h, rowt.img_w, rowt.img_h, g, use_bbox_size)
+                patch = np.zeros_like(union, dtype=bool)
+                patch[ry:ry+rh, rx:rx+rw] = True
+
+                I  = np.logical_and(patch, union).sum()
+                Ap = patch.sum()
+                Ar = union.sum()
+                U  = Ap + Ar - I
+
+                ovl  = (I / Ap) if Ap > 0 else 0.0
+                iou  = (I / U ) if U  > 0 else 0.0
+                dice = (2*I/(Ap+Ar)) if (Ap+Ar) > 0 else 0.0
+                cr   = (I / Ar) if Ar > 0 else 0.0
+
+                ovls.append(ovl); ious.append(iou); dices.append(dice); recalls.append(cr)
+                for thr in ic_thresholds:
+                    hit = (ovl >= thr) if thr > 0 else (ovl > 0.0)
+                    ic_hits[thr].append(hit)
+
+            row = {"person_idx": k-1}
+            for thr in ic_thresholds:
+                row[f"ic_at_{_thr_key(thr)}"] = float(np.mean(ic_hits[thr])) if ic_hits[thr] else 0.0
+            row["ic_mean"]   = float(np.mean(ovls))    if ovls else 0.0
+            row["iou_mean"]  = float(np.mean(ious))    if ious else 0.0
+            row["dice_mean"] = float(np.mean(dices))   if dices else 0.0
+            row["cr_mean"]   = float(np.mean(recalls)) if recalls else 0.0
+
+            per_person_rows.append(row)
+
+        out_by_rep[rep_id] = per_person_rows
+
+    return out_by_rep
 
 
 def detect_gt_structure(gt_dst_dir: Path) -> str:
@@ -642,6 +802,8 @@ def run_evaluate(args):
     Logger.log("-" * 60)
 
     rows = []
+    per_person_by_fs: Dict[str, Dict[str, List[dict]]] = {}
+    per_person_by_replay: Dict[str, Dict[str, Dict[str, List[dict]]]] = {}
 
     # FS 루프
     for fs in args.frame_select:
@@ -671,7 +833,50 @@ def run_evaluate(args):
                     replays, per_annotator_tracks, args.partial_length, g, args.use_bbox_size,
                     ic_thresholds=args.ic_thresholds
                 )
-                rows.append({'target': pred, 'frame_select': fs, **stats})
+                per_person_rows = evaluate_per_person(
+                    replays, per_annotator_tracks, args.partial_length, g, args.use_bbox_size,
+                    ic_thresholds=args.ic_thresholds
+                )
+                per_person_by_fs.setdefault(pred, {})[fs] = per_person_rows
+
+                # 사람×리플레이
+                pp_by_rep = evaluate_per_person_by_replay(
+                    replays, per_annotator_tracks, args.partial_length, g, args.use_bbox_size,
+                    ic_thresholds=args.ic_thresholds
+                )
+                per_person_by_replay.setdefault(pred, {})[fs] = pp_by_rep
+
+                rows.append({'target': pred,
+                             'frame_select': fs,
+                             'per_person_ic_mean_avg': float(np.mean([r['ic_mean'] for r in per_person_rows])) if per_person_rows else 0.0,
+                             **stats})
+
+                # Per-person 테이블 로그
+                if per_person_rows:
+                    df_pp = pd.DataFrame(per_person_rows)
+                    rename_map = {f"ic_at_{_thr_key(t)}": f"IC@{t:g}" for t in args.ic_thresholds}
+                    rename_map.update({
+                        "ic_mean": "IC_mean", "iou_mean": "IoU_mean",
+                        "dice_mean": "Dice_mean", "cr_mean": "CR_mean",
+                        "person_idx": "Person"
+                    })
+                    Logger.log(f"[PRED {pred_name_for_loader} | FS={fs}] Per-Person Metrics")
+                    Logger.log(df_pp.rename(columns=rename_map).to_string(index=False))
+
+                # Per-replay × person (IC_mean) 요약 로그
+                try:
+                    max_person = 1 + max((r["person_idx"] for r in per_person_rows), default=-1)
+                except Exception:
+                    max_person = 0
+                if max_person > 0 and pp_by_rep:
+                    persons = list(range(1, max_person+1))
+                    Logger.log(f"[PRED {pred_name_for_loader} | FS={fs}] Per-Replay IC_mean (rows=replay, cols=person)")
+                    Logger.log("\t" + "\t".join(map(str, persons)))
+                    for rid in replays:
+                        row = pp_by_rep.get(rid, [])
+                        pmap = { (r["person_idx"]+1): r.get("ic_mean", 0.0) for r in row }
+                        vals = [f"{pmap.get(p, 0.0):.4f}" for p in persons]
+                        Logger.log(f"{rid}\t" + "\t".join(vals))
 
                 # --- 여기서 pred별 출력 루트 생성 ---
                 pred_out_root = Path(args.out_dir) / pred
@@ -741,7 +946,7 @@ def run_evaluate(args):
         "gt_loo": bool(args.gt_loo),
         "tag": args.tag,
         "script": "evaluate.py",
-        "version": "1.1",
+        "version": "1.2",
         "ic_thresholds": args.ic_thresholds,
     }
     
@@ -776,11 +981,25 @@ def run_evaluate(args):
             return out
 
         payload = {
-            "meta": {**meta_common, "pred_names": [pred]},  # 이 파일은 해당 pred 전용
+            "meta": {**meta_common, "pred_names": [pred]},
             "results": {
                 "by_target": rows_ordered,
                 "mean_overall": _order_metric_dict(mean_overall, args.ic_thresholds),
                 "mean_by_frame_select": {fs: _order_metric_dict(v, args.ic_thresholds) for fs, v in mean_by_fs.items()},
+                "per_person_by_frame_select": {
+                     fs: [
+                         _order_metric_dict({"frame_select": fs, **row}, args.ic_thresholds)
+                         for row in per_person_by_fs.get(pred, {}).get(fs, [])
+                     ] for fs in args.frame_select
+                 },
+                "per_person_by_replay": {
+                    fs: {
+                        rep: [
+                            _order_metric_dict({"frame_select": fs, **row}, args.ic_thresholds)
+                            for row in per_person_by_replay.get(pred, {}).get(fs, {}).get(rep, [])
+                        ] for rep in meta_common["replays"]
+                    } for fs in args.frame_select
+                },
             },
         }
 
