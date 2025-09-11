@@ -160,8 +160,15 @@ def _thr_key(t: float) -> str:
     s = f"{t:.6f}".rstrip("0").rstrip(".")
     return s.replace(".", "_") if s else "0"
 
+
+def _legacy_thr_code(t: float) -> str:
+    # 0.3 -> "030"
+    return f"{int(round(t*100)):03d}"
+
+
 def _ordered_metric_keys(ic_thresholds, has_baseline=False, has_ratio=False):
     keys = []
+    # per-threshold metrics (new naming)
     for t in sorted(set(ic_thresholds)):
         tk = _thr_key(t)  # 0.3 -> "0_3"
         keys += [f"ic_at_{tk}", f"streak_at_{tk}"]
@@ -169,8 +176,19 @@ def _ordered_metric_keys(ic_thresholds, has_baseline=False, has_ratio=False):
             keys.append(f"streak_baseline_at_{tk}")
         if has_ratio:
             keys.append(f"streak_ratio_at_{tk}")
-    keys += ["ic_mean", "ic_multi_mean", "iou_mean", "dice_mean", "cr_mean"]
+        # legacy alias (percent naming)
+        keys.append(f"is_intersect_percent_{_legacy_thr_code(t)}")
+    # aggregate metrics (include legacy alias for total)
+    keys += [
+        "total_intersection_percent",  # legacy alias of ic_mean
+        "ic_mean",
+        "ic_multi_mean",
+        "iou_mean",
+        "dice_mean",
+        "cr_mean",
+    ]
     return keys
+
 
 def _order_row(row: dict, ic_thresholds) -> OrderedDict:
     has_baseline = any(k.startswith("streak_baseline_at_") for k in row)
@@ -489,20 +507,16 @@ def to_grid_rect(x: float, y: float, w: float, h: float,
 def _mean(xs): return float(np.mean(xs)) if xs else 0.0
 
 
-def _mean_streak(bools):
-    # bool 리스트에서 True 연속 길이들의 평균
-    if not bools:
-        return 0.0
-    streaks, cur = [], 0
-    for v in bools:
-        if v:
-            cur += 1
-        elif cur:
-            streaks.append(cur)
-            cur = 0
-    if cur:
-        streaks.append(cur)
-    return float(np.mean(streaks)) if streaks else 0.0
+def _add_legacy_aliases(stats: dict, ic_thresholds: List[float]) -> dict:
+    """Add legacy-compatible keys alongside the new ones.
+    - total_intersection_percent == ic_mean
+    - is_intersect_percent_XXX == ic_at_{thr}
+    """
+    out = dict(stats)
+    out["total_intersection_percent"] = float(stats.get("ic_mean", 0.0))
+    for t in ic_thresholds:
+        out[f"is_intersect_percent_{_legacy_thr_code(t)}"] = float(stats.get(f"ic_at_{_thr_key(t)}", 0.0))
+    return out
 
 
 def evaluate_intersection(
@@ -518,8 +532,7 @@ def evaluate_intersection(
     # 누적 버퍼
     ovls, ious, dices, recalls = [], [], [], []
     ic_hits = {t: [] for t in ic_thresholds}          # 프레임 hit (True/False)
-    # streaks_per_rep = {t: [] for t in ic_thresholds}  # 리플레이별 streak 평균
-    multi_overlaps = []   # ← 추가: intersect_multi (이진화 전 평균, 0..#GT)
+    multi_overlaps = []   # intersect_multi (이진화 전 평균, 0..#GT)
 
     # replay별 최소 길이 × partial-length
     min_lengths = []
@@ -549,8 +562,7 @@ def evaluate_intersection(
             patch = np.zeros_like(union, dtype=bool)
             patch[ry:ry+rh, rx:rx+rw] = True
             
-            # 예측 패치 내에서 '겹친 사람 수' 평균 (= 이전 코드의 intersect_multi)
-            # canvas는 참조자 수를 누적한 정수 맵이므로, 패치 영역을 잘라 평균을 구한다.
+            # 예측 패치 내에서 '겹친 사람 수' 평균 (= intersect_multi)
             patch_counts = canvas[ry:ry+rh, rx:rx+rw].astype(np.float32)
             multi_val = float(patch_counts.mean()) if patch_counts.size else 0.0
             multi_overlaps.append(multi_val)
@@ -560,7 +572,7 @@ def evaluate_intersection(
             Ar = union.sum()
             U  = Ap + Ar - I
 
-            ovl = (I / Ap) if Ap > 0 else 0.0               # precision 유사 (사용 지표)
+            ovl = (I / Ap) if Ap > 0 else 0.0               # old의 ic_ratio와 동일 정의
             iou = (I / U)  if U  > 0 else 0.0               # 대칭형
             dice= (2*I/(Ap+Ar)) if (Ap+Ar) > 0 else 0.0     # 대칭형
             cr  = (I / Ar) if Ar > 0 else 0.0               # recall 유사
@@ -572,18 +584,20 @@ def evaluate_intersection(
                 ic_hits[thr].append(hit)
 
     # 집계
-    out = {}
+    stats = {}
     for thr in ic_thresholds:
         key = f"ic_at_{_thr_key(thr)}"
-        out[key] = _mean(ic_hits[thr])
+        stats[key] = _mean(ic_hits[thr])
 
-    out["ic_mean"]   = _mean(ovls)    # 프레임 평균
-    out["iou_mean"]  = _mean(ious)
-    out["dice_mean"] = _mean(dices)
-    out["cr_mean"]   = _mean(recalls)
-    out["ic_multi_mean"] = _mean(multi_overlaps)   # ← 추가: intersect_multi의 프레임 평균
+    stats["ic_mean"]       = _mean(ovls)    # == old total_intersection percent
+    stats["iou_mean"]      = _mean(ious)
+    stats["dice_mean"]     = _mean(dices)
+    stats["cr_mean"]       = _mean(recalls)
+    stats["ic_multi_mean"] = _mean(multi_overlaps)
 
-    return out
+    # 레거시 호환 키를 함께 추가
+    stats = _add_legacy_aliases(stats, ic_thresholds)
+    return stats
 
 
 def evaluate_per_person(
@@ -597,7 +611,7 @@ def evaluate_per_person(
     """
     각 '참조자(ref)'를 한 사람으로 보고, target(=pred)과 1:1로 비교해
     사람별 metric을 산출한다. (모든 리플레이 평균)
-    반환: [{person_idx: 0, ic_at_*, ic_mean, iou_mean, dice_mean, cr_mean}, ...]
+    반환: [{person_idx: 0, ic_at_*, ic_mean, iou_mean, dice_mean, cr_mean, ...}, ...]
     """
     ic_thresholds = sorted(set(ic_thresholds or [0.0, 0.3, 0.5]))
 
@@ -654,10 +668,14 @@ def evaluate_per_person(
         row = {"person_idx": k-1}
         for thr in ic_thresholds:
             row[f"ic_at_{_thr_key(thr)}"] = float(np.mean(ic_hits[thr])) if ic_hits[thr] else 0.0
+            # legacy alias
+            row[f"is_intersect_percent_{_legacy_thr_code(thr)}"] = row[f"ic_at_{_thr_key(thr)}"]
         row["ic_mean"]   = float(np.mean(ovls))    if ovls else 0.0
         row["iou_mean"]  = float(np.mean(ious))    if ious else 0.0
         row["dice_mean"] = float(np.mean(dices))   if dices else 0.0
         row["cr_mean"]   = float(np.mean(recalls)) if recalls else 0.0
+        # legacy alias for total
+        row["total_intersection_percent"] = row["ic_mean"]
 
         results_per_person.append(row)
 
@@ -677,7 +695,7 @@ def evaluate_per_person_by_replay(
     반환:
       {
         "<replay_id>": [
-          {"person_idx": 0, "ic_at_0_3": ..., "ic_mean": ..., "iou_mean": ..., "dice_mean": ..., "cr_mean": ...},
+          {"person_idx": 0, "ic_at_0_3": ..., "ic_mean": ..., "dice_mean": ..., ...},
           ...
         ],
         ...
@@ -746,10 +764,12 @@ def evaluate_per_person_by_replay(
             row = {"person_idx": k-1}
             for thr in ic_thresholds:
                 row[f"ic_at_{_thr_key(thr)}"] = float(np.mean(ic_hits[thr])) if ic_hits[thr] else 0.0
+                row[f"is_intersect_percent_{_legacy_thr_code(thr)}"] = row[f"ic_at_{_thr_key(thr)}"]
             row["ic_mean"]   = float(np.mean(ovls))    if ovls else 0.0
             row["iou_mean"]  = float(np.mean(ious))    if ious else 0.0
             row["dice_mean"] = float(np.mean(dices))   if dices else 0.0
             row["cr_mean"]   = float(np.mean(recalls)) if recalls else 0.0
+            row["total_intersection_percent"] = row["ic_mean"]
 
             per_person_rows.append(row)
 
@@ -782,7 +802,8 @@ def _summary_ic_line(stats: dict, thrs: List[float]) -> str:
         k = f"ic_at_{_thr_key(t)}"
         vals.append(f"{stats.get(k, 0.0):.2f}")
     right = "/".join(vals)
-    return f"{left} = {right}"
+    extra = f" | total={stats.get('total_intersection_percent', stats.get('ic_mean', 0.0)):.4f}"
+    return f"{left} = {right}{extra}"
 
 
 # =========================
@@ -887,6 +908,7 @@ def run_evaluate(args):
                     rename_map.update({
                         "ic_mean": "IC_mean", "iou_mean": "IoU_mean",
                         "dice_mean": "Dice_mean", "cr_mean": "CR_mean",
+                        "total_intersection_percent": "Total_IC",
                         "person_idx": "Person"
                     })
                     Logger.log(f"[PRED {pred_name_for_loader} | FS={fs}] Per-Person Metrics")
@@ -939,18 +961,17 @@ def run_evaluate(args):
     metric_cols = [c for c in df_out.columns if c not in ("target", "frame_select")]
     mean_overall = {m: float(df_out[m].mean()) for m in metric_cols if m in df_out}
 
-    df_out = pd.DataFrame(rows)
-
     # 보기 좋은 테이블 로그 (기존 출력 유지)
     for fs in args.frame_select:
         sub = df_out[df_out["frame_select"] == fs].copy()
         rename_map = {f"ic_at_{_thr_key(t)}": f"IC@{t:g}" for t in args.ic_thresholds}
         rename_map.update({
             "ic_mean": "IC_mean",
-            "ic_multi_mean": "IC_multi_mean",  # ← 추가
+            "ic_multi_mean": "IC_multi_mean",
             "iou_mean": "IoU_mean",
             "dice_mean": "Dice_mean",
-            "cr_mean": "CR_mean"
+            "cr_mean": "CR_mean",
+            "total_intersection_percent": "Total_IC",
         })
         Logger.log(f"--- FrameSelect = {fs} ---")
         Logger.log(sub.rename(columns=rename_map).to_string(index=False))
@@ -976,7 +997,7 @@ def run_evaluate(args):
         "gt_loo": bool(args.gt_loo),
         "tag": args.tag,
         "script": "evaluate.py",
-        "version": "1.2",
+        "version": "1.3",  # bumped
         "ic_thresholds": args.ic_thresholds,
     }
     
