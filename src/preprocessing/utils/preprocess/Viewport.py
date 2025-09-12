@@ -233,7 +233,7 @@ class Viewport:
             
             coco["images"].append({
                 "id": int(fid),
-                "file_name": f"input/dst/{self.replay_id}/{fid}.npy",
+                "file_name": f"input/dst/{self.replay_id}.rep/{fid}.npy",
                 "width": int(W),
                 "height": int(H)
             })
