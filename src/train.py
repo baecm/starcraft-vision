@@ -324,7 +324,7 @@ def run_training(args):
     train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_validation, device, args.max_epoch, log_save_path, use_kbrs=args.use_kbrs)
 
     wandb.finish()
-    send_message(f"Training run '{args.id_string}' completed successfully.")
+    send_message(f"@work Training run '{args.id_string}' completed successfully.")
 
 
 def parse_arguments():
@@ -405,7 +405,7 @@ if __name__ == "__main__":
         error_message = f"Training run '{args.id_string}' failed with an error: {e}"
         Logger.error(error_message)
         try:
-            send_message(error_message)
+            send_message(f"@work " + error_message)
         except Exception as send_error:
             Logger.error(f"Failed to send error message: {send_error}")
         raise

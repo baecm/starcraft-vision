@@ -320,7 +320,7 @@ def main():
 
         # Notify (best-effort)
         try:
-            send_message(f"[Inference] Completed {replay_id}. Predictions saved at {run_dir}")
+            send_message(f"@work [Inference] Completed {replay_id}. Predictions saved at {run_dir}")
         except Exception as e:
             Logger.error(f"[Inference] Error sending message: {e}")
 
