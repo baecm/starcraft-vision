@@ -1,5 +1,15 @@
 COMPOSE_FILE=infra/docker-compose.yml
 PID_DIR=pids
+JUPYTER_PORT ?= 8888
+DEBUG_PORT   ?= 5678
+
+NOTEBOOK_SERVICE ?= notebook
+PYDEBUG_SERVICE  ?= pydebug
+
+
+.PHONY: notebook notebook-logs stop-notebook \
+        pydebug-up pydebug-logs stop-pydebug \
+        debugger tunnel-notebook stop-tunnel-notebook tunnel-debug stop-tunnel-debug
 
 # 디렉토리 생성
 $(shell mkdir -p $(PID_DIR))
@@ -33,12 +43,6 @@ up:
 down:
 	docker compose -f $(COMPOSE_FILE) down --remove-orphans
 
-# run:
-# 	CONTAINER_NAME=run_$(shell date +%Y%m%d_%H%M%S); \
-# 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher $(CMD) $(ARGS) \
-# 		> logs/$$CONTAINER_NAME.log 2>&1 & \
-# 	echo $$CONTAINER_NAME > $(PID_DIR)/run.cid
-
 train:
 	CONTAINER_NAME=train_$(shell date +%Y%m%d_%H%M%S); \
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher train $(ARGS) \
@@ -68,9 +72,6 @@ preprocess_input:
 preprocess_label:
 	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_label $(ARGS)
 
-preprocess_pair:
-	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_pair $(ARGS)
-
 # 상태 확인
 status:
 	@echo "Running container IDs:"; \
@@ -99,3 +100,36 @@ stop:
 		[ -f $$cidfile ] && docker stop $$(cat $$cidfile) 2>/dev/null || true; \
 		rm -f $$cidfile; \
 	done
+
+# JupyterLab up (detached) + CID 기록
+notebook:
+	@mkdir -p $(PID_DIR)
+	@echo "[Makefile] Starting $(NOTEBOOK_SERVICE)"
+	@docker compose -f $(COMPOSE_FILE) up -d $(NOTEBOOK_SERVICE)
+	@CID=$$(docker compose -f $(COMPOSE_FILE) ps -q $(NOTEBOOK_SERVICE)); \
+		echo $$CID > $(PID_DIR)/notebook.cid; \
+		echo "[Makefile] CID: $$CID (port $(JUPYTER_PORT))"
+
+notebook-logs:
+	@docker compose -f $(COMPOSE_FILE) logs -f $(NOTEBOOK_SERVICE)
+
+stop-notebook:
+	-@docker stop $$(cat $(PID_DIR)/notebook.cid) 2>/dev/null || true
+	@rm -f $(PID_DIR)/notebook.cid
+
+# === SSH 터널(윈도우에서 수동 실행용; VS Code Port Forward 쓰면 생략 가능) ===
+SSH_HOST           ?= user@your.server
+LOCAL_JUPYTER_PORT ?= 18888
+LOCAL_DEBUG_PORT   ?= 15678
+SSH_CTRL_DIR       := $(PID_DIR)/ssh
+SSH_NOTEBOOK_SOCK  := $(SSH_CTRL_DIR)/nb.sock
+SSH_DEBUG_SOCK     := $(SSH_CTRL_DIR)/dbg.sock
+
+tunnel-notebook:
+	@mkdir -p $(SSH_CTRL_DIR)
+	ssh -fN -M -S $(SSH_NOTEBOOK_SOCK) -L $(LOCAL_JUPYTER_PORT):127.0.0.1:$(JUPYTER_PORT) $(SSH_HOST)
+	@echo "Open: http://localhost:$(LOCAL_JUPYTER_PORT)/?token=$$(cat $(JUPYTER_TOKEN) 2>/dev/null || echo -n lab)"
+
+stop-tunnel-notebook:
+	-ssh -S $(SSH_NOTEBOOK_SOCK) -O exit $(SSH_HOST) 2>/dev/null || true
+	@rm -f $(SSH_NOTEBOOK_SOCK)

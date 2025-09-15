@@ -24,3 +24,78 @@ services:
     stdin_open: true
     runtime: nvidia
     entrypoint: ["bash", "entrypoint.sh"]
+
+  notebook:
+    build:
+      context: ../
+      dockerfile: infra/docker/Dockerfile
+    image: starcraft-vision:dev
+    environment:
+      - PYTHONPATH=/workspace/src
+      - TORCH_HOME=/workspace/.torch_cache
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
+      - PYTHONUNBUFFERED=1
+      - MPLBACKEND=Agg
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-lab}
+      - JUPYTER_RUNTIME_DIR=/tmp/jupyter_runtime
+      - JUPYTER_DATA_DIR=/tmp/jupyter_data
+    volumes:
+      - ${JUPYTER_TOKEN}:/run/secrets/jupyter_token:ro
+      - ${WANDB_API_KEY}:/run/secrets/wandb_api_key:ro
+      - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
+      - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
+      - ${DATA_DIR}:/workspace/data
+      - ${SRC_DIR}:/workspace/src
+      - ${MODELS_DIR}:/workspace/models
+      - ${PREDICTIONS_DIR}:/workspace/predictions
+      - ${RESULTS_DIR}:/workspace/results
+      - ${NOTEBOOKS_DIR}:/workspace/notebooks
+    user: "${UID}:${GID}"
+    shm_size: '${SHARED_MEMORY}'
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    runtime: nvidia              # 최신 compose면 gpus: ["all"] 사용 가능
+    ports:
+      - "127.0.0.1:8888:8888"    # 외부 비공개(루프백 바인딩)
+    entrypoint:
+      - bash
+      - -lc
+      - >
+        mkdir -p /tmp/jupyter_runtime /tmp/jupyter_data &&
+        jupyter lab
+        --ip=0.0.0.0 --port=8888 --no-browser --allow-root
+        --NotebookApp.token="${JUPYTER_TOKEN}"
+        --NotebookApp.notebook_dir=/workspace/notebooks
+    profiles: ["dev"]
+
+  pydebug:
+    build:
+      context: ../
+      dockerfile: infra/docker/Dockerfile
+    image: starcraft-vision:dev
+    environment:
+      - PYTHONPATH=/workspace/src
+      - TORCH_HOME=/workspace/.torch_cache
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ${WANDB_API_KEY}:/run/secrets/wandb_api_key:ro
+      - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
+      - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
+      - ${DATA_DIR}:/workspace/data
+      - ${SRC_DIR}:/workspace/src
+      - ${MODELS_DIR}:/workspace/models
+      - ${PREDICTIONS_DIR}:/workspace/predictions
+      - ${RESULTS_DIR}:/workspace/results
+      - ${NOTEBOOKS_DIR}:/workspace/notebooks
+    user: "${UID}:${GID}"
+    shm_size: '${SHARED_MEMORY}'
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    runtime: nvidia
+    ports:
+      - "127.0.0.1:5678:5678"    # 외부 비공개(루프백 바인딩)
+    entrypoint: ["bash", "-lc", "tail -f /dev/null"]
+    profiles: ["dev"]

@@ -9,3 +9,8 @@ tensorboard
 wandb
 ultralytics
 requests
+jupyterlab
+ipykernel
+jupytext
+debugpy
+orjson
