@@ -116,20 +116,3 @@ notebook-logs:
 stop-notebook:
 	-@docker stop $$(cat $(PID_DIR)/notebook.cid) 2>/dev/null || true
 	@rm -f $(PID_DIR)/notebook.cid
-
-# === SSH 터널(윈도우에서 수동 실행용; VS Code Port Forward 쓰면 생략 가능) ===
-SSH_HOST           ?= user@your.server
-LOCAL_JUPYTER_PORT ?= 18888
-LOCAL_DEBUG_PORT   ?= 15678
-SSH_CTRL_DIR       := $(PID_DIR)/ssh
-SSH_NOTEBOOK_SOCK  := $(SSH_CTRL_DIR)/nb.sock
-SSH_DEBUG_SOCK     := $(SSH_CTRL_DIR)/dbg.sock
-
-tunnel-notebook:
-	@mkdir -p $(SSH_CTRL_DIR)
-	ssh -fN -M -S $(SSH_NOTEBOOK_SOCK) -L $(LOCAL_JUPYTER_PORT):127.0.0.1:$(JUPYTER_PORT) $(SSH_HOST)
-	@echo "Open: http://localhost:$(LOCAL_JUPYTER_PORT)/?token=$$(cat $(JUPYTER_TOKEN) 2>/dev/null || echo -n lab)"
-
-stop-tunnel-notebook:
-	-ssh -S $(SSH_NOTEBOOK_SOCK) -O exit $(SSH_HOST) 2>/dev/null || true
-	@rm -f $(SSH_NOTEBOOK_SOCK)
