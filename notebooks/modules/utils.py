@@ -1,12 +1,17 @@
 # /workspace/notebooks/utils.py
-import os, json, mmap, gzip
+import os
+import json
+import mmap
+import gzip
+import pandas as pd
+
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
 from functools import partial
 
-import pandas as pd
+from .config import *
 
 
 # ---------- 경로 수집 (빠른 scandir 재귀) ----------
@@ -240,3 +245,51 @@ def dataframe_topk_score(dataframe, K=1):
         .head(K)
     )
     return topk_df.sort_values(["replay", "image_id"])
+
+
+def get_ground_truth(label_method="all_correct", replays=None):
+    ground_truth_data = read_json_files_fast(
+        GROUND_TRUTH_DIR,
+        label_method=label_method,
+        replays=replays,
+        max_workers=16,
+        force=None,
+    )
+    annotation_ground_truth = get_annotations(ground_truth_data)
+    annotation_ground_truth["idx"] = annotation_ground_truth.groupby(
+        ["replay", "image_id"]
+    ).cumcount()  # 0~4 인덱스 생성
+    wide_ground_truth = annotation_ground_truth.pivot(
+        index=["replay", "image_id"], columns="idx", values="bbox"
+    )
+    wide_ground_truth.columns = [f"gt_{i}" for i in wide_ground_truth.columns]
+    wide_ground_truth.reset_index(inplace=True)
+    return wide_ground_truth
+
+def get_inference(
+    model_path: Path,
+    label_method="all_correct",
+    replays=None,
+    max_workers=16,
+    force=None,
+    k=1
+):
+    prediction = read_json_files_fast(
+        os.path.join(PREDICTIONS_DIR, model_path),
+        label_method=label_method,
+        replays=replays,
+        max_workers=max_workers,
+        force=force,
+    )
+    annotation = get_annotations(prediction)
+    topk_annotation = dataframe_topk_score(annotation, K=k)
+    topk_annotation["idx"] = topk_annotation.groupby(
+        ["replay", "image_id"]
+    ).cumcount()  # 0~4 인덱스 생성
+    wide_prediction = topk_annotation.pivot(
+        index=["replay", "image_id"], columns="idx", values="bbox"
+    )
+    wide_prediction.columns = [f"pred_{i}" for i in wide_prediction.columns]
+    wide_prediction.reset_index(inplace=True)
+
+    return wide_prediction

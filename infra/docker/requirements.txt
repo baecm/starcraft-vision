@@ -14,3 +14,4 @@ ipykernel
 jupytext
 debugpy
 orjson
+ipywidgets

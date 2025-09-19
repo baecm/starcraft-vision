@@ -24,6 +24,54 @@ services:
     stdin_open: true
     runtime: nvidia
     entrypoint: ["bash", "entrypoint.sh"]
+  
+  # train:
+  #   build:
+  #     context: ../
+  #     dockerfile: infra/docker/Dockerfile
+  #     image: starcraft-vision:dev
+  #   environment:
+  #     - PYTHONPATH=/workspace/src
+  #     - TORCH_HOME=/workspace/.torch_cache
+  #     - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
+  #   volumnes:
+  #     - ${WANDB_API_KEY}:/run/secrets/wandb_api_key:ro
+  #     - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
+  #     - ${DATA_DIR}:/workspace/data
+  #     - ${SRC_DIR}:/workspace/src
+  #     - ${MODELS_DIR}:/workspace/models
+  #     - ./entrypoint.sh:/workspace/entrypoint.sh
+  #   user: "${UID}:${GID}"
+  #   shm_size: '${SHARED_MEMORY}'
+  #   working_dir: /workspace
+  #   stdin_open: true
+  #   runtime: nvidia
+  #   entrypoint: ["bash", "entrypoint.sh"]
+
+  # inference:
+  #   build:
+  #     context: ../
+  #     dockerfile: infra/docker/Dockerfile
+  #   image: starcraft-vision:dev
+  #   environment:
+  #     - PYTHONPATH=/workspace/src
+  #     - TORCH_HOME=/workspace/.torch_cache
+  #     - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
+  #   volumes:
+  #     - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
+  #     - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
+  #     - ${DATA_DIR}:/workspace/data
+  #     - ${SRC_DIR}:/workspace/src
+  #     - ${MODELS_DIR}:/workspace/models
+  #     - ${PREDICTIONS_DIR}:/workspace/predictions
+  #     - ${RESULTS_DIR}:/workspace/results
+  #     - ./entrypoint.sh:/workspace/entrypoint.sh
+  #   user: "${UID}:${GID}"
+  #   shm_size: '${SHARED_MEMORY}'
+  #   working_dir: /workspace
+  #   stdin_open: true
+  #   runtime: nvidia
+  #   entrypoint: ["bash", "entrypoint.sh"]
 
   notebook:
     build:
@@ -58,13 +106,11 @@ services:
     - -lc
     - |
       set -euo pipefail
-      # 고정 경로(변수 치환 안 씀)
       RUNTIME_DIR=/tmp/jupyter_runtime
       DATA_DIR=/tmp/jupyter_data
       CONFIG_DIR=/tmp/jupyter_config
       IPYTHON_DIR=/tmp/ipython
 
-      # 실행 환경 보정
       export HOME=/tmp
       mkdir -p "$$RUNTIME_DIR" "$$DATA_DIR" "$$CONFIG_DIR" "$$IPYTHON_DIR"
       export JUPYTER_RUNTIME_DIR="$$RUNTIME_DIR"
