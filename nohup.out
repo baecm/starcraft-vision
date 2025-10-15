@@ -1,0 +1,10 @@
+[Entrypoint] WANDB_API_KEY = e0df2177559e6a268f9f33ca89c2128b1ed70ff8
+[Entrypoint] SYNOLOGY_CHAT_WEBHOOK_URL = https://baecm.xyz:5001/webapi/entry.cgi?api=SYNO.Chat.External&method=incoming&version=2&token=%22dBPa2DA55ITDmYv8kAvXsgDFii4TB3O4xbmAaG3nTWaJyR5kA2pKU3D2xsCNP65n%22
+[Entrypoint] COMMAND = train
+[Entrypoint] ARGS    = --replays 36 212 438 522 1660 1559 1628 2351 6219 11251 --include-components worker ground air building vision --label-method all_correct --max-epoch 30 --window-size 4 --interval 8 --batch-size 16 --sample-ratio 0.05 --log-level log --use-kbrs --kbrs-params weights.loss_kbrs=0.25
+[2025-10-15T05:57:13] Training model...
+WARNING ⚠️ user config directory '/.config/Ultralytics' is not writeable, using '/tmp/Ultralytics'. Set YOLO_CONFIG_DIR to override.
+Creating new Ultralytics Settings v0.0.6 file ✅ 
+View Ultralytics Settings with 'yolo settings' or at '/tmp/Ultralytics/settings.json'
+Update Settings with 'yolo settings key=value', i.e. 'yolo settings runs_dir=path/to/dir'. For help see https://docs.ultralytics.com/quickstart/#ultralytics-settings.
+

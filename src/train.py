@@ -285,13 +285,33 @@ def run_training(args):
         for name, weight in args.loss_weight:
             loss_weights[name] = float(weight)
 
+    # run_training(...)
     kbrs_params = None
     if args.use_kbrs:
-        if 'loss_kbrs' not in loss_weights and hasattr(args, 'kbrs_loss_weight') and args.kbrs_loss_weight is not None:
-            loss_weights['loss_kbrs'] = args.kbrs_loss_weight
-            Logger.info(f"[Info] Loss weights: {loss_weights}")
-
         kbrs_params = config.KBRS_PARAMS.copy()
+
+        # merge CLI overrides
+        if getattr(args, "kbrs_param", None):
+            def _autocast(s):
+                # try int -> float -> bool -> str
+                if s.lower() in ("true", "false"):
+                    return s.lower() == "true"
+                try:
+                    return int(s)
+                except ValueError:
+                    try:
+                        return float(s)
+                    except ValueError:
+                        return s
+
+            for item in args.kbrs_param:
+                if "=" not in item:
+                    Logger.warning(f"[KBRS] Skip invalid --kbrs-param: {item}")
+                    continue
+                k, v = item.split("=", 1)
+                k, v = k.strip(), _autocast(v.strip())
+                kbrs_params[k] = v
+
         Logger.info(f"[Info] Using KBRS parameters: {kbrs_params}")
 
     train_ds = data_loader_train.dataset
@@ -381,9 +401,10 @@ def parse_arguments():
     # KBRS Specific
     group_kbrs = parser.add_argument_group("KBRS Specific")
     group_kbrs.add_argument("--use-kbrs", action='store_true', help="Use KBRS loss during training.")
+    group_kbrs.add_argument("--kbrs-param", action="append", metavar="KEY=VAL", help="Override KBRS_PARAMS entries, e.g., --kbrs-param kernel_x=20 --kbrs-param kernel_y=12")
     group_kbrs.add_argument('--loss-weight', nargs=2, action='append',
                             metavar=('LOSS_NAME', 'WEIGHT'),
-                            help='Set a weight for a specific loss. Can be used multiple times.')
+                            help="Set a weight for a specific loss. Can be used multiple times.")
 
     return parser.parse_args()
 

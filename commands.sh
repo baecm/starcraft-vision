@@ -26,8 +26,7 @@ make preprocess_label ARGS="--replays 7970 9105 9301 9795 --method all_correct"
 make preprocess_label ARGS="--replays 36 212 438 522 1660 1559 1628 2351 6219 11251 275 1725 3613 4520 4664 6254 3529 3972 7191 7950 7970 9105 9301 9795 --method all_correct"
 
 # Training with specific replays
-# set 1: all_correct_win4_b16_20250823_060441
-NVIDIA_VISIBLE_DEVICES=1 make train ARGS=" \
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS=" \
   --replays 36 212 438 522 1660 1559 1628 2351 6219 11251 \
   --include-components worker ground air building vision \
   --label-method all_correct \
@@ -35,8 +34,13 @@ NVIDIA_VISIBLE_DEVICES=1 make train ARGS=" \
   --window-size 4 \
   --interval 8 \
   --batch-size 16 \
-  --sample-ratio 1.0 \
+  --sample-ratio 0.05 \
   --log-level log \
+  --use-kbrs \
+  --kbrs-param weights.loss_kbrs=0.25 \
+  --kbrs-param weights.density=0.3 \
+  --kbrs-param weights.mixture=3.0 \
+  --kbrs-param weights.centeredness=0.3 \
   "
 
 NVIDIA_VISIBLE_DEVICES=1 make inference ARGS=" \
