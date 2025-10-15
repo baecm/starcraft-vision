@@ -4,7 +4,7 @@ import argparse
 import time
 import tqdm
 import utils
-import json
+import json, re, ast
 import pickle
 from multiprocessing import Pool
 
@@ -227,6 +227,54 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_v
             Logger.error(f"Failed to send message: {e}")
 
 
+def _unwrap_subset(ds):
+    while isinstance(ds, Subset):
+        ds = ds.dataset
+    return ds
+
+def _autocast(val_str):
+    s = val_str.strip()
+    # bool
+    if s.lower() in ("true", "false"): return s.lower() == "true"
+    # None
+    if s.lower() == "none": return None
+    # int/float
+    try: return int(s)
+    except: pass
+    try: return float(s)
+    except: pass
+    # list/tuple/dict literal or JSON
+    try: return ast.literal_eval(s)
+    except: pass
+    try: return json.loads(s)
+    except: pass
+    # fallback string
+    return s
+
+def _set_by_path(obj, path, value):
+    # dotted path with optional [idx], e.g. projections[1].channels
+    tokens = re.findall(r'[^.\[\]]+|\[\d+\]', path)
+    cur = obj
+    for i, t in enumerate(tokens):
+        is_last = (i == len(tokens)-1)
+        if t.startswith('[') and t.endswith(']'):
+            idx = int(t[1:-1])
+            if is_last:
+                cur[idx] = value
+            else:
+                cur = cur[idx]
+        else:
+            key = t
+            if is_last:
+                cur[key] = value
+            else:
+                if key not in cur:
+                    # create intermediate container conservatively
+                    # next token decides list vs dict
+                    nxt = tokens[i+1] if i+1 < len(tokens) else None
+                    cur[key] = [] if (nxt and nxt.startswith('[')) else {}
+                cur = cur[key]
+                
 def run_training(args):
     settings.update({"wandb": True})
     Logger.info("[Stage] Preparing environment...]")
@@ -239,11 +287,12 @@ def run_training(args):
             id_str += "_kbrs"
         args.id_string = id_str
 
-    log_save_path = os.path.join(args.log_root, f"{args.id_string}_{time.strftime('%Y%m%d_%H%M%S')}/")
+    tag_string = f"{args.id_string}_{time.strftime('%Y%m%d_%H%M%S')}"
+    log_save_path = os.path.join(args.log_root, f"{tag_string}/")
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
 
-    wandb.init(project="starcraft", name=args.id_string, config=vars(args))
+    wandb.init(project="starcraft", name=args.id_string, config=vars(args), tags=[tag_string])
 
     input_root = os.path.join(args.data_root, "input/dst")
     label_root = os.path.join(args.data_root, "label/dst")
@@ -290,32 +339,17 @@ def run_training(args):
     if args.use_kbrs:
         kbrs_params = config.KBRS_PARAMS.copy()
 
-        # merge CLI overrides
-        if getattr(args, "kbrs_param", None):
-            def _autocast(s):
-                # try int -> float -> bool -> str
-                if s.lower() in ("true", "false"):
-                    return s.lower() == "true"
-                try:
-                    return int(s)
-                except ValueError:
-                    try:
-                        return float(s)
-                    except ValueError:
-                        return s
-
-            for item in args.kbrs_param:
-                if "=" not in item:
-                    Logger.warning(f"[KBRS] Skip invalid --kbrs-param: {item}")
-                    continue
-                k, v = item.split("=", 1)
-                k, v = k.strip(), _autocast(v.strip())
-                kbrs_params[k] = v
+        for item in args.kbrs_param or []:
+            if "=" not in item:
+                Logger.warning(f"[KBRS] Skip invalid --kbrs-param: {item}")
+                continue
+            k, v = item.split("=", 1)
+            _set_by_path(kbrs_params, k.strip(), _autocast(v))
 
         Logger.info(f"[Info] Using KBRS parameters: {kbrs_params}")
 
     train_ds = data_loader_train.dataset
-    inner_ds = train_ds.dataset if isinstance(train_ds, Subset) else train_ds
+    inner_ds = _unwrap_subset(train_ds)
     in_channels = len(inner_ds.channel_indices) * inner_ds.window_size
     Logger.info(f"[Info] Input channels: {in_channels} (window size: {inner_ds.window_size})")
 
