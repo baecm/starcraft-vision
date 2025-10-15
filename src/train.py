@@ -225,47 +225,12 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_v
             send_message(f"Epoch {epoch+1} completed.")
         except Exception as e:
             Logger.error(f"Failed to send message: {e}")
-
-
+            
+            
 def _unwrap_subset(ds):
     while isinstance(ds, Subset):
         ds = ds.dataset
     return ds
-
-def _autocast(val_str):
-    s = val_str.strip()
-    if s.lower() in ("true", "false"): return s.lower() == "true"
-    if s.lower() == "none": return None
-    try: return int(s)
-    except: pass
-    try: return float(s)
-    except: pass
-    try: return ast.literal_eval(s)
-    except: pass
-    try: return json.loads(s)
-    except: pass
-    return s
-
-def _set_by_path(obj, path, value):
-    tokens = re.findall(r'[^.\[\]]+|\[\d+\]', path)
-    cur = obj
-    for i, t in enumerate(tokens):
-        is_last = (i == len(tokens)-1)
-        if t.startswith('[') and t.endswith(']'):
-            idx = int(t[1:-1])
-            if is_last:
-                cur[idx] = value
-            else:
-                cur = cur[idx]
-        else:
-            key = t
-            if is_last:
-                cur[key] = value
-            else:
-                if key not in cur:
-                    nxt = tokens[i+1] if i+1 < len(tokens) else None
-                    cur[key] = [] if (nxt and nxt.startswith('[')) else {}
-                cur = cur[key]
 
 def run_training(args):
     settings.update({"wandb": True})
@@ -337,23 +302,27 @@ def run_training(args):
     if args.use_kbrs:
         kbrs_params = config.KBRS_PARAMS.copy()
 
-        # dotted path overrides
-        for item in args.kbrs_param or []:
-            if "=" not in item:
-                Logger.warning(f"[KBRS] Skip invalid --kbrs-param: {item}")
-                continue
-            k, v = item.split("=", 1)
-            _set_by_path(kbrs_params, k.strip(), _autocast(v))
+        # merge CLI overrides
+        if getattr(args, "kbrs_param", None):
+            def _autocast(s):
+                # try int -> float -> bool -> str
+                if s.lower() in ("true", "false"):
+                    return s.lower() == "true"
+                try:
+                    return int(s)
+                except ValueError:
+                    try:
+                        return float(s)
+                    except ValueError:
+                        return s
 
-        # CLI의 score_weights가 있으면 config 값을 덮어쓰기
-        if score_weights:
-            kbrs_params["score_weights"] = score_weights
-
-        # (선택) config에 'loss_weights': {'kbrs': v} 있으면 CLI에 없다면 매핑
-        if "loss_weights" in kbrs_params:
-            cfg_lw = kbrs_params.pop("loss_weights") or {}
-            if "kbrs" in cfg_lw and "loss_kbrs" not in loss_weights:
-                loss_weights["loss_kbrs"] = float(cfg_lw["kbrs"])
+            for item in args.kbrs_param:
+                if "=" not in item:
+                    Logger.warning(f"[KBRS] Skip invalid --kbrs-param: {item}")
+                    continue
+                k, v = item.split("=", 1)
+                k, v = k.strip(), _autocast(v.strip())
+                kbrs_params[k] = v
 
         Logger.info(f"[Info] Using KBRS parameters: {kbrs_params}")
 
