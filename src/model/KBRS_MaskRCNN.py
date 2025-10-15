@@ -16,23 +16,24 @@ class KBRS_MaskRCNN(MaskRCNN):
                  kbrs_params=None, loss_weights=None):
         super().__init__(backbone, num_classes)
         self.kbrs_params = kbrs_params or {}
-        self.loss_weights = loss_weights or {}
-        self.static_loss_weights = dict(self.loss_weights)
-        self.learnable_loss_weights = self.kbrs_params.get("learnable", None)
+
+        # ===== Loss weights (최종 합산 비중) =====
+        self.loss_weights = dict(loss_weights or {})        # e.g., {'loss_kbrs':0.25, 'loss_objectness':1.0, ...}
+        self.learnable_loss_weights = self.kbrs_params.get("learnable", None)  # 'static'이면 비활성
+        self._loss_weight_head = None
 
         # runtime logging
-        self._loss_weight_head = None
         self.log_into_losses = bool(self.kbrs_params.get("log_into_losses", False))
         self.kbrs_last_logs = {}
         self.kbrs_cache = None
 
-        # impl/params
-        self._scorer_impl = self.kbrs_params.get('scorer_impl', 'conv')
-        self._scorer_region_size = tuple(self.kbrs_params.get("region_size", (20, 12)))
-        self._scorer_stride      = int(self.kbrs_params.get("score_stride", 1))
-        self._mixture_tau        = float(self.kbrs_params.get("mixture_tau", 2.0))
-        self._mixture_mode       = str(self.kbrs_params.get("mixture_mode", "confusion"))
-        self._mixture_power      = float(self.kbrs_params.get("mixture_power", 1.0))
+        # ===== Scorer / KBRS params =====
+        self._scorer_impl       = self.kbrs_params.get('scorer_impl', 'conv')
+        self._scorer_region_size= tuple(self.kbrs_params.get("region_size", (20, 12)))
+        self._scorer_stride     = int(self.kbrs_params.get("score_stride", 1))
+        self._mixture_tau       = float(self.kbrs_params.get("mixture_tau", 2.0))
+        self._mixture_mode      = str(self.kbrs_params.get("mixture_mode", "confusion"))
+        self._mixture_power     = float(self.kbrs_params.get("mixture_power", 1.0))
 
         self._gate_channels_cfg: List[int] = list(self.kbrs_params.get("gate_channels", []))
         self._gate_reduce: str  = str(self.kbrs_params.get("gate_reduce", "max")).lower()
@@ -40,7 +41,12 @@ class KBRS_MaskRCNN(MaskRCNN):
         self._detach_scorer_input: bool = bool(self.kbrs_params.get("detach_scorer_input", True))
 
         self._projections_cfg = self.kbrs_params.get("projections", None)
-        self._weights = dict(self.kbrs_params.get("weights", {"density": 1.0, "mixture": 1.0, "centeredness": 1.0}))
+        # score_weights: 내부 합성 비율 (구식 'weights'도 허용)
+        _ws = self.kbrs_params.get("score_weights", None)
+        if _ws is None:
+            _ws = self.kbrs_params.get("weights", None)  # backward-compat
+        self._weights = dict(_ws or {"density": 1.0, "mixture": 1.0, "centeredness": 1.0})
+
         self._mixture_between = self.kbrs_params.get("mixture_between", None)  # (미사용)
         self._downsample_before = self.kbrs_params.get("downsample_before", None)
 
@@ -49,13 +55,13 @@ class KBRS_MaskRCNN(MaskRCNN):
 
         # window-size 메타 (builder가 주입)
         self._window_size = int(self.kbrs_params.get("window_size", 1))
-        self._per_window = int(self.kbrs_params.get("per_window", 9))
+        self._per_window  = int(self.kbrs_params.get("per_window", 9))
 
         # scorer placeholder
         self.kbrs_scorer = None
 
     def _maybe_init_loss_head(self, loss_keys, device):
-        if self.learnable_loss_weights and self._loss_weight_head is None:
+        if self.learnable_loss_weights and self.learnable_loss_weights != "static" and self._loss_weight_head is None:
             self._loss_weight_head = nn.ParameterDict({
                 k: nn.Parameter(torch.tensor(1.0, device=device))
                 for k in loss_keys
@@ -164,7 +170,7 @@ class KBRS_MaskRCNN(MaskRCNN):
         self.kbrs_last_logs = scalar_logs  # epoch 누적에 사용
 
         # --- cache one sample (1장) for WANDB viz ---
-        if self._viz_components and self.training:  # ← eval 때는 캐시하지 않음
+        if self._viz_components and self.training:
             with torch.no_grad():
                 self.kbrs_cache = {
                     "score_total": score_map[:1].detach().cpu(),
@@ -172,7 +178,7 @@ class KBRS_MaskRCNN(MaskRCNN):
                 }
 
         # --- accumulate epoch scalars ---
-        if self._acc_epoch and self.training:       # ← eval 때는 누적하지 않음
+        if self._acc_epoch and self.training:
             if not hasattr(self, "_kbrs_epoch_sums"):
                 self._kbrs_epoch_sums = {}
                 self._kbrs_epoch_count = 0
@@ -197,7 +203,7 @@ class KBRS_MaskRCNN(MaskRCNN):
         losses.update(proposal_losses)
 
         # --- KBRS: 메인 손실만 최적화 반영 ---
-        tau = float(self.kbrs_params.get("loss_scale", 2.0))
+        tau = float(self.kbrs_params.get("tau", 2.0))
         losses["loss_kbrs"] = aux_boost_loss(score_map, tau=tau)
 
         # (옵션) 엔트로피 항은 최적화 반영 여부를 설정으로 제어
@@ -213,23 +219,17 @@ class KBRS_MaskRCNN(MaskRCNN):
                         val = aux_boost_loss(
                             comp_maps[ck], tau=per_tau.get(ck, 1.0), norm="zscore"
                         )
-                        # wandb에 보낼 스칼라 형태로만 저장 (총손실에는 포함되지 않음)
                         self.kbrs_last_logs[f"comp_loss/{ck}"] = float(val.detach())
-
-        # (선택) log_*를 손실에 주입하지 않음: 로그만 남기고 최적화에는 영향 X
-        # if self.log_into_losses:
-        #     losses.update({f"log_{k}": v for k, v in self.kbrs_last_logs.items()})
 
         # --- apply weights (learnable or static) ---
         self._maybe_init_loss_head(losses.keys(), images.tensors.device)
-        if self.learnable_loss_weights and self._loss_weight_head is not None:
+        if self._loss_weight_head is not None:
             w = {k: self._loss_weight_head[k] for k in losses.keys()}
             for k in list(losses.keys()):
                 losses[k] = losses[k] * w.get(k, torch.tensor(1.0, device=images.tensors.device))
         else:
             for k in list(losses.keys()):
-                # log_*가 없으므로 기본 1.0 경로가 대부분. 필요 시 외부에서 loss_weights로 조정.
                 default_w = 1.0
-                losses[k] = losses[k] * float(self.static_loss_weights.get(k, default_w))
+                losses[k] = losses[k] * float(self.loss_weights.get(k, default_w))
 
         return losses

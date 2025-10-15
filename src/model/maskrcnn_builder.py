@@ -25,10 +25,10 @@ def get_model_instance_segmentation(num_classes: int,
                                     do_normalize: bool = False,
                                     normalize_mean=None,
                                     normalize_std=None,
-                                    resize_mode: str = "resize",     # "resize" or "keep"
-                                    min_sizes=None,                  # e.g. [800] or [640,800,896,960,1024]
+                                    resize_mode: str = "resize",
+                                    min_sizes=None,
                                     max_size: int = 1333,
-                                    rpn_small_anchors: bool = False, # 원본크기 유지 시 권장
+                                    rpn_small_anchors: bool = False,
                                     use_kbrs: bool = False,
                                     kbrs_params=None,
                                     loss_weights=None):
@@ -53,9 +53,11 @@ def get_model_instance_segmentation(num_classes: int,
         backbone.body.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         _kaiming_init_conv(backbone.body.conv1)
 
-        model = KBRS_MaskRCNN(backbone, num_classes,
-                              kbrs_params=kbrs_params,
-                              loss_weights=loss_weights)
+        model = KBRS_MaskRCNN(
+            backbone, num_classes,
+            kbrs_params=kbrs_params,
+            loss_weights=loss_weights
+        )
     else:
         model = torchvision.models.detection.maskrcnn_resnet50_fpn(weights="DEFAULT")
         model.backbone.body.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -106,6 +108,7 @@ def get_model_instance_segmentation(num_classes: int,
     assert len(model.transform.image_std) == in_channels
     return model
 
+
 if __name__ == "__main__":
 
     def count_params(m):
@@ -143,11 +146,9 @@ if __name__ == "__main__":
         loss_weights=None,
     )
 
-    # ── 기본 구조 출력 ──────────────────────────────────────────────────────────
     print("\n===== Model Structure =====")
     print(model)
 
-    # ── transform / anchor / head 요약 ─────────────────────────────────────────
     print("\n===== Transform Config =====")
     T = model.transform
     print(f"do_resize: {getattr(T, 'do_resize', True)}")
@@ -170,19 +171,16 @@ if __name__ == "__main__":
     print(f"box_predictor in_features: {model.roi_heads.box_predictor.cls_score.in_features}")
     print(f"mask_predictor in_channels: {model.roi_heads.mask_predictor.conv5_mask.in_channels}")
 
-    # ── 파라미터 수 ────────────────────────────────────────────────────────────
     total, trainable = count_params(model)
     print("\n===== Parameters =====")
     print(f"Total params:     {total:,}")
     print(f"Trainable params: {trainable:,}")
 
-    # ── 선택: torchinfo summary (설치되어 있으면) ─────────────────────────────
     try:
         from torchinfo import summary as torchinfo_summary
-        # 더미 입력 채널 추출
         c_in = model.backbone.body.conv1.in_channels
-        # 입력 크기(배치1, 채널, H, W) — H,W는 대략적인 값
         print("\n===== torchinfo.summary (dummy input 1xCx512x512) =====")
-        torchinfo_summary(model, input_size=(1, c_in, 512, 512), verbose=0, col_names=("input_size","output_size","num_params","kernel_size","mult_adds"))
+        torchinfo_summary(model, input_size=(1, c_in, 512, 512), verbose=0,
+                          col_names=("input_size","output_size","num_params","kernel_size","mult_adds"))
     except Exception as e:
         print("\n(torchinfo 미설치 또는 실행 생략:", str(e), ")")

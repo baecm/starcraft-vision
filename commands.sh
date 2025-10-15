@@ -37,10 +37,12 @@ NVIDIA_VISIBLE_DEVICES=0 make train ARGS=" \
   --sample-ratio 0.05 \
   --log-level log \
   --use-kbrs \
-  --kbrs-param weights.loss_kbrs=0.25 \
-  --kbrs-param weights.density=0.3 \
-  --kbrs-param weights.mixture=3.0 \
-  --kbrs-param weights.centeredness=0.3 \
+  --loss-weights loss_objectness 1.0 \
+  --loss-weights loss_rpn_box_reg 1.0 \
+  --loss-weights loss_kbrs 0.25 \
+  --kbrs-param score_weights.density=0.3 \
+  --kbrs-param score_weights.mixture=3.0 \
+  --kbrs-param score_weights.centeredness=0.3 \
   "
 
 NVIDIA_VISIBLE_DEVICES=1 make inference ARGS=" \

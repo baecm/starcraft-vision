@@ -4,7 +4,7 @@ import argparse
 import time
 import tqdm
 import utils
-import json
+import json, re, ast
 import pickle
 from multiprocessing import Pool
 
@@ -227,6 +227,46 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_v
             Logger.error(f"Failed to send message: {e}")
 
 
+def _unwrap_subset(ds):
+    while isinstance(ds, Subset):
+        ds = ds.dataset
+    return ds
+
+def _autocast(val_str):
+    s = val_str.strip()
+    if s.lower() in ("true", "false"): return s.lower() == "true"
+    if s.lower() == "none": return None
+    try: return int(s)
+    except: pass
+    try: return float(s)
+    except: pass
+    try: return ast.literal_eval(s)
+    except: pass
+    try: return json.loads(s)
+    except: pass
+    return s
+
+def _set_by_path(obj, path, value):
+    tokens = re.findall(r'[^.\[\]]+|\[\d+\]', path)
+    cur = obj
+    for i, t in enumerate(tokens):
+        is_last = (i == len(tokens)-1)
+        if t.startswith('[') and t.endswith(']'):
+            idx = int(t[1:-1])
+            if is_last:
+                cur[idx] = value
+            else:
+                cur = cur[idx]
+        else:
+            key = t
+            if is_last:
+                cur[key] = value
+            else:
+                if key not in cur:
+                    nxt = tokens[i+1] if i+1 < len(tokens) else None
+                    cur[key] = [] if (nxt and nxt.startswith('[')) else {}
+                cur = cur[key]
+
 def run_training(args):
     settings.update({"wandb": True})
     Logger.info("[Stage] Preparing environment...]")
@@ -239,16 +279,16 @@ def run_training(args):
             id_str += "_kbrs"
         args.id_string = id_str
 
-    log_save_path = os.path.join(args.log_root, f"{args.id_string}_{time.strftime('%Y%m%d_%H%M%S')}/")
+    tag_string = f"{args.id_string}_{time.strftime('%Y%m%d_%H%M%S')}"
+    log_save_path = os.path.join(args.log_root, f"{tag_string}/")
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
 
-    wandb.init(project="starcraft", name=args.id_string, config=vars(args))
+    wandb.init(project="starcraft", name=args.id_string, config=vars(args), tags=[tag_string])
 
     input_root = os.path.join(args.data_root, "input/dst")
     label_root = os.path.join(args.data_root, "label/dst")
 
-    # JSON→Pickle 전처리 대상도 replays만 사용
     preprocess_json_to_pickle(
         label_root=label_root,
         label_method=args.label_method,
@@ -280,42 +320,45 @@ def run_training(args):
     Logger.info("[Stage] Initializing model...]")
     num_classes = 2  # background + viewport
 
+    # --- (1) loss_weights dict 구성 ---
     loss_weights = {}
-    if args.loss_weight:
-        for name, weight in args.loss_weight:
+    if args.loss_weights:
+        for name, weight in args.loss_weights:
             loss_weights[name] = float(weight)
 
-    # run_training(...)
+    # --- (2) score_weights dict 구성 (scorer 내부 비율) ---
+    score_weights = {}
+    if args.score_weights:
+        for name, weight in args.score_weights:
+            score_weights[name] = float(weight)
+
+    # --- (3) kbrs_params merge ---
     kbrs_params = None
     if args.use_kbrs:
         kbrs_params = config.KBRS_PARAMS.copy()
 
-        # merge CLI overrides
-        if getattr(args, "kbrs_param", None):
-            def _autocast(s):
-                # try int -> float -> bool -> str
-                if s.lower() in ("true", "false"):
-                    return s.lower() == "true"
-                try:
-                    return int(s)
-                except ValueError:
-                    try:
-                        return float(s)
-                    except ValueError:
-                        return s
+        # dotted path overrides
+        for item in args.kbrs_param or []:
+            if "=" not in item:
+                Logger.warning(f"[KBRS] Skip invalid --kbrs-param: {item}")
+                continue
+            k, v = item.split("=", 1)
+            _set_by_path(kbrs_params, k.strip(), _autocast(v))
 
-            for item in args.kbrs_param:
-                if "=" not in item:
-                    Logger.warning(f"[KBRS] Skip invalid --kbrs-param: {item}")
-                    continue
-                k, v = item.split("=", 1)
-                k, v = k.strip(), _autocast(v.strip())
-                kbrs_params[k] = v
+        # CLI의 score_weights가 있으면 config 값을 덮어쓰기
+        if score_weights:
+            kbrs_params["score_weights"] = score_weights
+
+        # (선택) config에 'loss_weights': {'kbrs': v} 있으면 CLI에 없다면 매핑
+        if "loss_weights" in kbrs_params:
+            cfg_lw = kbrs_params.pop("loss_weights") or {}
+            if "kbrs" in cfg_lw and "loss_kbrs" not in loss_weights:
+                loss_weights["loss_kbrs"] = float(cfg_lw["kbrs"])
 
         Logger.info(f"[Info] Using KBRS parameters: {kbrs_params}")
 
     train_ds = data_loader_train.dataset
-    inner_ds = train_ds.dataset if isinstance(train_ds, Subset) else train_ds
+    inner_ds = _unwrap_subset(train_ds)
     in_channels = len(inner_ds.channel_indices) * inner_ds.window_size
     Logger.info(f"[Info] Input channels: {in_channels} (window size: {inner_ds.window_size})")
 
@@ -332,7 +375,7 @@ def run_training(args):
         rpn_small_anchors=args.rpn_small_anchors if args.resize_mode == "keep" else False,
         use_kbrs=args.use_kbrs,
         kbrs_params=kbrs_params,
-        loss_weights=loss_weights
+        loss_weights=loss_weights,
     )
     Logger.info(f"[Info] Model initialized with {num_classes} classes and {in_channels} input channels.]")
     model.to(device)
@@ -377,34 +420,28 @@ def parse_arguments():
 
     # Transform / Resize / Normalize
     group_tf = parser.add_argument_group("Transform / Resize / Normalize")
-    group_tf.add_argument("--resize-mode", type=str, choices=["resize", "keep"], default="resize",
-                          help="'resize'면 old 스타일(권장), 'keep'이면 원본 크기 유지.")
-    group_tf.add_argument("--min-sizes", type=int, nargs="+", default=[800],
-                          help="멀티스케일 예: 640 800 896 960 1024 (resize-mode=resize 일 때만 의미)")
+    group_tf.add_argument("--resize-mode", type=str, choices=["resize", "keep"], default="resize", help="'resize'면 old 스타일(권장), 'keep'이면 원본 크기 유지.")
+    group_tf.add_argument("--min-sizes", type=int, nargs="+", default=[800], help="멀티스케일 예: 640 800 896 960 1024 (resize-mode=resize 일 때만 의미)")
     group_tf.add_argument("--max-size", type=int, default=1333)
     group_tf.add_argument("--do-normalize", action="store_true", help="채널별 mean/std 정규화 사용")
     group_tf.add_argument("--normalize-mean", type=float, nargs="+", help="정규화 mean (길이 = in_channels)")
     group_tf.add_argument("--normalize-std", type=float, nargs="+", help="정규화 std (길이 = in_channels)")
-    group_tf.add_argument("--rpn-small-anchors", action="store_true",
-                          help="resize-mode=keep 일 때 작은 앵커 사용")
+    group_tf.add_argument("--rpn-small-anchors", action="store_true", help="resize-mode=keep 일 때 작은 앵커 사용")
 
     # Environment and Logging
     group_env = parser.add_argument_group("Environment and Logging")
     group_env.add_argument("--cuda", action='store_true', default=True, help="Enable CUDA training.")
     group_env.add_argument("--id-string", type=str, default="", help="Identifier string for the training run.")
     group_env.add_argument("--log-level", type=str, default="log", choices=["none", "log", "debug"], help="Logging level.")
-    group_env.add_argument("--log-root", type=str, default=os.path.join(os.getcwd(), "models"),
-                           help="Root directory for saving models and logs.")
-    group_env.add_argument("--num-workers", type=int, default=os.cpu_count()//4,
-                           help="Number of CPU cores for data loading.")
+    group_env.add_argument("--log-root", type=str, default=os.path.join(os.getcwd(), "models"), help="Root directory for saving models and logs.")
+    group_env.add_argument("--num-workers", type=int, default=os.cpu_count()//4, help="Number of CPU cores for data loading.")
 
     # KBRS Specific
     group_kbrs = parser.add_argument_group("KBRS Specific")
     group_kbrs.add_argument("--use-kbrs", action='store_true', help="Use KBRS loss during training.")
     group_kbrs.add_argument("--kbrs-param", action="append", metavar="KEY=VAL", help="Override KBRS_PARAMS entries, e.g., --kbrs-param kernel_x=20 --kbrs-param kernel_y=12")
-    group_kbrs.add_argument('--loss-weight', nargs=2, action='append',
-                            metavar=('LOSS_NAME', 'WEIGHT'),
-                            help="Set a weight for a specific loss. Can be used multiple times.")
+    group_kbrs.add_argument("--loss-weights", nargs=2, action='append', metavar=('LOSS_NAME', 'WEIGHT'), help="Set a weight for a specific loss. Can be used multiple times.")
+    group_kbrs.add_argument('--score-weights', nargs=2, action='append', metavar=('COMP_NAME', 'WEIGHT'), help="KBRS scorer component weights (density/mixture/centeredness).")
 
     return parser.parse_args()
 

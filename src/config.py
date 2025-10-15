@@ -1,5 +1,5 @@
 # MODEL CONFIGURATION
-DEVICE = "cuda"
+DEVICE = 'cuda'
 NUM_CLASSES = 2  # 0: background, 1: unit
 WINDOW_SIZE = 1
 INTERVAL = 1
@@ -18,13 +18,13 @@ TRAIN_LOG_INTERVAL = 10
 TRAIN_SAVE_INTERVAL = 1
 
 LABEL_METHODS = [
-    "legacy",
-    "consider_previous",
-    "unique_local_maximums",
-    "all_correct",
+    'legacy',
+    'consider_previous',
+    'unique_local_maximums',
+    'all_correct',
 ]
 
-OUTPUT_TYPES = ["coord", "channel"]
+OUTPUT_TYPES = ['coord', 'channel']
 
 KERNEL_SHAPE = (20, 12)
 ORIGIN_SHAPE = (128, 128)
@@ -57,16 +57,20 @@ COMPONENT_CHANNEL_MAP = {
 }
 
 KBRS_PARAMS = {
-    "feature_map_name": "smallest",
-    "scorer_impl": "conv",
-    "detach_scorer_input": False,
-    'weights': {"loss_kbrs": 0.25,
-                "density": 0.3,
-                "mixture": 3.0,
-                "centeredness": 0.3},
+    'feature_map_name': 'smallest',
+    'scorer_impl': 'conv',
+    'detach_scorer_input': False,
+    'loss_weights': {
+        'loss_kbrs': 0.25,
+    },
+    'score_weights': {
+        'density': 0.3,
+        'mixture': 3.0,
+        'centeredness': 0.3
+    },
     'region_size': (20, 12),
     'learnable': 'static',
-    'loss_scale': 4.0,
+    'tau': 4.0,
     'use_entropy': False,
     'projections': [{'name': 'A', 'channels': [0, 1, 2, 3]},
                     {'name': 'B', 'channels': [4, 5, 6, 7]}],
@@ -76,16 +80,16 @@ KBRS_PARAMS = {
     'gate_reduce': 'mean',
     'gate_gain': 0.8,
     # scorer 해상도/속도
-    "score_stride": 1,
-    "downsample_before": None,
-    "log_into_losses": False,
+    'score_stride': 1,
+    'downsample_before': None,
+    'log_into_losses': False,
     # 혼합도 설정(중요)
-    "mixture_mode": "confusion",     # "confusion" | "entropy" | "agreement"
-    "mixture_power": 2.0,            # p≈0.5 근처 강조
+    'mixture_mode': 'confusion',     # 'confusion' | 'entropy' | 'agreement'
+    'mixture_power': 2.0,            # p≈0.5 근처 강조
     # builder가 주입
-    # "window_size": window_size,
-    # "per_window": 9,
-    "viz_components": True,
-    "accumulate_epoch": True,
-    "component_losses": True,
+    # 'window_size': window_size,
+    # 'per_window': 9,
+    'viz_components': True,
+    'accumulate_epoch': True,
+    'component_losses': True,
 }
