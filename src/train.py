@@ -15,7 +15,9 @@ import wandb
 from ultralytics import settings
 
 import detection.transforms as T
-from detection.engine import train_one_epoch, evaluate
+# from detection.engine import train_one_epoch, evaluate
+from detection.engine import train_one_epoch
+from evaluate import evaluate
 from dataset.custom_penn_fudan import CustomPennFudanDataset
 from model.maskrcnn_builder import get_model_instance_segmentation
 
@@ -138,12 +140,9 @@ def load_data(input_root, label_root, label_method, window_size, interval, batch
         val_idx   = full_idx[-val_count:]
         train_idx = full_idx[:-val_count]
 
-        # 반드시 '원본 train_dataset' 기준으로 Subset을 각각 생성
         train_dataset = Subset(train_dataset, train_idx)
-        # 주의: val은 '원본'에서 뽑아야 함
         val_dataset   = Subset(train_dataset.dataset, val_idx)
 
-    # ---- Train sample ratio (train에만 적용) ----
     if sample_ratio < 1.0:
         n_train = len(train_dataset)
         keep = torch.randperm(n_train).tolist()[:int(n_train * sample_ratio)]
