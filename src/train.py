@@ -178,12 +178,25 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_v
             for k, meter in meters.items():
                 if k.startswith("loss_") and k not in skip and hasattr(meter, "global_avg"):
                     log_dict[f"Loss/{k[5:]}"] = float(meter.global_avg)
+        
+        # === Observer Intersection / Kernel metrics 로깅 ===
+        if eval_stats is not None and hasattr(eval_stats, "aggregates"):
+            agg = eval_stats.aggregates
 
-        if eval_stats is not None and hasattr(eval_stats, 'coco_eval'):
-            stat_names = ['AP','AP50','AP75','APs','APm','APl','AR1','AR10','AR100','ARs','ARm','ARl']
-            for iou_type, coco_eval in eval_stats.coco_eval.items():
-                for i, name in enumerate(stat_names):
-                    log_dict[f"Eval/{iou_type}/{name}"] = coco_eval.stats[i]
+            # ic 계열
+            for key in ["ic@000", "ic@030", "ic@050", "ic_multi", "ic_ratio"]:
+                if key in agg:
+                    log_dict[f"Eval/{key}"] = float(agg[key])
+
+            # kernel 계열
+            mapping = [
+                ("mean_density", "Eval/density"),
+                ("mean_centeredness", "Eval/centeredness"),
+                ("mean_mixture", "Eval/mixture"),
+            ]
+            for src_key, dst_name in mapping:
+                if src_key in agg:
+                    log_dict[dst_name] = float(agg[src_key])
 
         if hasattr(model, "consume_epoch_kbrs"):
             scalars, cache = model.consume_epoch_kbrs()
