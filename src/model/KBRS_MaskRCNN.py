@@ -7,7 +7,7 @@ from torchvision.models.detection import MaskRCNN
 from collections import OrderedDict
 from typing import Dict, List
 
-from .kbrs import KBRSConvScorer, KBRSUnfoldScorer
+from .kbrs import KBRSConvScorer
 from .utils import pick_feature_map, normalize_projections, auto_expand_indices, compute_gate_from_raw_inputs, reduce_map_stats, aux_boost_loss, aux_entropy_sharp
 
 
@@ -117,27 +117,18 @@ class KBRS_MaskRCNN(MaskRCNN):
         )
 
         if self.kbrs_scorer is None:
-            if self._scorer_impl == 'conv':
-                self.kbrs_scorer = KBRSConvScorer(
-                    region_size=self._scorer_region_size,
-                    weights=self._weights,
-                    projections=proj_norm,
-                    mixture_tau=self._mixture_tau,
-                    mixture_mode=self._mixture_mode,
-                    mixture_power=self._mixture_power,
-                    mask_channel=None,
-                    mask_gain=1.0,
-                    score_stride=self._scorer_stride,
-                    downsample_before=self._downsample_before,
-                )
-            else:
-                self.kbrs_scorer = KBRSUnfoldScorer(
-                    region_size=self._scorer_region_size,
-                    score_weights=self._weights,
-                    projections=proj_norm,
-                    mixture_between=self._mixture_between,
-                    mask_channel=None
-                )
+            self.kbrs_scorer = KBRSConvScorer(
+                region_size=self._scorer_region_size,
+                weights=self._weights,
+                projections=proj_norm,
+                mixture_tau=self._mixture_tau,
+                mixture_mode=self._mixture_mode,
+                mixture_power=self._mixture_power,
+                mask_channel=None,
+                mask_gain=1.0,
+                score_stride=self._scorer_stride,
+                downsample_before=self._downsample_before,
+            )
         self.kbrs_scorer = self.kbrs_scorer.to(fmap.device, dtype=fmap.dtype)
 
         # scorer 입력 detach 옵션

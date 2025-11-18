@@ -1,147 +1,224 @@
 # src/model/kbrs.py
+from __future__ import annotations
+
+from typing import Dict, List, Tuple, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, List, Tuple, Optional
 
 from utils.logger import Logger
+from .kbrs_kernel import make_ones_kernel, make_center_kernel
+
 
 # =========================
 # Conv2d 기반 KBRS Scorer
 # =========================
 class KBRSConvScorer(nn.Module):
     """
-    Conv2d로 density/mixture/centeredness를 계산해 (N, oh, ow) score_map을 반환.
-    - region_size: (kh, kw) 윈도우
-    - weights: 각 컴포넌트 합성 가중치 dict
-    - projections: dict{name -> [channel indices]}  (예: {"A":[0,1,2,3], "B":[4,5,6,7]})
-    - mixture_mode: "confusion"(4p(1-p)) | "entropy" | "agreement"(fallback로 confusion 사용)
-    - mixture_power: confusion 값을 거듭제곱(>1이면 중앙부(p≈0.5) 더 강조)
-    - score_stride: conv stride
-    - downsample_before: None 또는 {"type":"avg","stride":2} 식의 프리다운샘플
+    Conv2d로 density / mixture / centeredness를 계산해서 (N, oh, ow) score_map을 반환하는 모듈.
+
+    Args
+    ----
+    region_size:
+        (kh, kw) 윈도우 크기.
+    weights:
+        {"density": w_d, "mixture": w_m, "centeredness": w_c} 형태의 가중치 dict.
+    projections:
+        {"A": [채널 인덱스...], "B": [채널 인덱스...]} 식으로 mixture 계산에 사용할 채널 그룹.
+    mixture_tau:
+        (예전 fallback용) 현재 confusion/entropy 정의에서는 직접 사용하지 않지만 인터페이스 유지용.
+    mixture_mode:
+        "confusion" | "entropy" 중 선택. 기본은 "confusion".
+    mixture_power:
+        mixture map에 대한 pow. >1이면 중앙(p≈0.5) 근처를 더 강조.
+    mask_channel, mask_gain:
+        현재 이 모듈 내부에서는 사용하지 않고, 상위 모델에서 gate 용도로 처리.
+    score_stride:
+        Conv stride.
+    downsample_before:
+        {"type": "avg"|"max", "stride": s} 형태. 입력 feature에 사전 downsample을 적용할 때 사용.
     """
+
     def __init__(
         self,
         region_size: Tuple[int, int] = (20, 12),
         weights: Optional[Dict[str, float]] = None,
         projections: Optional[Dict[str, List[int]]] = None,
-        mixture_tau: float = 2.0,  # (fallback용)
+        mixture_tau: float = 2.0,  # (fallback용, 인터페이스 유지)
         mixture_mode: str = "confusion",
         mixture_power: float = 1.0,
         mask_channel: Optional[int] = None,  # (미사용: gate는 모델에서 처리)
         mask_gain: float = 1.0,
         score_stride: int = 1,
         downsample_before: Optional[Dict] = None,
-    ):
+    ) -> None:
         super().__init__()
         self.kh, self.kw = region_size
-        self.weights = dict(weights or {"density": 1.0, "mixture": 1.0, "centeredness": 1.0})
-        self.projections = projections or {}
+        self.weights: Dict[str, float] = dict(
+            weights or {"density": 1.0, "mixture": 1.0, "centeredness": 1.0}
+        )
+        self.projections: Dict[str, List[int]] = projections or {}
         self.mixture_tau = float(mixture_tau)
         self.mixture_mode = str(mixture_mode)
         self.mixture_power = float(mixture_power)
+        self.mask_channel = mask_channel
+        self.mask_gain = float(mask_gain)
         self.score_stride = int(score_stride)
         self.downsample_before = downsample_before
 
-        # ones kernel / gaussian kernel 은 buffer로 잡되, 사용시 입력 dtype/device로 캐스팅
-        ones = torch.ones((1, 1, self.kh, self.kw), dtype=torch.float32)
+        # ones / gaussian kernel 은 공통 helper에서 생성하고,
+        # 사용 시 _cast_buf 로 dtype/device 를 맞춰서 사용한다.
+        ones = make_ones_kernel(self.kh, self.kw)
         self.register_buffer("k_ones_f32", ones, persistent=False)
 
-        # centeredness weight (2D gaussian)
-        yy, xx = torch.meshgrid(
-            torch.arange(self.kh, dtype=torch.float32),
-            torch.arange(self.kw, dtype=torch.float32),
-            indexing="ij"
-        )
-        cy, cx = (self.kh - 1) / 2.0, (self.kw - 1) / 2.0
-        sigma = self.kh / 4.0
-        w = torch.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * (sigma ** 2)))
-        self.register_buffer("k_center_f32", w.view(1, 1, self.kh, self.kw), persistent=False)
+        center = make_center_kernel(self.kh, self.kw)
+        self.register_buffer("k_center_f32", center, persistent=False)
 
+    # ------------------------------------------------------------------
+    # internal helpers
+    # ------------------------------------------------------------------
     def _cast_buf(self, buf: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+        """buffer를 ref tensor의 device / dtype에 맞춰서 캐스팅."""
         return buf.to(device=ref.device, dtype=ref.dtype)
 
     def _maybe_downsample(self, x: torch.Tensor) -> torch.Tensor:
+        """사전 downsample 옵션이 있을 때 적용."""
         if self.downsample_before is None:
             return x
-        t = self.downsample_before.get("type", "avg").lower()
+
+        t = str(self.downsample_before.get("type", "avg")).lower()
         s = int(self.downsample_before.get("stride", 2))
-        if t == "avg":
-            return F.avg_pool2d(x, kernel_size=s, stride=s)
-        elif t == "max":
-            return F.max_pool2d(x, kernel_size=s, stride=s)
-        else:
+
+        if s <= 1:
             return x
 
+        if t == "avg":
+            return F.avg_pool2d(x, kernel_size=s, stride=s)
+        if t == "max":
+            return F.max_pool2d(x, kernel_size=s, stride=s)
+        return x
+
+    # ------------------------------------------------------------------
+    # components: density / centeredness / mixture
+    # ------------------------------------------------------------------
     def _density(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (N,C,H,W) -> 채널합에 ones-kernel conv => 윈도우 합/평균
-        x_sum = x.sum(dim=1, keepdim=True)                    # (N,1,H,W)
-        k1 = self._cast_buf(self.k_ones_f32, x)
-        den = F.conv2d(x_sum, k1, stride=self.score_stride)   # (N,1,oh,ow)
+        """
+        density: 윈도우 안의 채널합 평균.
+
+        x: (N, C, H, W)
+        return: (N, oh, ow)
+        """
+        x_sum = x.sum(dim=1, keepdim=True)  # (N,1,H,W)
+        k1 = self._cast_buf(self.k_ones_f32, x_sum)
+        den = F.conv2d(x_sum, k1, stride=self.score_stride)  # (N,1,oh,ow)
         den = den / float(self.kh * self.kw)
-        return den.squeeze(1)                                 # (N,oh,ow)
+        return den.squeeze(1)  # (N,oh,ow)
 
     def _centeredness(self, x: torch.Tensor) -> torch.Tensor:
-        # 채널합 후 가우시안 커널로 conv
-        x_sum = x.sum(dim=1, keepdim=True)                    # (N,1,H,W)
-        kc = self._cast_buf(self.k_center_f32, x)
-        cen = F.conv2d(x_sum, kc, stride=self.score_stride)   # (N,1,oh,ow)
-        # 평균 정규화(선택): 스케일 안정화
-        cen = cen / (kc.sum() + 1e-6)
-        return cen.squeeze(1)                                 # (N,oh,ow)
+        """
+        centeredness: 2D Gaussian kernel로 weighted average.
 
-    def _mixture_from_projections(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        # projection A/B가 있으면 A/B 채널합 -> ones conv -> p=A/(A+B), confusion/entropy 등 계산
-        comp_extra = {}
+        x: (N, C, H, W)
+        return: (N, oh, ow)
+        """
+        x_sum = x.sum(dim=1, keepdim=True)  # (N,1,H,W)
+        kc = self._cast_buf(self.k_center_f32, x_sum)
+        cen = F.conv2d(x_sum, kc, stride=self.score_stride)  # (N,1,oh,ow)
+        cen = cen / (kc.sum() + 1e-6)
+        return cen.squeeze(1)
+
+    def _mixture_from_projections(
+        self, x: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        projections["A"], projections["B"] 채널 그룹이 있을 경우:
+          - A, B 채널 합에 ones-kernel conv 적용
+          - p = A/(A+B) 로부터 confusion/entropy 기반 mixture 계산
+
+        projections 가 없으면:
+          - 각 채널에 ones-kernel conv 후 채널 평균으로 fallback mixture.
+        """
+        comp_extra: Dict[str, torch.Tensor] = {}
+
+        # ------------------------
+        # 1) projection A/B가 있을 때
+        # ------------------------
         if "A" in self.projections and "B" in self.projections:
             idxA = self.projections["A"]
             idxB = self.projections["B"]
-            xA = x[:, idxA, :, :].sum(dim=1, keepdim=True)         # (N,1,H,W)
-            xB = x[:, idxB, :, :].sum(dim=1, keepdim=True)         # (N,1,H,W)
 
-            k1 = self._cast_buf(self.k_ones_f32, x)
-            A = F.conv2d(xA, k1, stride=self.score_stride)         # (N,1,oh,ow)
-            B = F.conv2d(xB, k1, stride=self.score_stride)         # (N,1,oh,ow)
-
-            eps = 1e-6
-            den = (A + B).clamp_min(eps)
-            p = A / den                                            # (N,1,oh,ow)
-
-            mode = self.mixture_mode
-            if mode == "entropy":
-                conf = -(p * (p.clamp_min(eps).log()) +
-                         (1 - p) * ((1 - p).clamp_min(eps).log())) / torch.log(torch.tensor(2.0, device=x.device, dtype=x.dtype))
+            if len(idxA) == 0 or len(idxB) == 0:
+                Logger().warning(
+                    "[KBRSConvScorer] projections['A'] 또는 ['B']가 비어 있음. "
+                    "fallback mixture 로 전환합니다."
+                )
             else:
-                # "confusion" (기본) 또는 기타 → confusion로 fallback
-                conf = 4.0 * p * (1.0 - p)
+                # (N,1,H,W)
+                xA = x[:, idxA, :, :].sum(dim=1, keepdim=True)
+                xB = x[:, idxB, :, :].sum(dim=1, keepdim=True)
 
-            if self.mixture_power != 1.0:
-                conf = conf.clamp_(0, 1).pow(self.mixture_power)
+                k1 = self._cast_buf(self.k_ones_f32, xA)
+                A = F.conv2d(xA, k1, stride=self.score_stride)  # (N,1,oh,ow)
+                B = F.conv2d(xB, k1, stride=self.score_stride)  # (N,1,oh,ow)
 
-            comp_extra["proj_A"] = A.squeeze(1)
-            comp_extra["proj_B"] = B.squeeze(1)
-            comp_extra["proj_mixture"] = conf.squeeze(1)
+                eps = 1e-6
+                den = (A + B).clamp_min(eps)
+                p = A / den  # (N,1,oh,ow)
 
-            return conf.squeeze(1), comp_extra
+                mode = self.mixture_mode
+                if mode == "entropy":
+                    # binary entropy (log base 2)
+                    conf = -(p * (p.clamp_min(eps).log()) +
+                             (1 - p) * ((1 - p).clamp_min(eps).log()))
+                    conf = conf / torch.log(
+                        torch.tensor(2.0, device=x.device, dtype=x.dtype)
+                    )
+                else:
+                    # "confusion" (기본) 또는 기타 → confusion으로 fallback
+                    conf = 4.0 * p * (1.0 - p)
 
-        # projections가 없을 때의 fallback mixture (활성 채널 수 근사)
-        # 각 채널에 ones conv 후 >0 근사(sigmoid/tau), 채널합
+                if self.mixture_power != 1.0:
+                    conf = conf.clamp_(0, 1).pow(self.mixture_power)
+
+                comp_extra["proj_A"] = A.squeeze(1)
+                comp_extra["proj_B"] = B.squeeze(1)
+                comp_extra["proj_mixture"] = conf.squeeze(1)
+
+                return conf.squeeze(1), comp_extra
+
+        # ------------------------
+        # 2) projections가 없을 때의 fallback mixture
+        #    - 각 채널에 ones-kernel conv 후 채널 평균
+        # ------------------------
         N, C, H, W = x.shape
-        kC = self._cast_buf(self.k_ones_f32, x).expand(C, 1, self.kh, self.kw)   # (C,1,kh,kw)
-        # 그룹 conv로 각 채널 별 윈도우 합
-        ch_sum = F.conv2d(x, kC, stride=self.score_stride, groups=C)             # (N,C,oh,ow)
-        act = torch.sigmoid(ch_sum / self.mixture_tau)                           # (N,C,oh,ow)
-        mix = act.mean(dim=1)                                                    # (N,oh,ow)  (mean or sum)
-        return mix, comp_extra
+        k1 = self._cast_buf(self.k_ones_f32, x)
+        act = F.conv2d(x, k1, stride=self.score_stride)  # (N,C,oh,ow)
+        act = act.mean(dim=1)  # (N,oh,ow)
 
+        comp_extra["proj_mixture"] = act
+        return act, comp_extra
+
+    # ------------------------------------------------------------------
+    # forward
+    # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        x: (N,C,H,W)
-        return:
-          score_map: (N, oh, ow)
-          comp_maps: dict[type] -> (N, oh, ow)  (density/mixture/centeredness/proj_A/proj_B/proj_mixture...)
+        x: (N, C, H, W)
+
+        Returns
+        -------
+        score_map: (N, oh, ow)
+        comp_maps: dict[str, (N, oh, ow)]
+            - "density"
+            - "centeredness"
+            - "mixture"
+            - "proj_A" (optional)
+            - "proj_B" (optional)
+            - "proj_mixture" (optional)
         """
-        assert x.dim() == 4
+        assert x.dim() == 4, f"KBRSConvScorer expects 4D tensor, got {x.shape}"
+
         x = self._maybe_downsample(x)
 
         comp_maps: Dict[str, torch.Tensor] = {}
@@ -158,42 +235,56 @@ class KBRSConvScorer(nn.Module):
         if self.weights.get("mixture", 0.0) != 0.0:
             mix_map, extra = self._mixture_from_projections(x)
             comp_maps["mixture"] = mix_map
-            comp_maps.update(extra)  # proj_A/proj_B/proj_mixture(=confusion)
+            comp_maps.update(extra)
 
-        # 합성
-        total = 0.0
-        for k, v in comp_maps.items():
-            w = float(self.weights.get(k, 0.0))
-            if w != 0.0:
-                total = total + w * v
-        score_map = total if isinstance(total, torch.Tensor) else torch.zeros_like(next(iter(comp_maps.values())))
+        # score 합성
+        score_map = torch.zeros_like(
+            next(iter(comp_maps.values())), device=x.device, dtype=x.dtype
+        )
+
+        if "density" in comp_maps:
+            score_map = score_map + self.weights.get("density", 0.0) * comp_maps["density"]
+        if "centeredness" in comp_maps:
+            score_map = score_map + self.weights.get("centeredness", 0.0) * comp_maps["centeredness"]
+        if "mixture" in comp_maps:
+            score_map = score_map + self.weights.get("mixture", 0.0) * comp_maps["mixture"]
 
         return score_map, comp_maps
 
 
-# =========================
-# (옵션) Unfold 기반 Scorer
-# =========================
-class KBRSUnfoldScorer(nn.Module):
+# ======================================================
+# Wrapper: 기존 코드와의 호환을 위한 얇은 래퍼
+# ======================================================
+class KBRSWrapper(nn.Module):
     """
-    메모리 사용이 커서 특별한 이유가 없으면 KBRSConvScorer를 이용하세요.
-    여기서는 간단한 density/mixture/centeredness만 유지합니다.
+    예전 코드에서 사용하던 단순 인터페이스 래퍼.
+
+    - region_size, score_weights, projections 를 받아서
+      내부적으로 KBRSConvScorer 를 생성해 한 번 호출한다.
     """
+
     def __init__(
         self,
         region_size: Tuple[int, int] = (20, 12),
         score_weights: Optional[Dict[str, float]] = None,
         projections: Optional[Dict[str, List[int]]] = None,
-        mixture_between: Optional[Tuple[str, str]] = None,
-        mask_channel: Optional[int] = None,
-    ):
+        mixture_between: Optional[Tuple[str, str]] = None,  # 현재는 사용하지 않지만 시그니처 유지
+        mask_channel: Optional[int] = None,                 # 상위에서 처리
+    ) -> None:
         super().__init__()
         self.kh, self.kw = region_size
-        self.w = dict(score_weights or {"density": 1.0, "mixture": 1.0, "centeredness": 1.0})
-        self.projections = projections or {}
+        self.w: Dict[str, float] = dict(
+            score_weights or {"density": 1.0, "mixture": 1.0, "centeredness": 1.0}
+        )
+        self.projections: Dict[str, List[int]] = projections or {}
+        self.mixture_between = mixture_between
+        self.mask_channel = mask_channel
 
-    def forward(self, x: torch.Tensor):
-        # 간단 버전: conv 스코어러 권장
-        conv = KBRSConvScorer(region_size=(self.kh, self.kw), weights=self.w, projections=self.projections)
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        conv = KBRSConvScorer(
+            region_size=(self.kh, self.kw),
+            weights=self.w,
+            projections=self.projections,
+        )
         conv = conv.to(x.device, dtype=x.dtype)
         return conv(x)
