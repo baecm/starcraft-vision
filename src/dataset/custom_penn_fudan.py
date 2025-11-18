@@ -110,40 +110,95 @@ class CustomPennFudanDataset(BasePennFudanDataset):
 
     def get_coco_structure(self):
         """
-        참고: 윈도우드 구조에선 완전한 COCO 구조를 재구성하기 어렵다.
-        필요 시 외부에서 별도 캐시를 구성하거나 이 메서드를 커스터마이즈 하자.
+        CustomPennFudanDataset 전체에 대한 COCO-style 구조를 구성한다.
+
+        - 윈도우의 target 이미지(마지막 프레임) 기준으로 이미지/어노테이션을 수집
+        - image_id, ann_id 중복은 제거
         """
-        Logger.warn("get_coco_structure() may produce incomplete results with windowed data.")
-        return {
-            "info": {"description": "autogen-placeholder", "version": "1.0"},
+        from collections import OrderedDict
+
+        Logger.warn(
+            "get_coco_structure() for CustomPennFudanDataset: "
+            "windowed data를 target 프레임 기준으로 단일 COCO 구조로 합칩니다."
+        )
+
+        images_by_id: dict[int, dict] = OrderedDict()
+        anns_by_id: dict[int, dict] = OrderedDict()
+        cat_ids: set[int] = set()
+
+        # self.files: List[Tuple[rid, window_image_ids, image_dict, ann_dict]]
+        next_ann_id = 1
+
+        for rid, window_image_ids, image_dict, ann_dict in self.files:
+            if not window_image_ids:
+                continue
+
+            target_img_id = int(window_image_ids[-1])
+
+            # 이미지 정보
+            img_info = image_dict.get(target_img_id)
+            if img_info is None:
+                continue
+
+            img_id = int(img_info.get("id", target_img_id))
+
+            if img_id not in images_by_id:
+                # COCO 포맷에 맞게 최소 필드만 채워줌
+                images_by_id[img_id] = {
+                    "id": img_id,
+                    "width": int(img_info.get("width", config.TILE_SIZE[0])),
+                    "height": int(img_info.get("height", config.TILE_SIZE[1])),
+                    "file_name": img_info.get("file_name", f"{rid}_{img_id}.npy"),
+                }
+
+            # 어노테이션
+            for ann in ann_dict.get(target_img_id, []):
+                ann = dict(ann)  # defensive copy
+
+                # ann_id가 없으면 새로 부여
+                ann_id = ann.get("id")
+                if ann_id is None:
+                    ann_id = next_ann_id
+                    next_ann_id += 1
+                ann_id = int(ann_id)
+
+                if ann_id in anns_by_id:
+                    continue  # 이미 추가된 ann
+
+                ann["id"] = ann_id
+                ann["image_id"] = img_id
+
+                # category 수집
+                cat_id = int(ann.get("category_id", 1))
+                ann["category_id"] = cat_id
+                cat_ids.add(cat_id)
+
+                anns_by_id[ann_id] = ann
+
+        # categories 구성 (이름은 placeholder여도 상관 없음)
+        categories = [
+            {"id": cid, "name": f"cat_{cid}"} for cid in sorted(cat_ids or {1})
+        ]
+
+        structure = {
+            "info": {
+                "description": "CustomPennFudanDataset (windowed, target-frame COCO view)",
+                "version": "1.0",
+            },
             "licenses": [],
-            "images": [],
-            "annotations": [],
-            "categories": [{"id": 1, "name": "viewport"}]
+            "images": list(images_by_id.values()),
+            "annotations": list(anns_by_id.values()),
+            "categories": categories,
         }
 
-    # -----------------------------
-    # Class helpers
-    # -----------------------------
-    @classmethod
-    def from_replay_ids(
-        cls,
-        input_root: str,
-        label_root: str,
-        label_method: str,
-        replay_ids: list,
-        **kwargs
-    ):
-        """
-        대체 생성자: 인자로 받은 replay_ids를 그대로 training_ids로 사용.
-        """
-        return cls(
-            input_root=input_root,
-            label_root=label_root,
-            label_method=label_method,
-            training_ids=replay_ids,
-            **kwargs
-        )
+        if len(structure["annotations"]) == 0:
+            Logger.warn(
+                "get_coco_structure(): annotations가 비어 있습니다. "
+                "label_method나 replay_ids를 확인하세요."
+            )
+
+        return structure
+
 
     # -----------------------------
     # Static / Internal helpers
