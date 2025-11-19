@@ -1,289 +1,408 @@
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
-import time
-from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from dataclasses import asdict
+from typing import Any, Dict, List, Sequence, Tuple, Optional
 
 import numpy as np
-import torch
-import pycocotools.mask as mask_util
 from pycocotools.coco import COCO
+import pycocotools.mask as mask_util
 
-from detection.coco_utils import get_coco_api_from_dataset
-from custom_evaluator import ImageIR, eval_intersection_run
+from custom_evaluator import eval_intersection_run, ImageIR
 from utils.logger import Logger
 
 
 # ----------------------------------------------------------------------
-# 평가 결과 구조체
+# Helper: compute centroid from COCO annotation or detection
 # ----------------------------------------------------------------------
-
-
-@dataclass
-class EvalIRResult:
-    per_image: List[ImageIR]
-    aggregates: Dict[str, float]
-
-
-# ----------------------------------------------------------------------
-# 1) 훈련/검증 루프에서 호출하는 evaluate()
-# ----------------------------------------------------------------------
-
-
-def _encode_mask(mask: np.ndarray) -> dict:
-    rle = mask_util.encode(np.asfortranarray(mask.astype(np.uint8)))
-    rle["counts"] = rle["counts"].decode("utf-8")
-    return rle
-
-
-@torch.inference_mode()
-def _collect_predictions_from_loader(
-    model: torch.nn.Module,
-    dataloader: torch.utils.data.DataLoader,
-    device: torch.device,
-    score_thresh: float = 0.0,
-    max_dets: Optional[int] = None,
-    with_masks: bool = True,
-) -> List[dict]:
+def _centroid_from_coco_ann(ann: dict, img_w: int, img_h: int) -> Tuple[float, float]:
     """
-    data_loader에서 모델을 돌려 COCO-style detection 리스트를 생성.
-    (훈련용 evaluate()와 CLI에서 공용으로 사용)
+    Return centroid (cx, cy) in image pixel coordinates (0..img_w-1, 0..img_h-1)
+    Handles 'segmentation' (polygon or RLE) and 'bbox'.
     """
-    model.eval()
-    preds: List[dict] = []
-    cpu_device = torch.device("cpu")
+    if "segmentation" in ann and ann["segmentation"]:
+        seg = ann["segmentation"]
+        # get bbox from segmentation then centroid from bbox center
+        if isinstance(seg, dict) and "counts" in seg:
+            bbox = mask_util.toBbox(seg)  # (x,y,w,h) float
+        else:
+            try:
+                rles = mask_util.frPyObjects(seg, img_h, img_w) if isinstance(seg, list) else seg
+                mrg = mask_util.merge(rles)
+                bbox = mask_util.toBbox(mrg)
+            except Exception:
+                bbox = None
+        if bbox is not None:
+            x, y, w, h = bbox
+            return float(x + w / 2.0), float(y + h / 2.0)
 
-    Logger.info("[Eval] Running model on validation set for IR metrics...")
-    for images, targets in dataloader:
-        images = [img.to(device) for img in images]
-        outputs = model(images)
-        outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
+    if "bbox" in ann and ann["bbox"]:
+        x, y, w, h = ann["bbox"]
+        return float(x + w / 2.0), float(y + h / 2.0)
 
-        for target, output in zip(targets, outputs):
-            image_id = int(target["image_id"].item())
-            boxes = output["boxes"].detach().cpu()
-            scores = output["scores"].detach().cpu()
-            labels = output["labels"].detach().cpu()
-
-            # score 순 정렬
-            order = torch.argsort(scores, descending=True)
-            boxes = boxes[order]
-            scores = scores[order]
-            labels = labels[order]
-
-            # score threshold
-            if score_thresh > 0.0:
-                keep = scores >= score_thresh
-                boxes = boxes[keep]
-                scores = scores[keep]
-                labels = labels[keep]
-
-            # max det
-            if max_dets is not None and len(scores) > max_dets:
-                boxes = boxes[:max_dets]
-                scores = scores[:max_dets]
-                labels = labels[:max_dets]
-
-            if with_masks and "masks" in output:
-                masks = output["masks"].detach().cpu() > 0.5
-            else:
-                masks = None
-
-            for i in range(len(scores)):
-                det: Dict[str, Any] = {
-                    "image_id": image_id,
-                    "category_id": int(labels[i]),
-                    "score": float(scores[i]),
-                }
-                if masks is not None:
-                    m = masks[i, 0].numpy()
-                    det["segmentation"] = _encode_mask(m)
-                else:
-                    box = boxes[i]
-                    det["bbox"] = [
-                        float(box[0]),
-                        float(box[1]),
-                        float(box[2] - box[0]),
-                        float(box[3] - box[1]),
-                    ]
-                preds.append(det)
-
-    Logger.info("[Eval] Finished collecting predictions.")
-    return preds
+    # fallback: if segmentation/bbox absent, try keypoints? else center of image
+    return float(img_w) / 2.0, float(img_h) / 2.0
 
 
-@torch.inference_mode()
-def evaluate(
-    model: torch.nn.Module,
-    data_loader: torch.utils.data.DataLoader,
-    device: torch.device,
+# ----------------------------------------------------------------------
+# Convert COCO GT + COCO predictions into "agent traces" format
+# Each image -> one test; agents: [predictor (one), GT objects...],
+# each agent is a list with single frame dict {"vpx","vpy"}.
+# ----------------------------------------------------------------------
+def coco_to_kernel_labels(
+    coco_gt: COCO,
+    preds_list: List[dict],
     *,
-    denom: str = "gt",
-    pred_agg: str = "best",
-    cat_id: Optional[int] = None,
-    window_source: str = "pred",
-    window_target: str = "gt",
-    win_w: int = 20,
-    win_h: int = 12,
-) -> EvalIRResult:
+    x_len: int,
+    y_len: int,
+    grid_w: int,
+    grid_h: int,
+    max_x: float,
+    max_y: float,
+) -> List[List[List[Dict[str, float]]]]:
     """
-    훈련/검증 루프에서 사용하는 Observer 전용 evaluate 함수.
+    Convert COCO-style GT + preds into agent-trace tests for kernel-based evaluator.
 
-    - GT가 있는 data_loader를 받아서
-    - COCO GT를 만들고 (pycocotools.Coco)
-    - 모델 prediction을 전부 모은 뒤
-    - eval_intersection_run(...)으로 IR / kernel metrics 계산.
+    Args:
+        coco_gt: COCO object loaded from GT json
+        preds_list: list of detection dicts (COCO results), each with 'image_id',
+                    'bbox' or 'segmentation', optional 'score'
+        x_len,y_len,grid_w,grid_h,max_x,max_y: mapping parameters
 
     Returns:
-        EvalIRResult(per_image, aggregates)
-            aggregates 안에 ic@000/ic@030/ic@050/ic_multi/ic_ratio 등도 포함해서 반환.
+        tests: list of tests; each test is list of agents;
+               each agent is a list of frames(dict with vpx/vpy)
     """
-    Logger.info("[Eval] Building COCO API from dataset...")
-    coco_gt = get_coco_api_from_dataset(data_loader.dataset)
+    # group preds by image_id
+    preds_by_img: Dict[int, List[dict]] = {}
+    for p in preds_list:
+        img_id = int(p["image_id"])
+        preds_by_img.setdefault(img_id, []).append(p)
 
-    # prediction 리스트 수집
-    preds = _collect_predictions_from_loader(
-        model=model,
-        dataloader=data_loader,
-        device=device,
-        score_thresh=0.0,
-        max_dets=None,
-        with_masks=True,
-    )
+    tests: List[List[List[Dict[str, float]]]] = []
 
-    Logger.info("[Eval] Computing intersection / kernel metrics...")
-    per_image, aggregates = eval_intersection_run(
+    for img in coco_gt.dataset.get("images", []):
+        image_id = int(img["id"])
+        img_w = int(img.get("width", grid_w))
+        img_h = int(img.get("height", grid_h))
+
+        # get GT annotations for this image
+        ann_ids = coco_gt.getAnnIds(imgIds=image_id)
+        anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
+
+        # if no predictions for this image, skip (we cannot evaluate predictor)
+        img_preds = preds_by_img.get(image_id, [])
+        if len(img_preds) == 0:
+            continue
+
+        # Choose predictor: highest score if available, else first pred
+        if any("score" in p for p in img_preds):
+            best_pred = max(img_preds, key=lambda q: float(q.get("score", 0.0)))
+        else:
+            best_pred = img_preds[0]
+
+        # compute centroid pixel coords for predictor
+        pcx, pcy = _centroid_from_coco_ann(best_pred, img_w, img_h)
+
+        # convert pixel centroid to 'vpx','vpy' (map-scale coords) so that
+        # the kernel-mapping recovers px,py consistently:
+        # original mapping: px = round(vx/max_x * (width - x_len))
+        # invert: vx = px / (width - x_len) * max_x
+        vx = float(pcx) / max(1, (img_w - x_len)) * max_x
+        vy = float(pcy) / max(1, (img_h - y_len)) * max_y
+
+        # agent0: predictor with single frame
+        agent0 = [{"vpx": vx, "vpy": vy}]
+
+        # agents 1..: one per GT annotation (centroid mapped similarly)
+        ref_agents: List[List[Dict[str, float]]] = []
+        for ann in anns:
+            gcx, gcy = _centroid_from_coco_ann(ann, img_w, img_h)
+            gvx = float(gcx) / max(1, (img_w - x_len)) * max_x
+            gvy = float(gcy) / max(1, (img_h - y_len)) * max_y
+            ref_agents.append([{"vpx": gvx, "vpy": gvy}])
+
+        # Compose test: predictor first, then references
+        test_agents: List[List[Dict[str, float]]] = [agent0] + ref_agents
+
+        # Append test only if at least one reference exists
+        if len(ref_agents) == 0:
+            continue
+
+        tests.append(test_agents)
+
+    return tests
+
+
+# ----------------------------------------------------------------------
+# Public helper: evaluate kernel metrics directly from COCO objects
+# (for using inside train/eval code, without going through JSON files)
+# ----------------------------------------------------------------------
+def eval_kernel_from_coco(
+    coco_gt: COCO,
+    preds_list: List[dict],
+    *,
+    name: str = "run",
+    kernel: Tuple[int, int] = (20, 12),
+    grid: Tuple[int, int] = (128, 128),
+    maxcoord: Tuple[float, float] = (3456.0, 3720.0),
+) -> Tuple[Dict[str, Any], List[ImageIR], Dict[str, float]]:
+    """
+    Convenience wrapper for train/eval code.
+
+    Returns:
+        summary_row: dict with ic@000/ic@030/ic@050/ic_multi/ic_ratio/... for this run
+        per_image: list[ImageIR]
+        agg: aggregated stats from eval_intersection_run
+    """
+    x_len, y_len = kernel
+    width, height = grid
+    max_x, max_y = maxcoord
+
+    labels_tests = coco_to_kernel_labels(
         coco_gt=coco_gt,
-        preds=preds,
-        denom=denom,
-        pred_agg=pred_agg,
-        cat_id=cat_id,
-        window_source=window_source,
-        window_target=window_target,
-        win_w=win_w,
-        win_h=win_h,
+        preds_list=preds_list,
+        x_len=x_len,
+        y_len=y_len,
+        grid_w=width,
+        grid_h=height,
+        max_x=max_x,
+        max_y=max_y,
     )
 
-    # ic@000 / ic@030 / ic@050 / ic_multi / ic_ratio 추가
-    ir_values = np.array([x.ir for x in per_image], dtype=float)
-    aggregates = dict(aggregates)  # 복사해서 확장
-    aggregates["ic@000"] = float(np.mean(ir_values > 0.0))
-    aggregates["ic@030"] = float(np.mean(ir_values >= 0.30))
-    aggregates["ic@050"] = float(np.mean(ir_values >= 0.50))
-    aggregates["ic_multi"] = float(aggregates.get("multi_coverage", 0.0))
-    aggregates["ic_ratio"] = float(aggregates.get("mean_ir", 0.0))
+    per_image, agg = eval_intersection_run(
+        labels_tests,
+        x_len=x_len,
+        y_len=y_len,
+        width=width,
+        height=height,
+        max_x=max_x,
+        max_y=max_y,
+    )
 
-    Logger.info("[Eval] Done. mean_ir=%.4f, ic@050=%.4f",
-                aggregates["mean_ir"], aggregates["ic@050"])
-
-    return EvalIRResult(per_image=per_image, aggregates=aggregates)
+    row = _summarize_ic_row(
+        name=name,
+        kernel=(x_len, y_len),
+        per_image=per_image,
+        agg=agg,
+    )
+    return row, per_image, agg
 
 
 # ----------------------------------------------------------------------
-# 2) Standalone Intersection metrics (CLI)
+# CLI parsing
 # ----------------------------------------------------------------------
+def _parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Kernel-based intersection evaluator driven from COCO GT + COCO predictions.\n"
+            "If --gt is provided (COCO instances json), preds (COCO detection results)\n"
+            "are converted and evaluated.\n"
+            "Alternatively, --pred may contain JSON with 'tests' already and will be used directly."
+        )
+    )
+    parser.add_argument("--gt", default=None, help="Optional GT COCO json (instances). If provided, used to build tests.")
+    parser.add_argument("--gt-dir", default=os.path.join(os.getcwd(), "data", "label", "dst"), help="Directory containing GT file.")
+    parser.add_argument("--pred", action="append", required=True, help="Prediction JSON file(s). Can be COCO results or tests JSON. Repeatable.")
+    parser.add_argument("--pred-dir", default=os.path.join(os.getcwd(), "predictions"), help="Directory containing prediction files.")
+    parser.add_argument("--out", default="./results", help="Output directory.")
+    parser.add_argument("--name", action="append", help="Name for each prediction (defaults to basename).")
+    parser.add_argument(
+        "--kernel",
+        default="20,12",
+        help="Window size x_len,y_len. Example: '20,12'.",
+    )
+    parser.add_argument(
+        "--grid",
+        default="128,128",
+        help="Grid width,height representing sampling grid. Example: '128,128'.",
+    )
+    parser.add_argument(
+        "--maxcoord",
+        default="3456,3720",
+        help="Original coordinate maxima (max_x,max_y) used for normalization.",
+    )
+    parser.add_argument(
+        "--per-image",
+        action="store_true",
+        help="Write per-image CSV of results."
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="(optional) batch size for computing per-batch kernel means."
+    )
+    parser.add_argument(
+        "--run-tag",
+        default="",
+        help=(
+            "Suffix for summary filenames (e.g. 'maskrcnn_kbrs_e050_replay-KR-7702711227'). "
+            "Output will be summary_<run-tag>.csv/json."
+        ),
+    )
+
+    args = parser.parse_args()
+
+    # parse kernel/grid/maxcoord
+    try:
+        kx, ky = [int(x.strip()) for x in args.kernel.split(",")]
+        args.kernel = (kx, ky)
+    except Exception:
+        raise ValueError("--kernel must be 'x_len,y_len' with integers, e.g., 20,12")
+    try:
+        gw, gh = [int(x.strip()) for x in args.grid.split(",")]
+        args.grid = (gw, gh)
+    except Exception:
+        raise ValueError("--grid must be 'width,height' with integers, e.g., 128,128")
+    try:
+        mx, my = [float(x.strip()) for x in args.maxcoord.split(",")]
+        args.maxcoord = (float(mx), float(my))
+    except Exception:
+        raise ValueError("--maxcoord must be 'max_x,max_y' with numbers, e.g., 3456,3720")
+
+    # fill names
+    names = args.name or []
+    while len(names) < len(args.pred):
+        names.append(os.path.splitext(os.path.basename(args.pred[len(names)]))[0])
+    args.name = names
+
+    return args
 
 
 def _summarize_ic_row(
     name: str,
-    denom: str,
-    pred_agg: str,
-    window_source: str,
-    window_target: str,
-    win_w: int,
-    win_h: int,
+    kernel: Tuple[int, int],
     per_image: Sequence[ImageIR],
     agg: Dict[str, float],
 ) -> Dict[str, Any]:
     ir_values = np.array([x.ir for x in per_image], dtype=float)
-
-    ic000 = float(np.mean(ir_values > 0.0))
-    ic030 = float(np.mean(ir_values >= 0.30))
-    ic050 = float(np.mean(ir_values >= 0.50))
+    ic000 = float(np.mean(ir_values > 0.0)) if ir_values.size > 0 else 0.0
+    ic030 = float(np.mean(ir_values >= 0.30)) if ir_values.size > 0 else 0.0
+    ic050 = float(np.mean(ir_values >= 0.50)) if ir_values.size > 0 else 0.0
 
     row: Dict[str, Any] = {
         "name": name,
-        "denom": denom,
-        "pred_agg": pred_agg,
-        "kernel": f"{win_w}x{win_h}",
-        "window_source": window_source,
-        "window_target": window_target,
-        "num_images": agg["num_images"],
+        "kernel": f"{kernel[0]}x{kernel[1]}",
+        "num_images": agg.get("num_images", 0),
         "ic@000": ic000,
         "ic@030": ic030,
         "ic@050": ic050,
-        "ic_multi": float(agg["multi_coverage"]),
-        "ic_ratio": float(agg["mean_ir"]),
-        "mean_density": float(agg["mean_density"]),
-        "mean_centeredness": float(agg["mean_centeredness"]),
-        "mean_mixture": float(agg["mean_mixture"]),
-        "median_ir": float(agg["median_ir"]),
-        "p90_ir": float(agg["p90_ir"]),
+        "ic_multi": float(agg.get("multi_coverage", 0.0)),
+        "ic_ratio": float(agg.get("mean_ir", 0.0)),
+        "mean_density": float(agg.get("mean_density", 0.0)),
+        "mean_centeredness": float(agg.get("mean_centeredness", 0.0)),
+        "mean_mixture": float(agg.get("mean_mixture", 0.0)),
+        "median_ir": float(agg.get("median_ir", 0.0)),
+        "p90_ir": float(agg.get("p90_ir", 0.0)),
     }
     return row
 
 
-def _run_mode_predictions(args):
+# ----------------------------------------------------------------------
+# Core runner (reusable from train / other scripts)
+# ----------------------------------------------------------------------
+def run_kernel_eval(
+    *,
+    gt_path: Optional[str],
+    gt_dir: str,
+    pred_files: Sequence[str],
+    pred_dir: str,
+    out_dir: str,
+    names: Sequence[str],
+    kernel: Tuple[int, int],
+    grid: Tuple[int, int],
+    maxcoord: Tuple[float, float],
+    per_image_csv: bool = False,
+    batch_size: int = 0,
+    run_tag: str = "",
+) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]], str, str]:
     """
-    Mode A: GT JSON + prediction JSON(s) → intersection / kernel metrics.
+    Run kernel-based intersection evaluation for one or more prediction files.
+
+    Returns:
+        all_rows: list of summary rows (one per prediction name)
+        summary_json: mapping name -> summary row
+        csv_path: path to summary CSV
+        json_path: path to summary JSON
     """
-    os.makedirs(args.out, exist_ok=True)
-    coco_gt = COCO(args.gt)
-
-    pred_paths = args.pred
-    names = args.name or []
-    while len(names) < len(pred_paths):
-        names.append(os.path.splitext(os.path.basename(pred_paths[len(names)]))[0])
-
-    win_w, win_h = args.kernel
+    os.makedirs(out_dir, exist_ok=True)
 
     all_rows: List[Dict[str, Any]] = []
-    summary_json: Dict[str, Any] = {}
+    summary_json: Dict[str, Dict[str, Any]] = {}
 
-    for pred_path, name in zip(pred_paths, names):
-        with open(pred_path, "r", encoding="utf-8") as f:
-            preds = json.load(f)
-        if isinstance(preds, dict):
+    # If GT provided, load once
+    coco_gt = None
+    if gt_path is not None:
+        full_gt_path = gt_path if os.path.isabs(gt_path) else os.path.join(gt_dir, gt_path)
+        if not os.path.isfile(full_gt_path):
+            raise FileNotFoundError(f"--gt file not found: {full_gt_path}")
+        coco_gt = COCO(full_gt_path)
+        Logger.info(f"Loaded GT COCO: {full_gt_path} (images={len(coco_gt.dataset.get('images', []))})")
+
+    x_len, y_len = kernel
+    width, height = grid
+    max_x, max_y = maxcoord
+
+    for pred_path, name in zip(pred_files, names):
+        path = os.path.join(pred_dir, pred_path)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Prediction file not found: {path}")
+
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+
+        # If loaded already in tests format, use directly
+        if isinstance(loaded, dict) and "tests" in loaded:
+            labels_tests = loaded["tests"]
+        elif isinstance(loaded, list) and len(loaded) > 0 and isinstance(loaded[0], list):
+            labels_tests = loaded
+        elif coco_gt is not None:
+            # loaded expected to be COCO detection results
+            preds_list = loaded
+            if isinstance(loaded, dict) and "annotations" in loaded:
+                preds_list = loaded["annotations"]
+            if not isinstance(preds_list, list):
+                raise ValueError("Prediction file not understood: expected tests or COCO detection list.")
+            labels_tests = coco_to_kernel_labels(
+                coco_gt=coco_gt,
+                preds_list=preds_list,
+                x_len=x_len,
+                y_len=y_len,
+                grid_w=width,
+                grid_h=height,
+                max_x=max_x,
+                max_y=max_y,
+            )
+        else:
             raise ValueError(
-                "Prediction file must be a list of COCO-style detections (not a dict)."
+                "Prediction file not in tests format and --gt not provided to convert COCO results."
             )
 
+        # Run evaluator
         per_image, agg = eval_intersection_run(
-            coco_gt=coco_gt,
-            preds=preds,
-            denom=args.denom,
-            pred_agg=args.pred_agg,
-            cat_id=args.cat_id,
-            window_source=args.window_source,
-            window_target=args.window_target,
-            win_w=win_w,
-            win_h=win_h,
+            labels_tests,
+            x_len=x_len,
+            y_len=y_len,
+            width=width,
+            height=height,
+            max_x=max_x,
+            max_y=max_y,
         )
 
-        row = _summarize_ic_row(
-            name=name,
-            denom=args.denom,
-            pred_agg=args.pred_agg,
-            window_source=args.window_source,
-            window_target=args.window_target,
-            win_w=win_w,
-            win_h=win_h,
-            per_image=per_image,
-            agg=agg,
-        )
-
+        # summarize row
+        row = _summarize_ic_row(name=name, kernel=(x_len, y_len), per_image=per_image, agg=agg)
         all_rows.append(row)
         summary_json[name] = row
 
-        # per-image CSV (옵션)
-        if args.per_image:
+        # per-image CSV
+        if per_image_csv:
             import csv
 
-            per_csv = os.path.join(args.out, f"{name}_per_image.csv")
+            per_csv = os.path.join(out_dir, f"{name}_per_image.csv")
             with open(per_csv, "w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(
                     f,
@@ -302,8 +421,8 @@ def _run_mode_predictions(args):
                 for it in per_image:
                     w.writerow(asdict(it))
 
-        # per-batch kernel metrics (옵션)
-        if args.batch_size and args.batch_size > 0:
+        # per-batch kernel metrics (optional)
+        if batch_size and batch_size > 0 and len(per_image) > 0:
             import csv
 
             dens_vals = np.array([x.density for x in per_image], dtype=float)
@@ -311,7 +430,7 @@ def _run_mode_predictions(args):
             mix_vals = np.array([x.mixture for x in per_image], dtype=float)
 
             n = len(per_image)
-            bs = int(args.batch_size)
+            bs = int(batch_size)
             rows = []
             for i in range(0, n, bs):
                 j = min(i + bs, n)
@@ -327,19 +446,24 @@ def _run_mode_predictions(args):
                         "mean_mixture": float(np.mean(mix_vals[i:j])),
                     }
                 )
-            batch_csv = os.path.join(args.out, f"{name}_batch_metrics.csv")
+            batch_csv = os.path.join(out_dir, f"{name}_batch_metrics.csv")
             with open(batch_csv, "w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
                 w.writeheader()
                 for r in rows:
                     w.writerow(r)
 
-    # 요약 저장
+    # write summary
     import csv
 
-    csv_path = os.path.join(args.out, "summary.csv")
     if len(all_rows) == 0:
         raise RuntimeError("No predictions evaluated.")
+
+    base_name = "summary"
+    if run_tag:
+        base_name = f"{base_name}_{run_tag}"
+
+    csv_path = os.path.join(out_dir, f"{base_name}.csv")
     hdr = list(all_rows[0].keys())
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=hdr)
@@ -347,233 +471,164 @@ def _run_mode_predictions(args):
         for r in all_rows:
             w.writerow(r)
 
-    json_path = os.path.join(args.out, "summary.json")
+    json_path = os.path.join(out_dir, f"{base_name}.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(summary_json, f, ensure_ascii=False, indent=2)
+
+    return all_rows, summary_json, csv_path, json_path
+
+
+class KernelEvalResult:
+    """
+    train.py에서 쓰기 위한 간단한 래퍼:
+    - .aggregates 딕셔너리만 있으면 train 루프가 그대로 돌 수 있음
+    """
+    def __init__(self, aggregates: Dict[str, Any]):
+        self.aggregates = aggregates
+
+
+def evaluate(model, data_loader, device, epoch: int = 0):
+    import torch
+    """
+    Train 중에 호출되는 evaluate 함수.
+
+    - COCO mAP은 계산하지 않고
+    - model + data_loader에서 바로 prediction/GT를 읽어서
+    - Observer kernel 기반 IC metric만 계산한다.
+    - 반환값은 .aggregates 딕셔너리를 가진 KernelEvalResult 객체.
+    """
+    model.eval()
+
+    # ---- kernel/grid/maxcoord 설정 ----
+    # KBRS_PARAMS.region_size를 우선 사용하고, 없으면 디폴트 (20,12)
+    try:
+        import config as _cfg
+        if hasattr(_cfg, "KBRS_PARAMS") and "region_size" in _cfg.KBRS_PARAMS:
+            kernel = tuple(_cfg.KBRS_PARAMS["region_size"])
+        else:
+            kernel = (20, 12)
+    except Exception:
+        kernel = (20, 12)
+
+    # grid / maxcoord는 기존 스크립트 기본값과 동일하게
+    grid = (128, 128)
+    maxcoord = (3456.0, 3720.0)
+
+    x_len, y_len = kernel
+    width, height = grid
+    max_x, max_y = maxcoord
+
+    labels_tests: List[List[List[Dict[str, float]]]] = []
+
+    with torch.no_grad():
+        for images, targets in data_loader:
+            # images: List[Tensor[C,H,W]]
+            # targets: List[Dict]
+            images = [img.to(device) for img in images]
+            outputs = model(images)
+
+            for img, tgt, out in zip(images, targets, outputs):
+                # img 크기 (모델 입력 기준, bbox도 여기에 맞춰져 있음)
+                _, img_h, img_w = img.shape
+
+                boxes_pred = out["boxes"]
+                scores_pred = out["scores"]
+
+                # 예측이 없으면 스킵
+                if boxes_pred.numel() == 0:
+                    continue
+
+                # 최고 score 1개만 사용 (이전 설계와 동일하게 "대표 뷰포트"로 봄)
+                best_idx = int(scores_pred.argmax().item())
+                px1, py1, px2, py2 = boxes_pred[best_idx].detach().cpu().tolist()
+                pw = px2 - px1
+                ph = py2 - py1
+                pcx = px1 + pw / 2.0
+                pcy = py1 + ph / 2.0
+
+                # pixel → vpx, vpy (기존 coco_to_kernel_labels 와 동일한 역변환)
+                vx = float(pcx) / max(1, (img_w - x_len)) * max_x
+                vy = float(pcy) / max(1, (img_h - y_len)) * max_y
+                agent0 = [{"vpx": vx, "vpy": vy}]
+
+                # GT 박스들 (하나 이상 있을 수 있음)
+                gt_boxes = tgt["boxes"].detach().cpu().numpy()
+                ref_agents: List[List[Dict[str, float]]] = []
+
+                for gx1, gy1, gx2, gy2 in gt_boxes:
+                    gw = gx2 - gx1
+                    gh = gy2 - gy1
+                    gcx = gx1 + gw / 2.0
+                    gcy = gy1 + gh / 2.0
+                    gvx = float(gcx) / max(1, (img_w - x_len)) * max_x
+                    gvy = float(gcy) / max(1, (img_h - y_len)) * max_y
+                    ref_agents.append([{"vpx": gvx, "vpy": gvy}])
+
+                if len(ref_agents) == 0:
+                    # GT 없으면 intersection 계산 불가 → 스킵
+                    continue
+
+                labels_tests.append([agent0] + ref_agents)
+
+    # labels_tests 가 하나도 없으면 그냥 빈 결과 반환
+    if len(labels_tests) == 0:
+        Logger.info("[IC] No valid labels_tests (no preds or no GT). Skipping IC evaluation.")
+        return KernelEvalResult(aggregates={})
+
+    # ---- kernel evaluator 호출 ----
+    per_image, agg = eval_intersection_run(
+        labels_tests,
+        x_len=x_len,
+        y_len=y_len,
+        width=width,
+        height=height,
+        max_x=max_x,
+        max_y=max_y,
+    )
+
+    # 요약 row (ic@000, ic_ratio, mean_density 등)
+    row = _summarize_ic_row(
+        name=f"val_epoch_{epoch:03d}",
+        kernel=(x_len, y_len),
+        per_image=per_image,
+        agg=agg,
+    )
+
+    # train.py에서는 eval_stats.aggregates 를 보고 로그를 남기므로,
+    # agg + row를 합쳐서 aggregates로 넣어준다.
+    aggregates: Dict[str, Any] = {}
+    aggregates.update(agg)
+    aggregates.update(row)
+
+    Logger.info(f"[IC] epoch={epoch} metrics={row}")
+
+    return KernelEvalResult(aggregates=aggregates)
+
+
+
+def main():
+    args = _parse_args()
+
+    all_rows, summary_json, csv_path, json_path = run_kernel_eval(
+        gt_path=args.gt,
+        gt_dir=args.gt_dir,
+        pred_files=args.pred,
+        pred_dir=args.pred_dir,
+        out_dir=args.out,
+        names=args.name,
+        kernel=args.kernel,
+        grid=args.grid,
+        maxcoord=args.maxcoord,
+        per_image_csv=args.per_image,
+        batch_size=args.batch_size,
+        run_tag=args.run_tag,
+    )
 
     print("\n=== Intersection & Kernel Metrics Summary ===")
     for row in all_rows:
         print(row)
     print(f"\nSaved summary CSV → {csv_path}")
     print(f"Saved summary JSON → {json_path}")
-
-
-def _import_from_path(path: str):
-    spec = importlib.util.spec_from_file_location("user_experiment", path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot import module from {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
-    return mod
-
-
-def _device_from_exp(exp_mod):
-    if hasattr(exp_mod, "get_device"):
-        return exp_mod.get_device()
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def _run_mode_model(args):
-    """
-    Mode B: GT JSON + (experiment module, checkpoint)
-    -> 내부에서 모델/데이터셋을 빌드해서 inference + 평가.
-    Experiment module API 예시:
-
-        def build_model(checkpoint: Optional[str] = None) -> torch.nn.Module
-        def build_val_loader() -> torch.utils.data.DataLoader
-        def get_device() -> torch.device    # optional
-    """
-    exp = _import_from_path(args.exp)
-
-    device = _device_from_exp(exp)
-    model = exp.build_model(checkpoint=args.checkpoint).to(device)
-    val_loader = exp.build_val_loader()
-
-    preds = _collect_predictions_from_loader(
-        model=model,
-        dataloader=val_loader,
-        device=device,
-        score_thresh=args.score_thresh,
-        max_dets=args.max_dets,
-        with_masks=not args.no_masks,
-    )
-
-    coco_gt = COCO(args.gt)
-    win_w, win_h = args.kernel
-
-    per_image, agg = eval_intersection_run(
-        coco_gt=coco_gt,
-        preds=preds,
-        denom=args.denom,
-        pred_agg=args.pred_agg,
-        cat_id=args.cat_id,
-        window_source=args.window_source,
-        window_target=args.window_target,
-        win_w=win_w,
-        win_h=win_h,
-    )
-
-    row = _summarize_ic_row(
-        name="model_eval",
-        denom=args.denom,
-        pred_agg=args.pred_agg,
-        window_source=args.window_source,
-        window_target=args.window_target,
-        win_w=win_w,
-        win_h=win_h,
-        per_image=per_image,
-        agg=agg,
-    )
-
-    os.makedirs(args.out, exist_ok=True)
-    import csv
-
-    csv_path = os.path.join(args.out, "summary.csv")
-    hdr = list(row.keys())
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=hdr)
-        w.writeheader()
-        w.writerow(row)
-
-    json_path = os.path.join(args.out, "summary.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump({"model_eval": row}, f, ensure_ascii=False, indent=2)
-
-    print("Evaluation result:", row)
-    print(f"Saved → {csv_path} / {json_path}")
-
-
-def _parse_args():
-    ap = argparse.ArgumentParser(
-        description=(
-            "Observer Intersection/Kernel evaluator:\n"
-            "  - import evaluate(model, loader, device) for training-time IR metrics\n"
-            "  - use CLI for offline evaluation (predictions or model+dataset)"
-        )
-    )
-    ap.add_argument("--gt", help="Path to COCO instances json (GT).")
-    ap.add_argument("--out", default="./eval_ir_out", help="Output directory.")
-
-    # Mode A (predictions)
-    ap.add_argument(
-        "--pred",
-        action="append",
-        help="Prediction json (COCO results). Can repeat.",
-    )
-    ap.add_argument(
-        "--name",
-        action="append",
-        help="Name for each prediction (defaults to basename).",
-    )
-
-    # Mode B (model+dataset)
-    ap.add_argument(
-        "--exp",
-        help=(
-            "Path to experiment module .py implementing "
-            "build_model()/build_val_loader()/[get_device()]."
-        ),
-    )
-    ap.add_argument(
-        "--checkpoint", default=None, help="Optional model checkpoint path."
-    )
-    ap.add_argument(
-        "--score-thresh",
-        type=float,
-        default=0.0,
-        help="Score threshold for detections.",
-    )
-    ap.add_argument(
-        "--max-dets",
-        type=int,
-        default=None,
-        help="Cap number of detections per image.",
-    )
-    ap.add_argument(
-        "--no-masks",
-        action="store_true",
-        help="Do not export masks (bbox-only predictions).",
-    )
-
-    # 공통 metric 옵션
-    ap.add_argument(
-        "--denom",
-        choices=["gt", "pred", "union"],
-        default="gt",
-        help="Denominator for IR.",
-    )
-    ap.add_argument(
-        "--pred-agg",
-        choices=["best", "union"],
-        default="best",
-        help="Aggregate predictions per image.",
-    )
-    ap.add_argument(
-        "--cat-id", type=int, default=None, help="Filter category id (optional)."
-    )
-    ap.add_argument(
-        "--per-image",
-        action="store_true",
-        help="(predictions mode) write per-image CSV as well.",
-    )
-    ap.add_argument(
-        "--batch-size",
-        type=int,
-        default=0,
-        help="(predictions mode) per-batch means for kernel metrics.",
-    )
-    ap.add_argument(
-        "--kernel",
-        default="20,12",
-        help="Window size W,H (pixels), e.g., '20,12'.",
-    )
-    ap.add_argument(
-        "--window-source",
-        choices=["pred", "gt"],
-        default="pred",
-        help="Center the kernel window on which mask.",
-    )
-    ap.add_argument(
-        "--window-target",
-        choices=["gt", "intersect"],
-        default="gt",
-        help="Target mask for kernel metrics.",
-    )
-    args = ap.parse_args()
-
-    # kernel 파싱
-    if args.kernel and isinstance(args.kernel, str):
-        try:
-            W, H = [int(x.strip()) for x in args.kernel.split(",")]
-            args.kernel = (W, H)
-        except Exception:
-            raise ValueError(
-                "--kernel must be 'W,H' with integers, e.g., 20,12"
-            )
-
-    return args
-
-
-def main():
-    """
-    CLI entrypoint for Intersection metrics only.
-    훈련 중 COCO mAP은 계산하지 않고, IR / kernel metric만 계산.
-    """
-    args = _parse_args()
-
-    if args.pred:
-        if args.gt is None:
-            raise SystemExit("--gt is required when using --pred.")
-        _run_mode_predictions(args)
-    elif args.exp:
-        if args.gt is None:
-            raise SystemExit("--gt is required when using --exp.")
-        _run_mode_model(args)
-    else:
-        raise SystemExit(
-            "Please provide either --pred (prediction file[s]) "
-            "or --exp (experiment module)."
-        )
 
 
 if __name__ == "__main__":

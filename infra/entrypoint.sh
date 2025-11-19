@@ -25,10 +25,6 @@ preprocess_label)
   log "Preprocessing label..."
   exec python src/preprocessing/label.py "$@"
   ;;
-preprocess_pair)
-  log "Preprocessing pair..."
-  exec python src/preprocessing/pair.py "$@"
-  ;;
 train)
   log "Training model..."
   exec python src/train.py "$@"

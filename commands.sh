@@ -25,15 +25,16 @@ make preprocess_label ARGS="--replays 6254 3529 3972 7191 7950 --method all_corr
 make preprocess_label ARGS="--replays 7970 9105 9301 9795 --method all_correct"
 make preprocess_label ARGS="--replays 36 212 438 522 1660 1559 1628 2351 6219 11251 275 1725 3613 4520 4664 6254 3529 3972 7191 7950 7970 9105 9301 9795 --method all_correct"
 
+# train test
 NVIDIA_VISIBLE_DEVICES=0 make train ARGS=" \
-  --replays 36 212 438 522 1660 1559 1628 2351 6219 11251 \
+  --replays 36 212 \
   --include-components worker ground air building vision \
   --label-method all_correct \
   --max-epoch 30 \
   --window-size 4 \
   --interval 8 \
-  --batch-size 16 \
-  --sample-ratio 0.05 \
+  --batch-size 4 \
+  --sample-ratio 0.1 \
   --log-level log \
   --use-kbrs \
   --loss-weights loss_objectness 1.0 \
@@ -42,6 +43,11 @@ NVIDIA_VISIBLE_DEVICES=0 make train ARGS=" \
   --kbrs-param score_weights.density=0.3 \
   --kbrs-param score_weights.mixture=3.0 \
   --kbrs-param score_weights.centeredness=0.3 \
+  "
+# evaluatiun test
+make evaluate ARGS=" \
+  --gt 1628.rep/all_correct.json \
+  --pred all_correct_win4_b16_20250823_060459/model_030/1628.rep/all_correct.json \
   "
 
 # Training with specific replays
@@ -131,16 +137,7 @@ NVIDIA_VISIBLE_DEVICES=1 make inference ARGS=" \
 
 # # Evaluation
 # # set 1: all_correct_win4_b16_20250823_060441
-# make evaluate ARGS=" \
-#   --replays 275 1725 3613 4520 4664 \
-#   --label-method all_correct \
-#   --pred-names all_correct_win4_b16_20250823_060441 \
-#   --model-number 30 \
-#   --ic-thresholds 0 0.3 0.5 \
-#   --frame-select all \
-#   --dump-vpd \
-#   --log-level log \
-#   "
+
 # # set 2: all_correct_win4_b16_20250823_060459
 # make evaluate ARGS=" \
 #   --replays 1559 1628 2351 6219 11251 \
