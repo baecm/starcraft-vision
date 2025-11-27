@@ -194,6 +194,7 @@ def parse_train_args(argv=None):
     group_data = parser.add_argument_group("Data and Labeling")
 
     group_data.add_argument(
+        "--train-replays",
         "--train-replay",
         type=str,
         nargs="+",
@@ -201,6 +202,7 @@ def parse_train_args(argv=None):
         help="Replay IDs used for training (one or more).",
     )
     group_data.add_argument(
+        "--test-replays",
         "--test-replay",
         type=str,
         nargs="+",
