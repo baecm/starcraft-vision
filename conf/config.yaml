@@ -1,0 +1,40 @@
+defaults:
+  - dataset: fold1
+  - model: vanilla
+  - seed: s123
+
+  - kbrs_loss: kbrs025
+  - kbrs_score: base
+
+# 공통 하이퍼파라미터들
+include_components: [worker, ground, air, building, vision]
+label_method: all_correct
+max_epoch: 1
+window_size: 4
+interval: 8
+batch_size: 8
+sample_ratio: 0.01
+log_level: log
+do_inference_after_train: true
+
+# optimizer / resize / normalize 등등...
+learning_rate: 0.005
+val_count: 1000
+test_eval_every: 0
+do_normalize: false
+normalize_mean: null
+normalize_std: null
+resize_mode: resize
+min_sizes: [800]
+max_size: 1333
+rpn_small_anchors: false
+cuda: true
+num_workers: 4
+data_root: ./data
+log_root: ./models
+id_string: ""
+
+# model 그룹에서 정의한 것을 루트에서 alias로 노출
+use_kbrs:      ${model.use_kbrs}
+loss_weights:  ${model.loss_weights}
+kbrs_params:   ${model.kbrs_params}

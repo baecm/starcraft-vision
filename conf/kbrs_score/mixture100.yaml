@@ -1,0 +1,4 @@
+# conf/kbrs_score/base.yaml
+density: 0.3
+mixture: 1.0
+centeredness: 0.3

@@ -1,0 +1,2 @@
+loss_kbrs: 1.0
+loss_rpn_box_reg: 1.0

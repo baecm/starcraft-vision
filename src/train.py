@@ -8,6 +8,11 @@ import random
 import secrets
 import numpy as np
 
+from types import SimpleNamespace
+
+import hydra
+from omegaconf import DictConfig, OmegaConf
+
 import torch
 from torch.utils.data import Subset
 
@@ -15,7 +20,6 @@ import wandb
 from ultralytics import settings
 
 import config
-from cli import parse_train_args
 
 import detection.transforms as T
 from detection.engine import train_one_epoch
@@ -29,6 +33,8 @@ from model.maskrcnn_builder import get_model_instance_segmentation
 
 from utils.logger import Logger
 from utils.synology_chat import send_message
+
+
 
 
 # def get_transform(train):
@@ -199,171 +205,176 @@ def _unwrap_subset(ds):
         ds = ds.dataset
     return ds
 
-def run_training(args):
+def run_training(cfg: DictConfig):
+    """
+    Hydra DictConfig를 받아서 학습 전체를 수행.
+    (예전 argparse-style args를 완전히 대체)
+    """
     settings.update({"wandb": True})
     Logger.info("[Stage] Preparing environment...]")
-    
-    if getattr(args, "seed", None) is None:
-        # 0 ~ 2^31-1 범위에서 하나 뽑기
+
+    # 1) seed 처리 (필요하면 여기서 generate + set)
+    seed = cfg.seed
+    if seed is None:
         generated = secrets.randbits(31)
-        args.seed = generated
-        Logger.info(f"[Seed] No --seed provided; generated seed={generated}")
+        seed = generated
+        cfg.seed = generated  # DictConfig에 써줘도 됨 (struct=False 가정)
+        Logger.info(f"[Seed] No seed provided in config; generated seed={generated}")
     else:
-        Logger.info(f"[Seed] Using provided seed={args.seed}")
-    set_global_seed(int(args.seed))
-    
-    device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
+        Logger.info(f"[Seed] Using seed={seed}")
+    set_global_seed(int(seed))
+
+    # 2) 디바이스
+    device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
     Logger.info(f"[Info] Using device: {device}")
 
-    if not args.id_string:
-        id_str = f"{args.label_method}_win{args.window_size}_b{args.batch_size}"
-        if args.use_kbrs:
+    # 3) id_string / tag_string
+    if not cfg.id_string:
+        id_str = f"{cfg.label_method}_win{cfg.window_size}_b{cfg.batch_size}"
+        if cfg.use_kbrs:
             id_str += "_kbrs"
-        args.id_string = id_str
+        cfg.id_string = id_str
 
-    tag_string = f"{args.id_string}_{time.strftime('%Y%m%d_%H%M%S')}"
-    log_save_path = os.path.join(args.log_root, f"{tag_string}/")
+    tag_string = f"{cfg.id_string}_{time.strftime('%Y%m%d_%H%M%S')}"
+    log_save_path = os.path.join(cfg.log_root, f"{tag_string}/")
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
 
-    wandb.init(project="starcraft", name=args.id_string, config=vars(args), tags=[tag_string])
+    # 4) W&B init (DictConfig → dict 변환)
+    wandb.init(
+        project="starcraft",
+        name=cfg.id_string,
+        config=OmegaConf.to_container(cfg, resolve=True),
+        tags=[tag_string],
+    )
 
-    input_root = os.path.join(args.data_root, "input/dst")
-    label_root = os.path.join(args.data_root, "label/dst")
+    # 5) 경로 설정
+    input_root = os.path.join(cfg.data_root, "input/dst")
+    label_root = os.path.join(cfg.data_root, "label/dst")
 
-    # 1) 라벨 pickle 준비: train + test 전체
-    all_replays = []
-    if getattr(args, "train_replay", None):
-        all_replays.extend(args.train_replays)
-    if getattr(args, "test_replay", None):
-        all_replays.extend(args.test_replays)
+    # 6) 라벨 pickle 준비: train + test 전체
+    train_replays = list(cfg.dataset.train_replays)
+    test_replays = list(getattr(cfg.dataset, "test_replays", []) or [])
+    all_replays = [str(r) for r in (train_replays + test_replays)]
 
     ensure_label_pickles(
         label_root=label_root,
-        label_method=args.label_method,
-        replay_ids=sorted({str(r) for r in all_replays}),
-        num_workers=args.num_workers,
+        label_method=cfg.label_method,
+        replay_ids=sorted(set(all_replays)),
+        num_workers=cfg.num_workers,
     )
     Logger.info("[Info] JSON to Pickle conversion completed.")
 
-    # 2) train + val (val은 test_replay에서 val_count만큼) 로더
+    # 7) train + val 로더 (val은 test_replays에서 cfg.val_count 만큼)
     data_loader_train, data_loader_validation, inner_ds = load_data(
         input_root=input_root,
         label_root=label_root,
-        label_method=args.label_method,
-        window_size=args.window_size,
-        interval=args.interval,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        train_replays=args.train_replays,
-        val_replays=args.test_replays,
-        sample_ratio=args.sample_ratio,
-        include_components=args.include_components,
-        val_count=args.val_count,
-        seed=int(args.seed),
+        label_method=cfg.label_method,
+        window_size=cfg.window_size,
+        interval=cfg.interval,
+        batch_size=cfg.batch_size,
+        num_workers=cfg.num_workers,
+        train_replays=train_replays,
+        val_replays=test_replays or None,
+        sample_ratio=cfg.sample_ratio,
+        include_components=list(cfg.include_components),
+        val_count=cfg.val_count,
+        seed=int(seed),
     )
 
-    # 3) test 로더 (test_replays 전체)
+    # 8) test 로더 (test_replays 전체)
     test_loader = None
-    if getattr(args, "test_replays", None):
-        test_ids = [str(r) for r in args.test_replays]
+    if test_replays:
         test_dataset = CustomPennFudanDataset(
             input_root,
             label_root,
-            args.label_method,
-            training_ids=test_ids,
+            cfg.label_method,
+            training_ids=[str(r) for r in test_replays],
             training=True,
-            window_size=args.window_size,
-            interval=args.interval,
-            include_components=args.include_components,
+            window_size=cfg.window_size,
+            interval=cfg.interval,
+            include_components=list(cfg.include_components),
         )
         test_loader = make_loader(
             test_dataset,
-            batch_size=args.batch_size,
+            batch_size=cfg.batch_size,
             shuffle=False,
-            num_workers=args.num_workers,
+            num_workers=cfg.num_workers,
         )
         Logger.info(f"[Info] Test dataset size (full): {len(test_dataset)}")
 
     if data_loader_validation is not None:
-        Logger.info(f"[Info] Data loaded: Train {len(data_loader_train.dataset)}, "
-                    f"Validation {len(data_loader_validation.dataset)}")
+        Logger.info(
+            f"[Info] Data loaded: "
+            f"Train {len(data_loader_train.dataset)}, "
+            f"Validation {len(data_loader_validation.dataset)}"
+        )
     else:
-        Logger.info(f"[Info] Data loaded: Train {len(data_loader_train.dataset)}, Validation (none)")
+        Logger.info(
+            f"[Info] Data loaded: Train {len(data_loader_train.dataset)}, Validation (none)"
+        )
 
     Logger.info("[Stage] Initializing model...]")
     num_classes = 2  # background + viewport
 
-    # --- (1) loss_weights dict 구성 ---
+    # --- (1) loss_weights: dict 로 가정 (Hydra config에서 설정) ---
     loss_weights = {}
-    if args.loss_weights:
-        for name, weight in args.loss_weights:
+    if "loss_weights" in cfg and cfg.loss_weights is not None:
+        for name, weight in cfg.loss_weights.items():
             loss_weights[name] = float(weight)
 
-    # --- (2) score_weights dict 구성 (scorer 내부 비율) ---
-    score_weights = {}
-    if args.score_weights:
-        for name, weight in args.score_weights:
-            score_weights[name] = float(weight)
-
-    # --- (3) kbrs_params merge ---
+    # --- (2) kbrs_params merge: 기본 KBRS_PARAMS 위에 config 덮어쓰기 ---
     kbrs_params = None
-    if args.use_kbrs:
+    if cfg.use_kbrs:
         kbrs_params = config.KBRS_PARAMS.copy()
-
-        # merge CLI overrides
-        if getattr(args, "kbrs_param", None):
-            def _autocast(s):
-                # try int -> float -> bool -> str
-                if s.lower() in ("true", "false"):
-                    return s.lower() == "true"
-                try:
-                    return int(s)
-                except ValueError:
-                    try:
-                        return float(s)
-                    except ValueError:
-                        return s
-
-            for item in args.kbrs_param:
-                if "=" not in item:
-                    Logger.warning(f"[KBRS] Skip invalid --kbrs-param: {item}")
-                    continue
-                k, v = item.split("=", 1)
-                k, v = k.strip(), _autocast(v.strip())
-                kbrs_params[k] = v
-
+        if "kbrs_params" in cfg and cfg.kbrs_params is not None:
+            from omegaconf import DictConfig as DC
+            if isinstance(cfg.kbrs_params, DC):
+                extra = OmegaConf.to_container(cfg.kbrs_params, resolve=True)
+            else:
+                extra = dict(cfg.kbrs_params)
+            kbrs_params.update(extra)
         Logger.info(f"[Info] Using KBRS parameters: {kbrs_params}")
 
+    # --- (3) 입력 채널 계산 ---
     train_ds = data_loader_train.dataset
     inner_ds = _unwrap_subset(train_ds)
     in_channels = len(inner_ds.channel_indices) * inner_ds.window_size
-    Logger.info(f"[Info] Input channels: {in_channels} (window size: {inner_ds.window_size})")
+    Logger.info(
+        f"[Info] Input channels: {in_channels} "
+        f"(window size: {inner_ds.window_size})"
+    )
 
     model = get_model_instance_segmentation(
         num_classes=num_classes,
-        window_size=args.window_size,
+        window_size=cfg.window_size,
         in_channels=in_channels,
-        do_normalize=args.do_normalize,
-        normalize_mean=args.normalize_mean,
-        normalize_std=args.normalize_std,
-        resize_mode=args.resize_mode,
-        min_sizes=args.min_sizes,
-        max_size=args.max_size,
-        rpn_small_anchors=args.rpn_small_anchors if args.resize_mode == "keep" else False,
-        use_kbrs=args.use_kbrs,
+        do_normalize=cfg.do_normalize,
+        normalize_mean=cfg.normalize_mean,
+        normalize_std=cfg.normalize_std,
+        resize_mode=cfg.resize_mode,
+        min_sizes=cfg.min_sizes,
+        max_size=cfg.max_size,
+        rpn_small_anchors=cfg.rpn_small_anchors if cfg.resize_mode == "keep" else False,
+        use_kbrs=cfg.use_kbrs,
         kbrs_params=kbrs_params,
         loss_weights=loss_weights,
     )
-    Logger.info(f"[Info] Model initialized with {num_classes} classes and {in_channels} input channels.]")
+    Logger.info(
+        f"[Info] Model initialized with {num_classes} classes and "
+        f"{in_channels} input channels.]"
+    )
     model.to(device)
 
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.SGD(params, lr=args.learning_rate, momentum=0.9, weight_decay=0.0005)
+    optimizer = torch.optim.SGD(
+        params, lr=cfg.learning_rate, momentum=0.9, weight_decay=0.0005
+    )
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    test_eval_every = getattr(args, "test_eval_every", 0)
+    test_eval_every = cfg.test_eval_every
 
+    # === 실제 학습 ===
     train_model(
         model,
         optimizer,
@@ -371,55 +382,72 @@ def run_training(args):
         data_loader_train,
         data_loader_validation,
         device,
-        args.max_epoch,
+        cfg.max_epoch,
         log_save_path,
-        use_kbrs=args.use_kbrs,
+        use_kbrs=cfg.use_kbrs,
         data_loader_test=test_loader,
         test_eval_every=test_eval_every,
     )
-    
-    wandb.finish()
-    send_message(f"@work Training run '{args.id_string}' completed successfully.")
 
-    if getattr(args, "do_inference_after_train", False):
-        last_epoch = args.max_epoch
+    wandb.finish()
+    send_message(f"@work Training run '{cfg.id_string}' completed successfully.")
+
+    # === 학습 후 inference (옵션) ===
+    if cfg.do_inference_after_train and test_replays:
+        last_epoch = cfg.max_epoch
         cmd = [
             "python",
             "-m",
             "inference",
             "--replays",
-            *args.test_replays,             # test set 전체에 대해 inference
-            "--model-root", args.log_root,
-            "--model-name", tag_string,    # 또는 args.id_string 기준으로 조합
-            "--model-number", f"{last_epoch}",
-            "--data-root", args.data_root,
-            "--label-method", args.label_method,
-            "--window-size", str(args.window_size),
+            *[str(r) for r in test_replays],
+            "--model-root",
+            cfg.log_root,
+            "--model-name",
+            tag_string,
+            "--model-number",
+            str(last_epoch),
+            "--data-root",
+            cfg.data_root,
+            "--label-method",
+            cfg.label_method,
+            "--window-size",
+            str(cfg.window_size),
         ]
-        if getattr(args, "seed", None) is not None:
-            cmd.extend(["--seed", str(args.seed)])
+        if seed is not None:
+            cmd.extend(["--seed", str(seed)])
         Logger.info(f"[Post-Train] Running inference: {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
 
 
-if __name__ == "__main__":
-    args = parse_train_args()
-    Logger.set_level(args.log_level)
+@hydra.main(config_path="../conf", config_name="config", version_base=None)
+def main(cfg: DictConfig):
+    # 디버깅용: 전체 config 출력
+    print(OmegaConf.to_yaml(cfg))
+
+    # 로그 레벨 설정
+    Logger.set_level(cfg.log_level)
 
     try:
         Logger.info("[Entry] Starting training script...")
-        run_training(args)
+        run_training(cfg)
     except Exception as e:
-        if not args.id_string:
-            id_str = f"{args.label_method}_win{args.window_size}_b{args.batch_size}"
-            if args.use_kbrs:
+        # id_string이 아직 비어있을 수 있으므로 안전하게 재구성
+        if not cfg.id_string:
+            id_str = f"{cfg.label_method}_win{cfg.window_size}_b{cfg.batch_size}"
+            if cfg.use_kbrs:
                 id_str += "_kbrs"
-            args.id_string = id_str
+            cfg.id_string = id_str
 
-        error_message = f"Training run '{args.id_string}' failed with an error: {e}"
+        error_message = f"Training run '{cfg.id_string}' failed with an error: {e}"
         Logger.error(error_message)
         try:
             send_message(f"@work " + error_message)
         except Exception as send_error:
             Logger.error(f"Failed to send error message: {send_error}")
         raise
+
+
+
+if __name__ == "__main__":
+    main()

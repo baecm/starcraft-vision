@@ -2,9 +2,34 @@
 import argparse
 import os
 import config
+import yaml
+
+from collections.abc import Iterable
 
 DEFAULT_COMPONENTS = ["worker", "ground", "air", "building", "vision"]
 
+def _flatten_list(x):
+    """train_replays: [*set1, *set2] 처럼 list 안에 list 가 있을 때 평탄화."""
+    if isinstance(x, (str, bytes)):
+        return [x]
+    if not isinstance(x, Iterable):
+        return [x]
+    out = []
+    for v in x:
+        if isinstance(v, (list, tuple)):
+            out.extend(_flatten_list(v))
+        else:
+            out.append(v)
+    return out
+
+def _flatten_kbrs_params(prefix, node):
+    for k, v in node.items():
+        key = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            yield from _flatten_kbrs_params(key, v)
+        else:
+            # 최종적으로 "score_weights.density=0.3" 이런 string
+            yield f"{key}={v}"
 
 # -------------------------
 # 공통 group builder
@@ -182,6 +207,85 @@ def add_kbrs_args(parser: argparse.ArgumentParser):
     return group_kbrs
 
 
+def _apply_yaml_config(args):
+    if not getattr(args, "config", None):
+        return args
+
+    with open(args.config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+
+    if args.config_key is not None:
+        if args.config_key not in cfg:
+            raise ValueError(f"Config key '{args.config_key}' not found in {args.config}")
+        cfg = cfg[args.config_key]
+        
+    # 1) 단순 스칼라/리스트 옵션: 키 이름이 args 속성과 같으면 덮어쓰기
+    simple_keys = [
+        "train_replays",
+        "test_replays",
+        "include_components",
+        "label_method",
+        "sample_ratio",
+        "data_root",
+        "interval",
+        "val_count",
+        "window_size",
+        "batch_size",
+        "learning_rate",
+        "max_epoch",
+        "test_eval_every",
+        "do_inference_after_train",
+        "resize_mode",
+        "min_sizes",
+        "max_size",
+        "do_normalize",
+        "normalize_mean",
+        "normalize_std",
+        "rpn_small_anchors",
+        "cuda",
+        "id_string",
+        "log_level",
+        "log_root",
+        "num_workers",
+        "seed",
+        "use_kbrs",
+    ]
+    for k in simple_keys:
+        if k in cfg and hasattr(args, k):
+            val = cfg[k]
+            # train/test_replays 는 [*set1, *set2] 같은 nested list 가 들어올 수 있으므로 flatten
+            if k in ("train_replays", "test_replays"):
+                val = _flatten_list(val)
+            setattr(args, k, val)
+
+    if "loss_weights" in cfg:
+        current = list(getattr(args, "loss_weights", []) or [])
+
+        if isinstance(cfg["loss_weights"], dict):
+            # {'loss_objectness':1.0, ...} → [['loss_objectness','1.0'], ...]
+            for name, w in cfg["loss_weights"].items():
+                current.append([name, str(w)])
+        else:
+            # 이미 [['name', 'weight'], ...] 형태라면 그대로
+            current.extend(cfg["loss_weights"])
+
+        args.loss_weights = current
+
+    # 3) score_weights: [["density", 0.3], ...] 형태를 쓰고 싶다면
+    if "score_weights" in cfg:
+        current = list(getattr(args, "score_weights", []) or [])
+        current.extend(cfg["score_weights"])
+        args.score_weights = current
+
+    # 4) kbrs_params: nested dict → kbrs_param 리스트로 변환
+    if "kbrs_params" in cfg:
+        flat = list(_flatten_kbrs_params("", cfg["kbrs_params"]))
+        current = list(getattr(args, "kbrs_param", []) or [])
+        current.extend(flat)
+        args.kbrs_param = current
+
+    return args
+
 # -------------------------
 # Train
 # -------------------------
@@ -190,6 +294,21 @@ def parse_train_args(argv=None):
         description="Minimal argument parser for Mask R-CNN training"
     )
 
+    # ★ 여기서 config 옵션 하나 추가
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="YAML config file to override/extend CLI arguments.",
+    )
+    
+    parser.add_argument(
+        "--config-key",
+        type=str,
+        default=None,
+        help="Top-level key inside YAML to use as config (when YAML contains multiple presets).",
+    )
+    
     # Data and Labeling (train/test replays 분리)
     group_data = parser.add_argument_group("Data and Labeling")
 
@@ -198,7 +317,6 @@ def parse_train_args(argv=None):
         "--train-replay",
         type=str,
         nargs="+",
-        required=True,
         help="Replay IDs used for training (one or more).",
     )
     group_data.add_argument(
@@ -291,7 +409,16 @@ def parse_train_args(argv=None):
     add_env_args(parser)
     add_kbrs_args(parser)
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args = _apply_yaml_config(args)
+    
+    if not args.train_replays:
+        parser.error(
+            "No train replays specified. "
+            "Use --train-replays ... or provide 'train_replays' in --config (with optional --config-key)."
+        )
+
+    return args
 
 
 # -------------------------
