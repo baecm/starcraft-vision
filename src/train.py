@@ -234,9 +234,9 @@ def run_training(args):
     # 1) 라벨 pickle 준비: train + test 전체
     all_replays = []
     if getattr(args, "train_replay", None):
-        all_replays.extend(args.train_replay)
+        all_replays.extend(args.train_replays)
     if getattr(args, "test_replay", None):
-        all_replays.extend(args.test_replay)
+        all_replays.extend(args.test_replays)
 
     ensure_label_pickles(
         label_root=label_root,
@@ -255,18 +255,18 @@ def run_training(args):
         interval=args.interval,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        train_replays=args.train_replay,
-        val_replays=args.test_replay,
+        train_replays=args.train_replays,
+        val_replays=args.test_replays,
         sample_ratio=args.sample_ratio,
         include_components=args.include_components,
         val_count=args.val_count,
         seed=int(args.seed),
     )
 
-    # 3) test 로더 (test_replay 전체)
+    # 3) test 로더 (test_replays 전체)
     test_loader = None
-    if getattr(args, "test_replay", None):
-        test_ids = [str(r) for r in args.test_replay]
+    if getattr(args, "test_replays", None):
+        test_ids = [str(r) for r in args.test_replays]
         test_dataset = CustomPennFudanDataset(
             input_root,
             label_root,
@@ -388,7 +388,7 @@ def run_training(args):
             "-m",
             "inference",
             "--replays",
-            *args.test_replay,             # test set 전체에 대해 inference
+            *args.test_replays,             # test set 전체에 대해 inference
             "--model-root", args.log_root,
             "--model-name", tag_string,    # 또는 args.id_string 기준으로 조합
             "--model-number", f"{last_epoch}",
