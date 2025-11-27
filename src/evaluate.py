@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import csv
 import json
+import argparse
 
 from dataclasses import asdict
 from typing import Any, Dict, List, Sequence, Tuple, Optional
@@ -191,9 +192,6 @@ def eval_kernel_from_coco(
         agg=agg,
     )
     return row, per_image, agg
-
-
-from cli import parse_evaluate_args
 
 
 def _summarize_ic_row(
@@ -528,10 +526,87 @@ def evaluate(model, data_loader, device, epoch: int = 0):
     return KernelEvalResult(aggregates=aggregates)
 
 
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description=(
+            "Kernel-based intersection evaluator driven from COCO GT + COCO predictions.\n"
+            "If --gt is provided (COCO instances json), preds (COCO detection results)\n"
+            "are converted and evaluated.\n"
+            "Alternatively, --pred may contain JSON with 'tests' already and will be used directly."
+        )
+    )
+    parser.add_argument(
+        "--gt",
+        default=None,
+        help="Optional GT COCO json (instances). If provided, used to build tests.",
+    )
+    parser.add_argument(
+        "--gt-dir",
+        default=os.path.join(os.getcwd(), "data", "label", "dst"),
+        help="Directory containing GT file.",
+    )
+    parser.add_argument(
+        "--pred",
+        action="append",
+        required=True,
+        help="Prediction JSON file(s). Can be COCO results or tests JSON. Repeatable.",
+    )
+    parser.add_argument(
+        "--pred-dir",
+        default=os.path.join(os.getcwd(), "predictions"),
+        help="Directory containing prediction files.",
+    )
+    parser.add_argument(
+        "--out",
+        default="./results",
+        help="Output directory.",
+    )
+    parser.add_argument(
+        "--name",
+        action="append",
+        help="Name for each prediction (defaults to basename).",
+    )
+    parser.add_argument(
+        "--kernel",
+        default="20,12",
+        help="Window size x_len,y_len. Example: '20,12'.",
+    )
+    parser.add_argument(
+        "--grid",
+        default="128,128",
+        help="Grid width,height representing sampling grid. Example: '128,128'.",
+    )
+    parser.add_argument(
+        "--maxcoord",
+        default="3456,3720",
+        help="Original coordinate maxima (max_x,max_y) used for normalization.",
+    )
+    parser.add_argument(
+        "--per-image",
+        action="store_true",
+        help="Write per-image CSV of results.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        help="(optional) batch size for computing per-batch kernel means.",
+    )
+    parser.add_argument(
+        "--run-tag",
+        default="",
+        help=(
+            "Suffix for summary filenames (e.g. 'maskrcnn_kbrs_e050_replay-KR-7702711227'). "
+            "Output will be summary_<run-tag>.csv/json."
+        ),
+    )
+
+    args = parser.parse_args(argv)
+    return args
 
 def main():
-    args = parse_evaluate_args()
-
+    args = parse_args()
+    
     all_rows, summary_json, csv_path, json_path = run_kernel_eval(
         gt_path=args.gt,
         gt_dir=args.gt_dir,
