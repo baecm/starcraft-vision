@@ -253,14 +253,14 @@ class KBRSConvScorer(nn.Module):
 
 
 # ======================================================
-# Wrapper: 기존 코드와의 호환을 위한 얇은 래퍼
+# Wrapper: 기존 코드와의 호환을 위한 얇은 래퍼 (수정 버전)
 # ======================================================
 class KBRSWrapper(nn.Module):
     """
     예전 코드에서 사용하던 단순 인터페이스 래퍼.
 
     - region_size, score_weights, projections 를 받아서
-      내부적으로 KBRSConvScorer 를 생성해 한 번 호출한다.
+      내부적으로 KBRSConvScorer 를 한 번만 생성해, 매 forward 에 재사용한다.
     """
 
     def __init__(
@@ -268,8 +268,8 @@ class KBRSWrapper(nn.Module):
         region_size: Tuple[int, int] = (20, 12),
         score_weights: Optional[Dict[str, float]] = None,
         projections: Optional[Dict[str, List[int]]] = None,
-        mixture_between: Optional[Tuple[str, str]] = None,  # 현재는 사용하지 않지만 시그니처 유지
-        mask_channel: Optional[int] = None,                 # 상위에서 처리
+        mixture_between: Optional[Tuple[str, str]] = None,  # (미사용, 시그니처 유지)
+        mask_channel: Optional[int] = None,                 # (미사용, 시그니처 유지)
     ) -> None:
         super().__init__()
         self.kh, self.kw = region_size
@@ -280,11 +280,15 @@ class KBRSWrapper(nn.Module):
         self.mixture_between = mixture_between
         self.mask_channel = mask_channel
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        conv = KBRSConvScorer(
+        # ★ 여기서 한 번만 생성해서 모듈로 붙여둠
+        self.scorer = KBRSConvScorer(
             region_size=(self.kh, self.kw),
             weights=self.w,
             projections=self.projections,
         )
-        conv = conv.to(x.device, dtype=x.dtype)
-        return conv(x)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        # 모델 전체에 .to(device) / .cuda() 를 걸면 self.scorer 도 같이 옮겨짐
+        # dtype 은 내부에서 buffer 를 입력 x 에 맞춰 cast 하므로, 별도로 맞출 필요 없음.
+        return self.scorer(x)
+    
