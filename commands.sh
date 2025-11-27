@@ -25,138 +25,43 @@ make preprocess_label ARGS="--replays 6254 3529 3972 7191 7950 --method all_corr
 make preprocess_label ARGS="--replays 7970 9105 9301 9795 --method all_correct"
 make preprocess_label ARGS="--replays 36 212 438 522 1660 1559 1628 2351 6219 11251 275 1725 3613 4520 4664 6254 3529 3972 7191 7950 7970 9105 9301 9795 --method all_correct"
 
-# train test
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS=" \
-  --replays 36 212 \
-  --include-components worker ground air building vision \
-  --label-method all_correct \
-  --max-epoch 30 \
-  --window-size 4 \
-  --interval 8 \
-  --batch-size 4 \
-  --sample-ratio 0.1 \
-  --log-level log \
-  --use-kbrs \
-  --loss-weights loss_objectness 1.0 \
-  --loss-weights loss_rpn_box_reg 1.0 \
-  --loss-weights loss_kbrs 0.25 \
-  --kbrs-param score_weights.density=0.3 \
-  --kbrs-param score_weights.mixture=3.0 \
-  --kbrs-param score_weights.centeredness=0.3 \
-  "
-# evaluatiun test
-make evaluate ARGS=" \
-  --gt 1628.rep/all_correct.json \
-  --pred all_correct_win4_b16_20250823_060459/model_030/1628.rep/all_correct.json \
-  "
+# 단일 run 예시
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="dataset=fold1 model=kbrs seed=123 kbrs_loss=kbrs025 kbrs_score=base"
 
-# Training with specific replays
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS=" \
-  --replays 36 212 438 522 1660 1559 1628 2351 6219 11251 \
-  --include-components worker ground air building vision \
-  --label-method all_correct \
-  --max-epoch 30 \
-  --window-size 4 \
-  --interval 8 \
-  --batch-size 16 \
-  --sample-ratio 0.05 \
-  --log-level log \
-  --use-kbrs \
-  --loss-weights loss_objectness 1.0 \
-  --loss-weights loss_rpn_box_reg 1.0 \
-  --loss-weights loss_kbrs 0.25 \
-  --kbrs-param score_weights.density=0.3 \
-  --kbrs-param score_weights.mixture=3.0 \
-  --kbrs-param score_weights.centeredness=0.3 \
-  "
+# 멀티런 예시
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m dataset=fold1,fold2,fold3 model=kbrs seed=123,456,789 kbrs_loss=kbrs025 kbrs_score=base"
 
-NVIDIA_VISIBLE_DEVICES=1 make inference ARGS=" \
-  --replays 275 1725 3613 4520 4664 \
-  --include-components worker ground air building vision \
-  --model-name all_correct_win4_b16_20250823_060441 \
-  --model-number 30 \
-  --window-size 4 \
-  --label-method all_correct \
-  --batch-size 16 \
-  --score-threshold 0.0 \
-  --sample-ratio 1.0 \
-  --output-dir /workspace/predictions \
-  "
+# seed sweep
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m dataset=fold1 model=kbrs seed=123,456,789 kbrs_loss=kbrs025 kbrs_score=base"
 
-# set 2: all_correct_win4_b16_20250823_060459
-NVIDIA_VISIBLE_DEVICES=1 make train ARGS=" \
-  --replays 36 212 438 522 1660 275 1725 3613 4520 4664\
-  --include-components worker ground air building vision \
-  --label-method all_correct \
-  --max-epoch 30 \
-  --window-size 4 \
-  --interval 8 \
-  --batch-size 16 \
-  --sample-ratio 1.0 \
-  --log-level log \
-  "
+# fold1, kbrs, seed=123, kbrs_score=base 고정하고 loss weight 스윕
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m \
+  dataset=fold1 \
+  model=kbrs \
+  seed=123 \
+  kbrs_loss=kbrs025,kbrs050,kbrs075,kbrs100 \
+  kbrs_score=base"
 
-NVIDIA_VISIBLE_DEVICES=1 make inference ARGS=" \
-  --replays 1559 1628 2351 6219 11251 \
-  --include-components worker ground air building vision \
-  --model-name all_correct_win4_b16_20250823_060459 \
-  --model-number 30 \
-  --window-size 4 \
-  --label-method all_correct \
-  --batch-size 16 \
-  --score-threshold 0.0 \
-  --sample-ratio 1.0 \
-  --output-dir /workspace/predictions \
-  "
+# density ablation
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m \
+  dataset=fold1 \
+  model=kbrs \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+  kbrs_score=base,density010,density020,density040,density050,density060,density070,density080,density090"
 
-# set 3: all_correct_win4_b16_20250823_060525
-NVIDIA_VISIBLE_DEVICES=1 make train ARGS=" \
-  --replays 1559 1628 2351 6219 11251 275 1725 3613 4520 4664 \
-  --include-components worker ground air building vision \
-  --label-method all_correct \
-  --max-epoch 30 \
-  --window-size 4 \
-  --interval 8 \
-  --batch-size 16 \
-  --sample-ratio 1.0 \
-  --log-level log \
-  "
+# mixture ablation
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m \
+  dataset=fold1 \
+  model=kbrs \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+  kbrs_score=mixture100,mixture150,mixture200,mixture250,mixture350,mixture400,mixture450,mixture500,mixture150,mixture200,mixture250,mixture350"
 
-NVIDIA_VISIBLE_DEVICES=1 make inference ARGS=" \
-  --replays 36 212 438 522 1660 \
-  --include-components worker ground air building vision \
-  --model-name all_correct_win4_b16_20250823_060525 \
-  --model-number 30 \
-  --window-size 4 \
-  --label-method all_correct \
-  --batch-size 16 \
-  --score-threshold 0.0 \
-  --sample-ratio 1.0 \
-  --output-dir /workspace/predictions \
-  "
-
-# # Evaluation
-# # set 1: all_correct_win4_b16_20250823_060441
-
-# # set 2: all_correct_win4_b16_20250823_060459
-# make evaluate ARGS=" \
-#   --replays 1559 1628 2351 6219 11251 \
-#   --label-method all_correct \
-#   --pred-names all_correct_win4_b16_20250823_060459 \
-#   --model-number 30 \
-#   --ic-thresholds 0 0.3 0.5 \
-#   --frame-select first \
-#   --dump-vpd \
-#   --log-level log \
-#   "
-# # set 3: all_correct_win4_b16_20250823_060525
-# make evaluate ARGS=" \
-#   --replays 36 212 438 522 1660 \
-#   --label-method all_correct \
-#   --pred-names all_correct_win4_b16_20250823_060525 \
-#   --model-number 30 \
-#   --ic-thresholds 0 0.3 0.5 \
-#   --frame-select first \
-#   --dump-vpd \
-#   --log-level log \
-#   "
+# centeredness ablation
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m \
+  dataset=fold1 \
+  model=kbrs \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+  kbrs_score=centeredness010,centeredness020,centeredness040,centeredness050,centeredness060,centeredness070,centeredness080,centeredness090"

@@ -1,1 +1,4 @@
+# conf/model/vanilla.yaml
 use_kbrs: false
+loss_weights: {}
+kbrs_params: {}

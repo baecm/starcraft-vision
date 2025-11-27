@@ -1,14 +1,14 @@
 defaults:
   - dataset: fold1
   - model: vanilla
-  - seed: s123
 
   - kbrs_loss: kbrs025
   - kbrs_score: base
+  - _self_          
 
-# 공통 하이퍼파라미터들
 include_components: [worker, ground, air, building, vision]
 label_method: all_correct
+seed: 123
 max_epoch: 1
 window_size: 4
 interval: 8
@@ -17,7 +17,6 @@ sample_ratio: 0.01
 log_level: log
 do_inference_after_train: true
 
-# optimizer / resize / normalize 등등...
 learning_rate: 0.005
 val_count: 1000
 test_eval_every: 0
@@ -34,7 +33,17 @@ data_root: ./data
 log_root: ./models
 id_string: ""
 
-# model 그룹에서 정의한 것을 루트에서 alias로 노출
 use_kbrs:      ${model.use_kbrs}
 loss_weights:  ${model.loss_weights}
 kbrs_params:   ${model.kbrs_params}
+
+hydra:
+  run:
+    # 단일 실행 시 작업 디렉토리 (사실 우리는 크게 안 씀)
+    dir: /tmp/hydra_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+  sweep:
+    # 멀티런(-m) 결과가 들어갈 상위 디렉토리
+    dir: /tmp/hydra_multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    # 각 job마다 서브폴더 이름
+    subdir: ${hydra.job.num}

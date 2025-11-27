@@ -5,7 +5,7 @@ use_kbrs: true
 loss_weights:
   loss_objectness: 1.0
   loss_rpn_box_reg: ${kbrs_loss.loss_rpn_box_reg}
-  loss_kbrs:       ${kbrs_loss.loss_kbrs}
+  loss_kbrs:        ${kbrs_loss.loss_kbrs}
 
 # kbrs_score 그룹값 사용
 kbrs_params:

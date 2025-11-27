@@ -17,6 +17,7 @@ services:
       - ${MODELS_DIR}:/workspace/models
       - ${PREDICTIONS_DIR}:/workspace/predictions
       - ${RESULTS_DIR}:/workspace/results
+      - ${CONF_DIR}:/workspace/conf
       - ./entrypoint.sh:/workspace/entrypoint.sh
     user: "${UID}:${GID}"
     shm_size: '${SHARED_MEMORY}'
