@@ -1,12 +1,12 @@
 # src/train.py
 import os
-import argparse
+import subprocess
 import time
 import tqdm
-import utils
-import json, re, ast
-import pickle
-from multiprocessing import Pool
+
+import random
+import secrets
+import numpy as np
 
 import torch
 from torch.utils.data import Subset
@@ -14,153 +14,84 @@ from torch.utils.data import Subset
 import wandb
 from ultralytics import settings
 
+import config
+from cli import parse_train_args
+
 import detection.transforms as T
-# from detection.engine import train_one_epoch, evaluate
 from detection.engine import train_one_epoch
 from evaluate import evaluate
+
+from dataset.label_cache import ensure_label_pickles
+from dataset.loader import load_data, make_loader
 from dataset.custom_penn_fudan import CustomPennFudanDataset
+
 from model.maskrcnn_builder import get_model_instance_segmentation
 
-import config
 from utils.logger import Logger
 from utils.synology_chat import send_message
 
 
-def get_transform(train):
-    transforms = [T.ToTensor()]
-    if train:
-        transforms.append(T.RandomHorizontalFlip(0.5))
-    return T.Compose(transforms)
+# def get_transform(train):
+#     transforms = [T.ToTensor()]
+#     if train:
+#         transforms.append(T.RandomHorizontalFlip(0.5))
+#     return T.Compose(transforms)
 
 
-def make_loader(ds, batch_size, shuffle, num_workers):
-    if ds is None:
-        return None
-    return torch.utils.data.DataLoader(
-        ds,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        collate_fn=utils.collate_fn
-    )
+def set_global_seed(seed: int | None):
+    """
+    Python / NumPy / PyTorch (CPU/CUDA) 시드를 한 번에 설정.
+    deterministic 옵션까지 켜서 최대한 재현성이 유지되게 함.
+    """
+    if seed is None:
+        Logger.info("[Seed] No seed provided; running with default randomness.")
+        return
 
+    Logger.info(f"[Seed] Setting global seed = {seed}")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-def _process_json_worker(args):
-    """Helper function for parallel JSON processing."""
-    rid, label_root, label_method = args
-    json_path = os.path.join(label_root, f"{rid}.rep", f"{label_method}.json")
-    pkl_path = os.path.join(label_root, f"{rid}.rep", f"{label_method}.pkl")
-
-    if not os.path.exists(json_path):
-        return f"Skipped {rid}: no JSON found."
-    if os.path.exists(pkl_path):
-        return f"Skipped {rid}: pickle already exists."
-
+    # 선택: 완전 deterministic 모드 (속도 약간 손해)
     try:
-        with open(json_path, "r", encoding="utf-8") as f:
-            coco = json.load(f)
-
-        coco.setdefault("info", {"description": "auto-generated", "version": "1.0"})
-        coco.setdefault("licenses", [])
-        coco.setdefault("categories", [{"id": 1, "name": "viewport"}])
-        coco.setdefault("images", [])
-        coco.setdefault("annotations", [])
-
-        with open(pkl_path, "wb") as f:
-            pickle.dump({
-                "info": coco["info"],
-                "licenses": coco["licenses"],
-                "categories": coco["categories"],
-                "images": coco["images"],
-                "annotations": coco["annotations"],
-            }, f)
-        return f"Success {rid}: pickle created."
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     except Exception as e:
-        return f"Failed {rid}: {e}"
+        Logger.warning(f"[Seed] Could not set cuDNN deterministic flags: {e}")
 
 
-def preprocess_json_to_pickle(label_root, label_method, replay_ids, num_workers, verbose=True):
-    def log(msg):
-        if verbose:
-            Logger.info(f"[Preprocess] {msg}") if 'Logger' in globals() else print(f"[Preprocess] {msg}")
-
-    replay_ids = [str(r) for r in replay_ids]
-    log(f"Starting JSON to Pickle conversion for {len(replay_ids)} replays using {num_workers} workers.")
-
-    tasks = [(rid, label_root, label_method) for rid in replay_ids]
-
-    with Pool(processes=num_workers) as pool:
-        results = list(tqdm.tqdm(pool.imap_unordered(_process_json_worker, tasks),
-                                 total=len(tasks),
-                                 desc="Preprocessing JSON to Pickle"))
-
-    success_count = sum(1 for r in results if r.startswith("Success"))
-    skipped_exist_count = sum(1 for r in results if "pickle already exists" in r)
-    skipped_no_json_count = sum(1 for r in results if "no JSON found" in r)
-    failed_count = sum(1 for r in results if r.startswith("Failed"))
-
-    log(f"Preprocessing complete. Success: {success_count}, "
-        f"Skipped (existing): {skipped_exist_count}, "
-        f"Skipped (no JSON): {skipped_no_json_count}, "
-        f"Failed: {failed_count}")
-
-    if failed_count > 0:
-        for r in results:
-            if r.startswith("Failed"):
-                log(r)
-
-
-def load_data(input_root, label_root, label_method, window_size, interval, batch_size,
-              num_workers, replays, sample_ratio=1.0, include_components=None, val_count=1000):
-    Logger.info("[Stage] Loading data...")
-    Logger.info(f"[Info] Input root: {input_root}")
-    Logger.info(f"[Info] Label root: {label_root}, method: {label_method}")
-
-    # 필수: replays
-    if not replays:
-        raise ValueError("--replays 를 1개 이상 지정해야 합니다.")
-    train_ids = [str(r) for r in replays]
-    Logger.info(f"[Info] Train IDs: {train_ids}")
-
-    # Build dataset (train only; test 분리 없음)
-    train_dataset = CustomPennFudanDataset(
-        input_root, label_root, label_method,
-        training_ids=train_ids, training=True,
-        window_size=window_size, interval=interval,
-        include_components=include_components
-    )
-    Logger.info(f"[Info] Full dataset size: Train {len(train_dataset)}")
-    Logger.info(f"[Info] Window size: {window_size}, Interval: {interval}")
-
-    # ---- Train/Val split (원본 기준으로!) ----
-    n_train = len(train_dataset)
-    val_dataset = None
-    if val_count and n_train > val_count:
-        full_idx = torch.randperm(n_train).tolist()
-        val_idx   = full_idx[-val_count:]
-        train_idx = full_idx[:-val_count]
-
-        train_dataset = Subset(train_dataset, train_idx)
-        val_dataset   = Subset(train_dataset.dataset, val_idx)
-
-    if sample_ratio < 1.0:
-        n_train = len(train_dataset)
-        keep = torch.randperm(n_train).tolist()[:int(n_train * sample_ratio)]
-        train_dataset = Subset(train_dataset, keep)
-        Logger.info(f"[Info] Applied sampling to train data (ratio={sample_ratio}): Train {len(train_dataset)}")
-
-    train_loader = make_loader(train_dataset, batch_size, shuffle=True,  num_workers=num_workers)
-    val_loader   = make_loader(val_dataset,   batch_size, shuffle=False, num_workers=num_workers) if val_dataset is not None else None
-    return train_loader, val_loader
-
-
-def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_validation, device, num_epochs, save_dir, use_kbrs=False):
+def train_model(
+    model,
+    optimizer,
+    lr_scheduler,
+    data_loader_train,
+    data_loader_validation,
+    device,
+    num_epochs,
+    save_dir,
+    use_kbrs: bool = False,
+    data_loader_test=None,
+    test_eval_every: int = 0,
+):
     Logger.info("[Stage] Starting training loop...")
     for epoch in tqdm.tqdm(range(num_epochs)):
-        train_stats = train_one_epoch(model, optimizer, data_loader_train, device, epoch, print_freq=10)
+        # ---- train ----
+        train_stats = train_one_epoch(
+            model, optimizer, data_loader_train, device, epoch, print_freq=10
+        )
         lr_scheduler.step()
 
-        eval_stats = evaluate(model, data_loader_validation, device=device) if data_loader_validation is not None else None
+        # ---- validation (매 epoch) ----
+        eval_stats = None
+        if data_loader_validation is not None:
+            eval_stats = evaluate(
+                model,
+                data_loader_validation,
+                device=device,
+                epoch=epoch,
+            )
 
         log_dict = {
             "epoch": epoch,
@@ -179,24 +110,48 @@ def train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_v
                 if k.startswith("loss_") and k not in skip and hasattr(meter, "global_avg"):
                     log_dict[f"Loss/{k[5:]}"] = float(meter.global_avg)
         
-        # === Observer Intersection / Kernel metrics 로깅 ===
+        # ---- Validation IC metrics 로깅 ----
         if eval_stats is not None and hasattr(eval_stats, "aggregates"):
             agg = eval_stats.aggregates
-
-            # ic 계열
             for key in ["ic@000", "ic@030", "ic@050", "ic_multi", "ic_ratio"]:
                 if key in agg:
                     log_dict[f"Eval/{key}"] = float(agg[key])
 
-            # kernel 계열
-            mapping = [
+            for src_key, dst_name in [
                 ("mean_density", "Eval/density"),
                 ("mean_centeredness", "Eval/centeredness"),
                 ("mean_mixture", "Eval/mixture"),
-            ]
-            for src_key, dst_name in mapping:
+            ]:
                 if src_key in agg:
                     log_dict[dst_name] = float(agg[src_key])
+
+        # ---- Test set 평가 (N epoch마다, 전체 test set) ----
+        if (
+            data_loader_test is not None
+            and test_eval_every > 0
+            and (epoch + 1) % test_eval_every == 0
+        ):
+            Logger.info(
+                f"[Stage] Test evaluation at epoch {epoch+1} (every {test_eval_every} epochs)"
+            )
+            test_stats = evaluate(
+                model,
+                data_loader_test,
+                device=device,
+                epoch=epoch,
+            )
+            if hasattr(test_stats, "aggregates"):
+                t_agg = test_stats.aggregates
+                for key in ["ic@000", "ic@030", "ic@050", "ic_multi", "ic_ratio"]:
+                    if key in t_agg:
+                        log_dict[f"Test/{key}"] = float(t_agg[key])
+                for src_key, dst_name in [
+                    ("mean_density", "Test/density"),
+                    ("mean_centeredness", "Test/centeredness"),
+                    ("mean_mixture", "Test/mixture"),
+                ]:
+                    if src_key in t_agg:
+                        log_dict[dst_name] = float(t_agg[src_key])
 
         if hasattr(model, "consume_epoch_kbrs"):
             scalars, cache = model.consume_epoch_kbrs()
@@ -247,6 +202,16 @@ def _unwrap_subset(ds):
 def run_training(args):
     settings.update({"wandb": True})
     Logger.info("[Stage] Preparing environment...]")
+    
+    if getattr(args, "seed", None) is None:
+        # 0 ~ 2^31-1 범위에서 하나 뽑기
+        generated = secrets.randbits(31)
+        args.seed = generated
+        Logger.info(f"[Seed] No --seed provided; generated seed={generated}")
+    else:
+        Logger.info(f"[Seed] Using provided seed={args.seed}")
+    set_global_seed(int(args.seed))
+    
     device = torch.device('cuda' if torch.cuda.is_available() and args.cuda else 'cpu')
     Logger.info(f"[Info] Using device: {device}")
 
@@ -266,27 +231,59 @@ def run_training(args):
     input_root = os.path.join(args.data_root, "input/dst")
     label_root = os.path.join(args.data_root, "label/dst")
 
-    preprocess_json_to_pickle(
+    # 1) 라벨 pickle 준비: train + test 전체
+    all_replays = []
+    if getattr(args, "train_replay", None):
+        all_replays.extend(args.train_replay)
+    if getattr(args, "test_replay", None):
+        all_replays.extend(args.test_replay)
+
+    ensure_label_pickles(
         label_root=label_root,
         label_method=args.label_method,
-        replay_ids=args.replays,
-        num_workers=args.num_workers
+        replay_ids=sorted({str(r) for r in all_replays}),
+        num_workers=args.num_workers,
     )
     Logger.info("[Info] JSON to Pickle conversion completed.")
 
-    data_loader_train, data_loader_validation = load_data(
-        input_root,
-        label_root,
-        args.label_method,
-        args.window_size,
-        args.interval,
-        args.batch_size,
-        args.num_workers,
-        replays=args.replays,
+    # 2) train + val (val은 test_replay에서 val_count만큼) 로더
+    data_loader_train, data_loader_validation, inner_ds = load_data(
+        input_root=input_root,
+        label_root=label_root,
+        label_method=args.label_method,
+        window_size=args.window_size,
+        interval=args.interval,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        train_replays=args.train_replay,
+        val_replays=args.test_replay,
         sample_ratio=args.sample_ratio,
         include_components=args.include_components,
-        val_count=args.val_count
+        val_count=args.val_count,
+        seed=int(args.seed),
     )
+
+    # 3) test 로더 (test_replay 전체)
+    test_loader = None
+    if getattr(args, "test_replay", None):
+        test_ids = [str(r) for r in args.test_replay]
+        test_dataset = CustomPennFudanDataset(
+            input_root,
+            label_root,
+            args.label_method,
+            training_ids=test_ids,
+            training=True,
+            window_size=args.window_size,
+            interval=args.interval,
+            include_components=args.include_components,
+        )
+        test_loader = make_loader(
+            test_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+        )
+        Logger.info(f"[Info] Test dataset size (full): {len(test_dataset)}")
 
     if data_loader_validation is not None:
         Logger.info(f"[Info] Data loaded: Train {len(data_loader_train.dataset)}, "
@@ -365,70 +362,48 @@ def run_training(args):
     optimizer = torch.optim.SGD(params, lr=args.learning_rate, momentum=0.9, weight_decay=0.0005)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-    train_model(model, optimizer, lr_scheduler, data_loader_train, data_loader_validation, device, args.max_epoch, log_save_path, use_kbrs=args.use_kbrs)
+    test_eval_every = getattr(args, "test_eval_every", 0)
 
+    train_model(
+        model,
+        optimizer,
+        lr_scheduler,
+        data_loader_train,
+        data_loader_validation,
+        device,
+        args.max_epoch,
+        log_save_path,
+        use_kbrs=args.use_kbrs,
+        data_loader_test=test_loader,
+        test_eval_every=test_eval_every,
+    )
+    
     wandb.finish()
     send_message(f"@work Training run '{args.id_string}' completed successfully.")
 
-
-def parse_arguments():
-    parser = argparse.ArgumentParser(description="Minimal argument parser for Mask R-CNN training")
-
-    # Data and Labeling
-    group_data = parser.add_argument_group("Data and Labeling")
-    group_data.add_argument("--replays", type=str, nargs="+", required=True,
-                            help="List of replay IDs to use (train set = whole set).")
-    group_data.add_argument("--label-method", type=str, default=config.LABEL_METHODS[0],
-                            choices=config.LABEL_METHODS, help="Label extraction method (folder name).")
-    group_data.add_argument("--sample-ratio", type=float, default=1.0,
-                            help="Fraction of training dataset to sample.")
-    group_data.add_argument("--data-root", type=str, default=os.path.join(os.getcwd(), "data"),
-                            help="Root directory for data.")
-    group_data.add_argument("--include-components", type=str, nargs='+',
-                            default=['worker', 'ground', 'air', 'building', 'vision'],
-                            help="List of components to include.")
-    group_data.add_argument("--interval", type=int, default=config.INTERVAL,
-                            help="Sampling interval for frame windows (1 = use every index).")
-    group_data.add_argument("--val-count", type=int, default=1000,
-                            help="Number of samples to use for validation (0 = no validation).")
-
-    # Model Hyperparameters
-    group_hyper = parser.add_argument_group("Model Hyperparameters")
-    group_hyper.add_argument("--window-size", type=int, default=config.WINDOW_SIZE)
-    group_hyper.add_argument("--batch-size", type=int, default=config.TRAIN_BATCH_SIZE)
-    group_hyper.add_argument("--learning-rate", type=float, default=config.TRAIN_LEARNING_RATE)
-    group_hyper.add_argument("--max-epoch", type=int, default=config.TRAIN_EPOCHS)
-
-    # Transform / Resize / Normalize
-    group_tf = parser.add_argument_group("Transform / Resize / Normalize")
-    group_tf.add_argument("--resize-mode", type=str, choices=["resize", "keep"], default="resize", help="'resize'면 old 스타일(권장), 'keep'이면 원본 크기 유지.")
-    group_tf.add_argument("--min-sizes", type=int, nargs="+", default=[800], help="멀티스케일 예: 640 800 896 960 1024 (resize-mode=resize 일 때만 의미)")
-    group_tf.add_argument("--max-size", type=int, default=1333)
-    group_tf.add_argument("--do-normalize", action="store_true", help="채널별 mean/std 정규화 사용")
-    group_tf.add_argument("--normalize-mean", type=float, nargs="+", help="정규화 mean (길이 = in_channels)")
-    group_tf.add_argument("--normalize-std", type=float, nargs="+", help="정규화 std (길이 = in_channels)")
-    group_tf.add_argument("--rpn-small-anchors", action="store_true", help="resize-mode=keep 일 때 작은 앵커 사용")
-
-    # Environment and Logging
-    group_env = parser.add_argument_group("Environment and Logging")
-    group_env.add_argument("--cuda", action='store_true', default=True, help="Enable CUDA training.")
-    group_env.add_argument("--id-string", type=str, default="", help="Identifier string for the training run.")
-    group_env.add_argument("--log-level", type=str, default="log", choices=["none", "log", "debug"], help="Logging level.")
-    group_env.add_argument("--log-root", type=str, default=os.path.join(os.getcwd(), "models"), help="Root directory for saving models and logs.")
-    group_env.add_argument("--num-workers", type=int, default=os.cpu_count()//4, help="Number of CPU cores for data loading.")
-
-    # KBRS Specific
-    group_kbrs = parser.add_argument_group("KBRS Specific")
-    group_kbrs.add_argument("--use-kbrs", action='store_true', help="Use KBRS loss during training.")
-    group_kbrs.add_argument("--kbrs-param", action="append", metavar="KEY=VAL", help="Override KBRS_PARAMS entries, e.g., --kbrs-param kernel_x=20 --kbrs-param kernel_y=12")
-    group_kbrs.add_argument("--loss-weights", nargs=2, action='append', metavar=('LOSS_NAME', 'WEIGHT'), help="Set a weight for a specific loss. Can be used multiple times.")
-    group_kbrs.add_argument('--score-weights', nargs=2, action='append', metavar=('COMP_NAME', 'WEIGHT'), help="KBRS scorer component weights (density/mixture/centeredness).")
-
-    return parser.parse_args()
+    if getattr(args, "do_inference_after_train", False):
+        last_epoch = args.max_epoch
+        cmd = [
+            "python",
+            "-m",
+            "inference",
+            "--replays",
+            *args.test_replay,             # test set 전체에 대해 inference
+            "--model-root", args.log_root,
+            "--model-name", tag_string,    # 또는 args.id_string 기준으로 조합
+            "--model-number", f"{last_epoch}",
+            "--data-root", args.data_root,
+            "--label-method", args.label_method,
+            "--window-size", str(args.window_size),
+        ]
+        if getattr(args, "seed", None) is not None:
+            cmd.extend(["--seed", str(args.seed)])
+        Logger.info(f"[Post-Train] Running inference: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
 
 
 if __name__ == "__main__":
-    args = parse_arguments()
+    args = parse_train_args()
     Logger.set_level(args.log_level)
 
     try:

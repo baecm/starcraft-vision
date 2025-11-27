@@ -2,22 +2,47 @@
 # src/inference.py
 
 import os
-import gc
-import argparse
-import json
-import torch
-import numpy as np
-from torch.utils.data import Dataset, DataLoader, Subset
 import tqdm
 import multiprocessing
+import json
+import gc
+
+import random
+import secrets
+import numpy as np
+
+import torch
+from torch.utils.data import DataLoader, Subset
 
 from dataset.inference_dataset import InferenceDataset
 from model.maskrcnn_builder import get_model_instance_segmentation
 
 import config
-
 from utils.logger import Logger
 from utils.synology_chat import send_message
+
+
+def set_global_seed(seed: int | None):
+    """
+    Inference 단계에서의 샘플링/순서를 고정하기 위한 seed 설정.
+    (train과 동일한 정책을 쓰고 싶으면 그대로 복붙)
+    """
+    if seed is None:
+        Logger.info("[Seed] No seed provided; running inference with default randomness.")
+        return
+
+    Logger.info(f"[Seed] Setting global seed for inference = {seed}")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    try:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except Exception as e:
+        Logger.warning(f"[Seed] Could not set cuDNN deterministic flags: {e}")
 
 
 def collate_fn(batch):
@@ -66,7 +91,7 @@ def run_inference(
     model: torch.nn.Module,
     data_loader: DataLoader,
     device: torch.device,
-    score_threshold: float = 0.5
+    score_threshold: float | None = 0.5,
 ):
     """
     Runs inference on a given model and data loader.
@@ -85,7 +110,10 @@ def run_inference(
             for output, (rid, frame_id) in zip(outputs, metas):
                 # Filter predictions based on the score threshold.
                 scores_all = output["scores"].detach().cpu().numpy().tolist()
-                keep_idx = [i for i, s in enumerate(scores_all) if s >= score_threshold]
+                if score_threshold is not None:
+                    keep_idx = [i for i, s in enumerate(scores_all) if s >= score_threshold]
+                else:
+                    keep_idx = list(range(len(scores_all)))
 
                 boxes_all = output["boxes"].detach().cpu().numpy().tolist()
                 labels_all = output["labels"].detach().cpu().numpy().tolist()
@@ -185,44 +213,23 @@ def save_predictions_as_coco(
     return out_path
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Run Mask R-CNN inference on preprocessed StarCraft II replays")
-
-    # Data and I/O
-    group_data = parser.add_argument_group("Data and I/O")
-    group_data.add_argument("--replays", nargs="+", required=True, help="List of replay IDs to run inference on.")
-    group_data.add_argument("--data-root", type=str, default=os.path.join(os.getcwd(), "data"), help="Root directory for data.")
-    group_data.add_argument("--output-dir", type=str, default=os.path.join(os.getcwd(), "predictions"), help="Directory to save prediction JSON files.")
-    group_data.add_argument("--include-components", type=str, nargs='+', default=['worker', 'ground', 'air', 'building', 'vision'], help="List of components to include.")
-    group_data.add_argument("--run-name", type=str, default=None,
-                            help="Subdirectory under --output-dir to save predictions. "
-                                 "If omitted, defaults to '<model_name>/model_<model_number>'.")
-
-    # Model Loading
-    group_model = parser.add_argument_group("Model Loading")
-    group_model.add_argument("--model-root", type=str, default=os.path.join(os.getcwd(), "models"), help="Root directory for model checkpoints.")
-    group_model.add_argument("--model-name", type=str, required=True, help="Name of the model folder to use.")
-    group_model.add_argument("--model-number", type=int, required=True, help="Checkpoint number to use (e.g., 4 for model_4.pth).")
-    group_model.add_argument("--label-method", type=str, default=config.LABEL_METHODS[0], choices=config.LABEL_METHODS, help="Label method for reference (not used in inference).")
-    group_model.add_argument("--window-size", type=int, default=1, help="Window size for input frames, consistent with the trained model.")
-    group_model.add_argument("--use-kbrs", action="store_true", help="Use KBRS (Key-Frame Based Replay Sampling) if available in the model.")
-
-    # Inference Hyperparameters
-    group_hyper = parser.add_argument_group("Inference Hyperparameters")
-    group_hyper.add_argument("--batch-size", type=int, default=8, help="Batch size for inference.")
-    group_hyper.add_argument("--score-threshold", type=float, default=0.5, help="Objectness score threshold for filtering predictions.")
-    group_hyper.add_argument("--sample-ratio", type=float, default=1.0, help="Fraction of frames to sample for inference (0.0 < ratio <= 1.0).")
-    group_hyper.add_argument("--workers", type=int, default=os.cpu_count()//4, help="DataLoader workers. -1=auto(cpu_count-based).")
-
-    return parser.parse_args()
+from cli import parse_inference_args
 
 
 def main():
-    args = parse_args()
+    args = parse_inference_args()
     Logger.info("[Inference] Starting...")
 
+    if getattr(args, "seed", None) is None:
+        generated = secrets.randbits(31)
+        args.seed = generated
+        Logger.info(f"[Seed] No --seed provided for inference; generated seed={generated}")
+    else:
+        Logger.info(f"[Seed] Using provided inference seed={args.seed}")
+    set_global_seed(int(args.seed))
+
     # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     Logger.info(f"[Inference] Using device: {device}")
 
     # Checkpoint path
@@ -236,6 +243,13 @@ def main():
     run_name = args.run_name or os.path.join(args.model_name, f"model_{args.model_number:03d}")
     run_dir = os.path.join(args.output_dir, run_name)
     Logger.info(f"[Inference] Output run dir: {run_dir}")
+
+    try:
+        os.makedirs(run_dir, exist_ok=True)
+        with open(os.path.join(run_dir, "seed.txt"), "w", encoding="utf-8") as f:
+            f.write(str(args.seed) + "\n")
+    except Exception as e:
+        Logger.warning(f"[Inference] Failed to write seed.txt: {e}")
 
     # Infer input channels once from a small temp dataset (first replay)
     temp_input_root = os.path.join(args.data_root, "input", "dst")
@@ -278,24 +292,27 @@ def main():
             dataset = Subset(dataset, indices)
             Logger.info(f"[Inference] Applied sampling: {sample_size}/{total_len} frames for replay {replay_id}")
 
+
         # Dataloader setup (conservative to avoid RAM issues)
         if args.workers is not None and args.workers >= 0:
             num_workers = args.workers
         else:
             num_workers = _auto_num_workers(device)
 
-        Logger.info(f"[Inference] Dataset frames for {replay_id}: {len(dataset)}; num_workers={num_workers}")
+        Logger.info(
+            f"[Inference] Dataset frames for {replay_id}: {len(dataset)}; "
+            f"num_workers={num_workers}"
+        )
 
         dl_kwargs = dict(
             batch_size=args.batch_size,
             shuffle=False,
-            num_workers=args.workers,
+            num_workers=num_workers,
             collate_fn=collate_fn,
-            pin_memory=False,            # safer for long runs
-            persistent_workers=False,    # ensure cleanup per replay
+            pin_memory=(device.type == "cuda"),
+            persistent_workers=False,
         )
         data_loader = DataLoader(dataset, **dl_kwargs)
-
         # Run inference
         replay_results = run_inference(
             model=model,

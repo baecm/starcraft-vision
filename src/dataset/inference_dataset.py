@@ -1,5 +1,8 @@
+# src/dataset/inference_dataset.py
 import os
 import numpy as np
+from typing import Iterable, Sequence, Optional
+
 import torch
 from torch.utils.data import Dataset
 
@@ -15,7 +18,7 @@ class InferenceDataset(Dataset):
       - The image_tensor is a stack of frames in the window (concatenated along channel axis).
       - The frame_id corresponds to the *last* frame in the window.
     """
-    def __init__(self, input_root: str, replay_ids: list, window_size: int = 1, include_components: list = None):
+    def __init__(self, input_root: str, replay_ids: list, window_size: int = 1, include_components: Optional[Sequence[str]] = None,):
         super().__init__()
         self.input_root = input_root
         self.window_size = window_size
@@ -57,6 +60,11 @@ class InferenceDataset(Dataset):
                 f"No .npy files or valid windows found for replays {replay_ids} "
                 f"with window size {self.window_size}. Aborting."
             )
+            
+        Logger.info(
+            f"[InferenceDataset] Built {len(self.indexes)} windows from " 
+            f"{len(replay_ids)} replays (window_size={self.window_size})"
+        )
 
     def __len__(self):
         return len(self.indexes)

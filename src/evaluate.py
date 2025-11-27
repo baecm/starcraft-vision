@@ -1,9 +1,10 @@
-#!/usr/bin/env python3
+# src/evaluate.py
 from __future__ import annotations
 
-import argparse
-import json
 import os
+import csv
+import json
+
 from dataclasses import asdict
 from typing import Any, Dict, List, Sequence, Tuple, Optional
 
@@ -192,85 +193,7 @@ def eval_kernel_from_coco(
     return row, per_image, agg
 
 
-# ----------------------------------------------------------------------
-# CLI parsing
-# ----------------------------------------------------------------------
-def _parse_args():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Kernel-based intersection evaluator driven from COCO GT + COCO predictions.\n"
-            "If --gt is provided (COCO instances json), preds (COCO detection results)\n"
-            "are converted and evaluated.\n"
-            "Alternatively, --pred may contain JSON with 'tests' already and will be used directly."
-        )
-    )
-    parser.add_argument("--gt", default=None, help="Optional GT COCO json (instances). If provided, used to build tests.")
-    parser.add_argument("--gt-dir", default=os.path.join(os.getcwd(), "data", "label", "dst"), help="Directory containing GT file.")
-    parser.add_argument("--pred", action="append", required=True, help="Prediction JSON file(s). Can be COCO results or tests JSON. Repeatable.")
-    parser.add_argument("--pred-dir", default=os.path.join(os.getcwd(), "predictions"), help="Directory containing prediction files.")
-    parser.add_argument("--out", default="./results", help="Output directory.")
-    parser.add_argument("--name", action="append", help="Name for each prediction (defaults to basename).")
-    parser.add_argument(
-        "--kernel",
-        default="20,12",
-        help="Window size x_len,y_len. Example: '20,12'.",
-    )
-    parser.add_argument(
-        "--grid",
-        default="128,128",
-        help="Grid width,height representing sampling grid. Example: '128,128'.",
-    )
-    parser.add_argument(
-        "--maxcoord",
-        default="3456,3720",
-        help="Original coordinate maxima (max_x,max_y) used for normalization.",
-    )
-    parser.add_argument(
-        "--per-image",
-        action="store_true",
-        help="Write per-image CSV of results."
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=0,
-        help="(optional) batch size for computing per-batch kernel means."
-    )
-    parser.add_argument(
-        "--run-tag",
-        default="",
-        help=(
-            "Suffix for summary filenames (e.g. 'maskrcnn_kbrs_e050_replay-KR-7702711227'). "
-            "Output will be summary_<run-tag>.csv/json."
-        ),
-    )
-
-    args = parser.parse_args()
-
-    # parse kernel/grid/maxcoord
-    try:
-        kx, ky = [int(x.strip()) for x in args.kernel.split(",")]
-        args.kernel = (kx, ky)
-    except Exception:
-        raise ValueError("--kernel must be 'x_len,y_len' with integers, e.g., 20,12")
-    try:
-        gw, gh = [int(x.strip()) for x in args.grid.split(",")]
-        args.grid = (gw, gh)
-    except Exception:
-        raise ValueError("--grid must be 'width,height' with integers, e.g., 128,128")
-    try:
-        mx, my = [float(x.strip()) for x in args.maxcoord.split(",")]
-        args.maxcoord = (float(mx), float(my))
-    except Exception:
-        raise ValueError("--maxcoord must be 'max_x,max_y' with numbers, e.g., 3456,3720")
-
-    # fill names
-    names = args.name or []
-    while len(names) < len(args.pred):
-        names.append(os.path.splitext(os.path.basename(args.pred[len(names)]))[0])
-    args.name = names
-
-    return args
+from cli import parse_evaluate_args
 
 
 def _summarize_ic_row(
@@ -349,6 +272,11 @@ def run_kernel_eval(
 
     for pred_path, name in zip(pred_files, names):
         path = os.path.join(pred_dir, pred_path)
+        if os.path.isabs(pred_path):
+            path = pred_path
+        else:
+            path = os.path.join(pred_dir, pred_path)
+
         if not os.path.isfile(path):
             raise FileNotFoundError(f"Prediction file not found: {path}")
 
@@ -400,7 +328,6 @@ def run_kernel_eval(
 
         # per-image CSV
         if per_image_csv:
-            import csv
 
             per_csv = os.path.join(out_dir, f"{name}_per_image.csv")
             with open(per_csv, "w", newline="", encoding="utf-8") as f:
@@ -423,7 +350,6 @@ def run_kernel_eval(
 
         # per-batch kernel metrics (optional)
         if batch_size and batch_size > 0 and len(per_image) > 0:
-            import csv
 
             dens_vals = np.array([x.density for x in per_image], dtype=float)
             cent_vals = np.array([x.centeredness for x in per_image], dtype=float)
@@ -452,9 +378,6 @@ def run_kernel_eval(
                 w.writeheader()
                 for r in rows:
                     w.writerow(r)
-
-    # write summary
-    import csv
 
     if len(all_rows) == 0:
         raise RuntimeError("No predictions evaluated.")
@@ -607,7 +530,7 @@ def evaluate(model, data_loader, device, epoch: int = 0):
 
 
 def main():
-    args = _parse_args()
+    args = parse_evaluate_args()
 
     all_rows, summary_json, csv_path, json_path = run_kernel_eval(
         gt_path=args.gt,
@@ -627,8 +550,8 @@ def main():
     print("\n=== Intersection & Kernel Metrics Summary ===")
     for row in all_rows:
         print(row)
-    print(f"\nSaved summary CSV → {csv_path}")
-    print(f"Saved summary JSON → {json_path}")
+    print(f"\nSaved summary CSV : {csv_path}")
+    print(f"\nSaved summary JSON : {json_path}")
 
 
 if __name__ == "__main__":
