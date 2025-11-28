@@ -9,11 +9,11 @@ defaults:
 include_components: [worker, ground, air, building, vision]
 label_method: all_correct
 seed: 123
-max_epoch: 1
+max_epoch: 30
 window_size: 4
 interval: 8
-batch_size: 8
-sample_ratio: 0.01
+batch_size: 16
+sample_ratio: 1.00
 log_level: log
 do_inference_after_train: true
 
