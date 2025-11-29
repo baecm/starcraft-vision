@@ -8,7 +8,7 @@ NVIDIA_VISIBLE_DEVICES=$GPU make train ARGS="-m \
   model=kbrs \
   seed=123 \
   kbrs_loss=kbrs025,kbrs050,kbrs075,kbrs100 \
-  kbrs_score=base"
+  kbrs_score=base_score"
 
 NVIDIA_VISIBLE_DEVICES=$GPU make train ARGS="-m \
   dataset=fold1 \

@@ -3,7 +3,7 @@ defaults:
   - model: vanilla
 
   - kbrs_loss: kbrs025
-  - kbrs_score: base
+  - kbrs_score: base_score
   - _self_          
 
 train_replays: ${dataset.train_replays}
