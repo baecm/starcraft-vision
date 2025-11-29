@@ -6,6 +6,9 @@ defaults:
   - kbrs_score: base
   - _self_          
 
+train_replays: ${dataset.train_replays}
+test_replays: ${dataset.test_replays}
+
 include_components: [worker, ground, air, building, vision]
 label_method: all_correct
 seed: 123
@@ -13,7 +16,7 @@ max_epoch: 30
 window_size: 4
 interval: 8
 batch_size: 16
-sample_ratio: 1.00
+sample_ratio: 1.0
 log_level: log
 do_inference_after_train: true
 
@@ -28,9 +31,9 @@ min_sizes: [800]
 max_size: 1333
 rpn_small_anchors: false
 cuda: true
-num_workers: 4
-data_root: ./data
-log_root: ./models
+num_workers: 32
+data_root: /workspace/data
+log_root: /workspace/models
 id_string: ""
 
 use_kbrs:      ${model.use_kbrs}
@@ -39,11 +42,9 @@ kbrs_params:   ${model.kbrs_params}
 
 hydra:
   run:
-    # 단일 실행 시 작업 디렉토리 (사실 우리는 크게 안 씀)
-    dir: /tmp/hydra_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
-
+    # 단일 실행 결과
+    dir: /workspace/results/hydra/run/${now:%Y%m%d_%H%M%S}
   sweep:
-    # 멀티런(-m) 결과가 들어갈 상위 디렉토리
-    dir: /tmp/hydra_multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    # 각 job마다 서브폴더 이름
-    subdir: ${hydra.job.num}
+    # 멀티런 결과
+    dir: /workspace/results/hydra/multirun
+    subdir: ${now:%Y%m%d_%H%M%S}_${hydra.job.num}
