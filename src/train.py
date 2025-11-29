@@ -240,7 +240,7 @@ def run_training(cfg: DictConfig):
 
     # 2) 디바이스
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
-    Logger.info(f"[Info] Using device: {device}")
+    Logger.info(f"[Info] Using device: {device} (torch.cuda.is_available(): {torch.cuda.is_available()} / cfg.cuda: {cfg.cuda})")
 
     run_tags = []
     # 3) id_string / tag_string
