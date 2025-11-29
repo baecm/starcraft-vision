@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
+from hydra.core.hydra_config import HydraConfig
+from typing import Optional
 
 import torch
 from torch.utils.data import Subset
@@ -35,14 +37,11 @@ from utils.logger import Logger
 from utils.synology_chat import send_message
 
 
-
-
 # def get_transform(train):
 #     transforms = [T.ToTensor()]
 #     if train:
 #         transforms.append(T.RandomHorizontalFlip(0.5))
 #     return T.Compose(transforms)
-
 
 def set_global_seed(seed: int | None):
     """
@@ -66,6 +65,21 @@ def set_global_seed(seed: int | None):
         torch.backends.cudnn.benchmark = False
     except Exception as e:
         Logger.warning(f"[Seed] Could not set cuDNN deterministic flags: {e}")
+
+
+def _get_choice(group: str) -> Optional[str]:
+    """
+    Hydra가 현재 job에서 선택한 config group의 이름을 가져온다.
+    예: group="dataset" -> "fold1"
+        group="model"   -> "kbrs"
+    """
+    try:
+        hc = HydraConfig.get()
+        # hc.runtime.choices 는 dict: {"dataset": "fold1", "model": "kbrs", ...}
+        return hc.runtime.choices.get(group)
+    except Exception as e:
+        Logger.warning(f"[_get_choice] failed for group={group}: {e}")
+        return None
 
 
 def train_model(
@@ -228,15 +242,43 @@ def run_training(cfg: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
     Logger.info(f"[Info] Using device: {device}")
 
+    run_tags = []
     # 3) id_string / tag_string
     if not cfg.id_string:
-        id_str = f"{cfg.label_method}_win{cfg.window_size}_b{cfg.batch_size}"
-        if cfg.use_kbrs:
-            id_str += "_kbrs"
-        cfg.id_string = id_str
+        run_tags.append(cfg.label_method)         # all_correct
+        run_tags.append(f"win{cfg.window_size}")  # win4
 
-    tag_string = f"{cfg.id_string}_{time.strftime('%Y%m%d_%H%M%S')}"
-    log_save_path = os.path.join(cfg.log_root, f"{tag_string}/")
+        # hydra runtime choices에서 현재 job의 선택값을 읽어온다.
+        dataset_name    = _get_choice("dataset")     # fold1
+        model_name      = _get_choice("model")       # kbrs or vanilla
+        seed_choice     = _get_choice("seed")        # s123 같은 group 이름 (있으면)
+        kbrs_loss_name  = _get_choice("kbrs_loss")   # kbrs025 ...
+        kbrs_score_name = _get_choice("kbrs_score")  # base, density020 ...
+
+        if model_name:
+            run_tags.append(f"{model_name}")
+        if dataset_name:
+            run_tags.append(f"{dataset_name}")
+
+        # seed 그룹 이름을 쓸지, 실제 seed 값을 쓸지는 취향 차이
+        # 지금 cfg.seed=123 이니까 실제 값으로 찍고 싶으면:
+        if hasattr(cfg, "seed") and cfg.seed is not None:
+            run_tags.append(f"s{cfg.seed}")
+
+        # kbrs가 켜져 있을 때만 loss/score suffix 달기
+        if getattr(cfg, "use_kbrs", False):
+            if kbrs_loss_name:
+                run_tags.append(f"{kbrs_loss_name}")
+            if kbrs_score_name:
+                run_tags.append(f"{kbrs_score_name}")
+
+        run_tags.append(f"{time.strftime('%Y%m%d_%H%M%S')}")
+
+        cfg.id_string = "_".join(run_tags)
+        Logger.info(f"[Info] Using id string: {cfg.id_string}")
+
+
+    log_save_path = os.path.join(cfg.log_root, f"{cfg.id_string}/")
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
 
@@ -245,7 +287,7 @@ def run_training(cfg: DictConfig):
         project="starcraft",
         name=cfg.id_string,
         config=OmegaConf.to_container(cfg, resolve=True),
-        tags=[tag_string],
+        tags=run_tags,
     )
 
     # 5) 경로 설정
@@ -389,35 +431,32 @@ def run_training(cfg: DictConfig):
         test_eval_every=test_eval_every,
     )
 
-    wandb.finish()
     send_message(f"@work Training run '{cfg.id_string}' completed successfully.")
 
     # === 학습 후 inference (옵션) ===
     if cfg.do_inference_after_train and test_replays:
         last_epoch = cfg.max_epoch
         cmd = [
-            "python",
-            "-m",
-            "inference",
-            "--replays",
-            *[str(r) for r in test_replays],
-            "--model-root",
-            cfg.log_root,
-            "--model-name",
-            tag_string,
-            "--model-number",
-            str(last_epoch),
-            "--data-root",
-            cfg.data_root,
-            "--label-method",
-            cfg.label_method,
-            "--window-size",
-            str(cfg.window_size),
+            "python", "-m", "inference",
+            "--replays", *cfg.test_replays,
+            "--model-root", cfg.log_root,
+            "--model-name", cfg.id_string,
+            "--model-number", f"{last_epoch}",
+            "--data-root", cfg.data_root,
+            "--label-method", cfg.label_method,
+            "--window-size", str(cfg.window_size),
+            "--sample-ratio", cfg.sample_ratio,
         ]
-        if seed is not None:
-            cmd.extend(["--seed", str(seed)])
+        if cfg.seed is not None:
+            cmd.extend(["--seed", str(cfg.seed)])
+        if cfg.cuda and torch.cuda.is_available():
+            cmd.append("--cuda")
+            
         Logger.info(f"[Post-Train] Running inference: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True)  # cwd는 기본값(부모 CWD)
+        
+    wandb.finish()
+    
 
 
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
