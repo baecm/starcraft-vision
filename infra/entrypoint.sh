@@ -37,6 +37,10 @@ evaluate)
   log "Evaluating model..."
   exec python src/evaluate.py "$@"
   ;;
+run)
+  log "Runninng train/inference squentially..."
+  exec python src/pipeline.py "$@"
+  ;;
 debug)
   log "Debugging..."
   exec /bin/bash "$@"

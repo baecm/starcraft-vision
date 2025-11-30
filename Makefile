@@ -61,6 +61,12 @@ evaluate:
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/evaluate.cid
 
+run:
+	CONTAINER_NAME=run_$(shell date +%Y%m%d_%H%M%S); \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher run $(ARGS) \
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/run.cid
+	
 debug:
 	CONTAINER_NAME=debug_$(shell date +%Y%m%d_%H%M%S); \
 	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher debug $(ARGS);

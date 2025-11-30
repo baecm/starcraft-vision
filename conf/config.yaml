@@ -40,6 +40,8 @@ use_kbrs:      ${model.use_kbrs}
 loss_weights:  ${model.loss_weights}
 kbrs_params:   ${model.kbrs_params}
 
+mode: "train_and_inference" # ["train_only", "inference_only", "train_and_inference"]
+
 hydra:
   run:
     # 단일 실행 결과

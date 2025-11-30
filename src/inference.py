@@ -14,6 +14,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
 
+from cli import parse_inference_args
+
 from dataset.inference_dataset import InferenceDataset
 from model.maskrcnn_builder import get_model_instance_segmentation
 
@@ -85,57 +87,6 @@ def _load_model(model_path: str, device: torch.device, in_channels: int, window_
     model.to(device)
     model.eval()
     return model
-
-
-def run_inference(
-    model: torch.nn.Module,
-    data_loader: DataLoader,
-    device: torch.device,
-    score_threshold: float | None = 0.5,
-):
-    """
-    Runs inference on a given model and data loader.
-    Collects predicted results as a list of dictionaries (per-frame).
-    NOTE: masks are NOT stored to avoid memory blow-up.
-    """
-    model.eval()
-    replay_results = []
-
-    with torch.inference_mode():
-        for images, metas in tqdm.tqdm(data_loader, desc="Running inference for replay", unit="batch"):
-            # images: list of tensors [C,H,W], metas: list of (rid, frame_id)
-            images = [img.to(device, non_blocking=True) for img in images]
-            outputs = model(images)  # list of dict, length = batch_size
-
-            for output, (rid, frame_id) in zip(outputs, metas):
-                # Filter predictions based on the score threshold.
-                scores_all = output["scores"].detach().cpu().numpy().tolist()
-                if score_threshold is not None:
-                    keep_idx = [i for i, s in enumerate(scores_all) if s >= score_threshold]
-                else:
-                    keep_idx = list(range(len(scores_all)))
-
-                boxes_all = output["boxes"].detach().cpu().numpy().tolist()
-                labels_all = output["labels"].detach().cpu().numpy().tolist()
-
-                frame_boxes, frame_scores, frame_labels = [], [], []
-                for idx in keep_idx:
-                    frame_boxes.append(boxes_all[idx])
-                    frame_scores.append(scores_all[idx])
-                    frame_labels.append(labels_all[idx])
-
-                entry = {
-                    "frame_id": frame_id,
-                    "boxes": frame_boxes,
-                    "scores": frame_scores,
-                    "labels": frame_labels,
-                }
-                replay_results.append(entry)
-
-            # free per-batch refs
-            del outputs, images
-
-    return replay_results
 
 
 def save_predictions_as_coco(
@@ -213,11 +164,7 @@ def save_predictions_as_coco(
     return out_path
 
 
-from cli import parse_inference_args
-
-
-def main():
-    args = parse_inference_args()
+def run_inference(args):
     Logger.info("[Inference] Starting...")
 
     if getattr(args, "seed", None) is None:
@@ -313,14 +260,44 @@ def main():
             persistent_workers=False,
         )
         data_loader = DataLoader(dataset, **dl_kwargs)
+        
         # Run inference
-        replay_results = run_inference(
-            model=model,
-            data_loader=data_loader,
-            device=device,
-            score_threshold=args.score_threshold
-        )
+        model.eval()
+        replay_results = []
 
+        with torch.inference_mode():
+            for images, metas in tqdm.tqdm(data_loader, desc="Running inference for replay", unit="batch"):
+                # images: list of tensors [C,H,W], metas: list of (rid, frame_id)
+                images = [img.to(device, non_blocking=True) for img in images]
+                outputs = model(images)  # list of dict, length = batch_size
+
+                for output, (rid, frame_id) in zip(outputs, metas):
+                    # Filter predictions based on the score threshold.
+                    scores_all = output["scores"].detach().cpu().numpy().tolist()
+                    if args.score_threshold is not None:
+                        keep_idx = [i for i, s in enumerate(scores_all) if s >= args.score_threshold]
+                    else:
+                        keep_idx = list(range(len(scores_all)))
+
+                    boxes_all = output["boxes"].detach().cpu().numpy().tolist()
+                    labels_all = output["labels"].detach().cpu().numpy().tolist()
+
+                    frame_boxes, frame_scores, frame_labels = [], [], []
+                    for idx in keep_idx:
+                        frame_boxes.append(boxes_all[idx])
+                        frame_scores.append(scores_all[idx])
+                        frame_labels.append(labels_all[idx])
+
+                    entry = {
+                        "frame_id": frame_id,
+                        "boxes": frame_boxes,
+                        "scores": frame_scores,
+                        "labels": frame_labels,
+                    }
+                    replay_results.append(entry)
+
+                # free per-batch refs
+                del outputs, images
         # Save predictions (COCO-style, bbox-only)
         save_predictions_as_coco(
             replay_id=replay_id,
@@ -346,8 +323,13 @@ def main():
     gc.collect()
     if device.type == "cuda":
         torch.cuda.empty_cache()
-
+        
     Logger.info("[Inference] Complete!")
+
+
+def main():
+    args = parse_inference_args()
+    run_inference(args)
 
 
 if __name__ == "__main__":

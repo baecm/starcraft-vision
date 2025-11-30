@@ -432,30 +432,30 @@ def run_training(cfg: DictConfig):
     )
 
     send_message(f"@work Training run '{cfg.id_string}' completed successfully.")
-
-    # === 학습 후 inference (옵션) ===
-    if cfg.do_inference_after_train and test_replays:
-        last_epoch = cfg.max_epoch
-        cmd = [
-            "python", "-m", "inference",
-            "--replays", *cfg.test_replays,
-            "--model-root", cfg.log_root,
-            "--model-name", cfg.id_string,
-            "--model-number", f"{last_epoch}",
-            "--data-root", cfg.data_root,
-            "--label-method", cfg.label_method,
-            "--window-size", str(cfg.window_size),
-            "--sample-ratio", cfg.sample_ratio,
-        ]
-        if cfg.seed is not None:
-            cmd.extend(["--seed", str(cfg.seed)])
-        if cfg.cuda and torch.cuda.is_available():
-            cmd.append("--cuda")
-            
-        Logger.info(f"[Post-Train] Running inference: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)  # cwd는 기본값(부모 CWD)
-        
     wandb.finish()
+
+    # # === 학습 후 inference (옵션) ===
+    # if cfg.do_inference_after_train and test_replays:
+    #     last_epoch = cfg.max_epoch
+    #     cmd = [
+    #         "python", "-m", "inference",
+    #         "--replays", *cfg.test_replays,
+    #         "--model-root", cfg.log_root,
+    #         "--model-name", cfg.id_string,
+    #         "--model-number", f"{last_epoch}",
+    #         "--data-root", cfg.data_root,
+    #         "--label-method", cfg.label_method,
+    #         "--window-size", str(cfg.window_size),
+    #         "--sample-ratio", cfg.sample_ratio,
+    #     ]
+    #     if cfg.seed is not None:
+    #         cmd.extend(["--seed", str(cfg.seed)])
+    #     if cfg.cuda and torch.cuda.is_available():
+    #         cmd.append("--cuda")
+            
+    #     Logger.info(f"[Post-Train] Running inference: {' '.join(cmd)}")
+    #     subprocess.run(cmd, check=True)  # cwd는 기본값(부모 CWD)
+        
     
 
 
