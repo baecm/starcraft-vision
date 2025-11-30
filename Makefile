@@ -3,13 +3,11 @@ PID_DIR=pids
 JUPYTER_PORT ?= 8888
 DEBUG_PORT   ?= 5678
 
-NOTEBOOK_SERVICE ?= notebook
 PYDEBUG_SERVICE  ?= pydebug
 
 
-.PHONY: notebook notebook-logs stop-notebook \
-        pydebug-up pydebug-logs stop-pydebug \
-        debugger tunnel-notebook stop-tunnel-notebook tunnel-debug stop-tunnel-debug
+.PHONY: pydebug-up pydebug-logs stop-pydebug \
+        debugger tunnel-debug stop-tunnel-debug
 
 # 디렉토리 생성
 $(shell mkdir -p $(PID_DIR))
@@ -106,19 +104,3 @@ stop:
 		[ -f $$cidfile ] && docker stop $$(cat $$cidfile) 2>/dev/null || true; \
 		rm -f $$cidfile; \
 	done
-
-# JupyterLab up (detached) + CID 기록
-notebook:
-	@mkdir -p $(PID_DIR)
-	@echo "[Makefile] Starting $(NOTEBOOK_SERVICE)"
-	@docker compose -f $(COMPOSE_FILE) up -d $(NOTEBOOK_SERVICE)
-	@CID=$$(docker compose -f $(COMPOSE_FILE) ps -q $(NOTEBOOK_SERVICE)); \
-		echo $$CID > $(PID_DIR)/notebook.cid; \
-		echo "[Makefile] CID: $$CID (port $(JUPYTER_PORT))"
-
-notebook-logs:
-	@docker compose -f $(COMPOSE_FILE) logs -f $(NOTEBOOK_SERVICE)
-
-stop-notebook:
-	-@docker stop $$(cat $(PID_DIR)/notebook.cid) 2>/dev/null || true
-	@rm -f $(PID_DIR)/notebook.cid
