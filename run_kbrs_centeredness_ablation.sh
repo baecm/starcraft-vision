@@ -4,7 +4,7 @@ set -e
 GPU=0
 
 # centeredness ablation (8 runs)
-NVIDIA_VISIBLE_DEVICES=$GPU make train ARGS="-m \
+NVIDIA_VISIBLE_DEVICES=$GPU make run ARGS="-m \
   dataset=fold1 \
   model=kbrs \
   seed=123 \
