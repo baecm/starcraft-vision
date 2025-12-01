@@ -181,16 +181,21 @@ def run_inference(args):
 
     # Checkpoint path
     model_folder = os.path.join(args.model_root, args.model_name)
-    model_path = os.path.join(model_folder, f"model_{args.model_number:03d}.pth")
+
+    # model_number는 어떤 경우든 int로 강제 변환
+    model_number = int(getattr(args, "model_number"))
+    model_path = os.path.join(model_folder, f"model_{model_number:03d}.pth")
     Logger.info(f"[Inference] Checkpoint path: {model_path}")
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
     # Decide output run dir
-    run_name = args.run_name or os.path.join(args.model_name, f"model_{args.model_number:03d}")
+    # run_name이 없어도 / None이어도 안전하게 처리
+    default_run_name = os.path.join(args.model_name, f"model_{model_number:03d}")
+    run_name = getattr(args, "run_name", None) or default_run_name
+
     run_dir = os.path.join(args.output_dir, run_name)
     Logger.info(f"[Inference] Output run dir: {run_dir}")
-
     try:
         os.makedirs(run_dir, exist_ok=True)
         with open(os.path.join(run_dir, "seed.txt"), "w", encoding="utf-8") as f:
