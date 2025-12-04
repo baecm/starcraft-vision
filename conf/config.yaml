@@ -21,7 +21,7 @@ log_level: log
 do_inference_after_train: true
 
 learning_rate: 0.005
-val_count: 1000
+val_count: 100
 test_eval_every: 0
 do_normalize: false
 normalize_mean: null
@@ -31,7 +31,7 @@ min_sizes: [800]
 max_size: 1333
 rpn_small_anchors: false
 cuda: true
-num_workers: 32
+num_workers: 16
 data_root: /workspace/data
 log_root: /workspace/models
 id_string: ""

@@ -162,9 +162,13 @@ class KBRSConvScorer(nn.Module):
                 A = F.conv2d(xA, k1, stride=self.score_stride)  # (N,1,oh,ow)
                 B = F.conv2d(xB, k1, stride=self.score_stride)  # (N,1,oh,ow)
 
+                # A, B 너무 큰 값/NaN 방지용
+                A = torch.nan_to_num(A, nan=0.0, posinf=0.0, neginf=0.0)
+                B = torch.nan_to_num(B, nan=0.0, posinf=0.0, neginf=0.0)
+
                 eps = 1e-6
                 den = (A + B).clamp_min(eps)
-                p = A / den  # (N,1,oh,ow)
+                p = (A / den).clamp(0.0, 1.0)  # (N,1,oh,ow)
 
                 mode = self.mixture_mode
                 if mode == "entropy":
@@ -249,6 +253,16 @@ class KBRSConvScorer(nn.Module):
         if "mixture" in comp_maps:
             score_map = score_map + self.weights.get("mixture", 0.0) * comp_maps["mixture"]
 
+        # comp_maps / score_map 수치 안정화
+        for k, v in list(comp_maps.items()):
+            v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+            comp_maps[k] = v
+            
+        score_map = torch.nan_to_num(score_map, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # 너무 커지지 않도록 한 번 클램프 (예: [-1e3, 1e3] 정도)
+        score_map = score_map.clamp(-1e3, 1e3)
+        
         return score_map, comp_maps
 
 

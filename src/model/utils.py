@@ -6,7 +6,11 @@ from collections import OrderedDict
 from typing import Dict, List, Tuple
 
 def aux_boost_loss(x, tau=1.0, norm="zscore", margin=None):
-    # ❶ 정규화로 동적 범위 맞추기
+    # NaN/Inf 정리 + 엄청 큰 값 클램프
+    x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    x = x.clamp(-1e3, 1e3)
+    
+    # 정규화로 동적 범위 맞추기
     if norm == "zscore":
         m = x.mean(dim=(-2,-1), keepdim=True)
         s = x.std(dim=(-2,-1), keepdim=True).clamp_min(1e-6)
@@ -17,9 +21,9 @@ def aux_boost_loss(x, tau=1.0, norm="zscore", margin=None):
         x = (x - mn) / (mx - mn + 1e-6)
         x = 2*x - 1  # [-1,1]로 센터링
 
-    # ❷ 포화에 덜 민감한 softplus 형태 (const 차이만 있음)
+    x = x.clamp(-10.0, 10.0)
+    # 포화에 덜 민감한 softplus 형태 (const 차이만 있음)
     if margin is not None:
-        # x가 margin보다 크도록 밀어주는 힌지형 보조
         return torch.relu(margin - x).mean()
     return torch.nn.functional.softplus(-tau * x).mean()
 
