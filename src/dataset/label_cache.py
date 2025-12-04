@@ -5,6 +5,8 @@ import json
 import os
 import pickle
 from multiprocessing import Pool
+from multiprocessing.dummy import Pool as ThreadPool
+
 from typing import Iterable, List
 
 import tqdm
@@ -95,7 +97,16 @@ def ensure_label_pickles(
 
     tasks = [(rid, label_root, label_method) for rid in replay_ids_list]
 
-    with Pool(processes=max(1, num_workers)) as pool:
+    # with Pool(processes=max(1, num_workers)) as pool:
+    #     results = list(
+    #         tqdm.tqdm(
+    #             pool.imap_unordered(_process_json_worker, tasks),
+    #             total=len(tasks),
+    #             desc="Building label pickle cache",
+    #         )
+    #     )
+    
+    with ThreadPool(processes=max(1, num_workers)) as pool:
         results = list(
             tqdm.tqdm(
                 pool.imap_unordered(_process_json_worker, tasks),
