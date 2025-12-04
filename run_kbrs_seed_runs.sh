@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-GPU=0
+GPU=1
 
 # kbrs 3-fold seed runs (3-fold x 3 seed ==> 9 runs)
 NVIDIA_VISIBLE_DEVICES=$GPU make run ARGS="-m \
