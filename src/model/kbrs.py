@@ -294,7 +294,6 @@ class KBRSWrapper(nn.Module):
         self.mixture_between = mixture_between
         self.mask_channel = mask_channel
 
-        # ★ 여기서 한 번만 생성해서 모듈로 붙여둠
         self.scorer = KBRSConvScorer(
             region_size=(self.kh, self.kw),
             weights=self.w,
