@@ -212,11 +212,8 @@ def _summarize_ic_row(
         "ic@000": ic000,
         "ic@030": ic030,
         "ic@050": ic050,
-        "ic_multi": float(agg.get("multi_coverage", 0.0)),
+        "ic_multi": float(agg.get("multi_intersection", 0.0)),
         "ic_ratio": float(agg.get("mean_ir", 0.0)),
-        "mean_density": float(agg.get("mean_density", 0.0)),
-        "mean_centeredness": float(agg.get("mean_centeredness", 0.0)),
-        "mean_mixture": float(agg.get("mean_mixture", 0.0)),
         "median_ir": float(agg.get("median_ir", 0.0)),
         "p90_ir": float(agg.get("p90_ir", 0.0)),
     }
@@ -337,9 +334,6 @@ def run_kernel_eval(
                         "height",
                         "ir",
                         "overlap_count",
-                        "density",
-                        "centeredness",
-                        "mixture",
                     ],
                 )
                 w.writeheader()
@@ -348,10 +342,6 @@ def run_kernel_eval(
 
         # per-batch kernel metrics (optional)
         if batch_size and batch_size > 0 and len(per_image) > 0:
-
-            dens_vals = np.array([x.density for x in per_image], dtype=float)
-            cent_vals = np.array([x.centeredness for x in per_image], dtype=float)
-            mix_vals = np.array([x.mixture for x in per_image], dtype=float)
 
             n = len(per_image)
             bs = int(batch_size)
@@ -365,9 +355,6 @@ def run_kernel_eval(
                         "start_idx": i,
                         "end_idx": j - 1,
                         "batch_size": j - i,
-                        "mean_density": float(np.mean(dens_vals[i:j])),
-                        "mean_centeredness": float(np.mean(cent_vals[i:j])),
-                        "mean_mixture": float(np.mean(mix_vals[i:j])),
                     }
                 )
             batch_csv = os.path.join(out_dir, f"{name}_batch_metrics.csv")
@@ -507,7 +494,7 @@ def evaluate(model, data_loader, device, epoch: int = 0):
         max_y=max_y,
     )
 
-    # 요약 row (ic@000, ic_ratio, mean_density 등)
+    # 요약 row (ic@000, ic_ratio 등)
     row = _summarize_ic_row(
         name=f"val_epoch_{epoch:03d}",
         kernel=(x_len, y_len),

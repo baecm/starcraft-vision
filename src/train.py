@@ -137,14 +137,6 @@ def train_model(
                 if key in agg:
                     log_dict[f"Eval/{key}"] = float(agg[key])
 
-            for src_key, dst_name in [
-                ("mean_density", "Eval/density"),
-                ("mean_centeredness", "Eval/centeredness"),
-                ("mean_mixture", "Eval/mixture"),
-            ]:
-                if src_key in agg:
-                    log_dict[dst_name] = float(agg[src_key])
-
         # ---- Test set 평가 (N epoch마다, 전체 test set) ----
         if (
             data_loader_test is not None
@@ -165,13 +157,6 @@ def train_model(
                 for key in ["ic@000", "ic@030", "ic@050", "ic_multi", "ic_ratio"]:
                     if key in t_agg:
                         log_dict[f"Test/{key}"] = float(t_agg[key])
-                for src_key, dst_name in [
-                    ("mean_density", "Test/density"),
-                    ("mean_centeredness", "Test/centeredness"),
-                    ("mean_mixture", "Test/mixture"),
-                ]:
-                    if src_key in t_agg:
-                        log_dict[dst_name] = float(t_agg[src_key])
 
         if hasattr(model, "consume_epoch_kbrs"):
             scalars, cache = model.consume_epoch_kbrs()

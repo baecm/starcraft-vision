@@ -20,9 +20,6 @@ class ImageIR:
     height: int
     ir: float  # intersection ratio
     overlap_count: int  # GT와 겹치는 예측 개수 or nonzero pixel count in legacy
-    density: float
-    centeredness: float
-    mixture: float
 
 
 # ----------------------------------------------------------------------
@@ -193,41 +190,6 @@ def kernel_scores(
 
 
 # ----------------------------------------------------------------------
-# Legacy evaluator helpers (grid-based, original behavior)
-# ----------------------------------------------------------------------
-
-
-def _make_gaussian_kernel_numpy(kh: int, kw: int, sigma: Optional[float] = None) -> np.ndarray:
-    if sigma is None:
-        sigma = max(kh, kw) / 4.0
-    yy, xx = np.meshgrid(np.arange(kh, dtype=np.float32), np.arange(kw, dtype=np.float32), indexing="ij")
-    cy, cx = (kh - 1) / 2.0, (kw - 1) / 2.0
-    w = np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * (sigma ** 2)))
-    return w
-
-
-def _centeredness_from_tiles(pred_tiles: np.ndarray) -> Tuple[float, float, float]:
-    """
-    Given a (x_len, y_len) integer tile array (counts), compute:
-      - density: fraction of pixels > 0  (legacy 'intersection')
-      - centeredness: gaussian-weighted mean on binary map
-      - mixture: density * centeredness (KBRS-like)
-    """
-    if pred_tiles.size == 0:
-        return 0.0, 0.0, 0.0
-    binary = (pred_tiles > 0).astype(np.float32)
-    density = float(binary.mean())
-
-    h, w = pred_tiles.shape
-    g = _make_gaussian_kernel_numpy(h, w, sigma=h / 4.0)
-    g_sum = g.sum() + 1e-12
-    centered_raw = float((binary * g).sum() / g_sum)
-    centeredness = float(max(0.0, min(1.0, centered_raw)))
-    mixture = density * centeredness
-    return density, centeredness, mixture
-
-
-# ----------------------------------------------------------------------
 # Legacy evaluator: labels-arr 기반 (original legacy behavior)
 # ----------------------------------------------------------------------
 def eval_intersection_run(
@@ -304,7 +266,6 @@ def eval_intersection_run(
             intersection = float(binary.mean())
 
             # KBRS-like centeredness/mixture using gaussian weighting on binary
-            density_kbrs, centeredness_kbrs, mixture_kbrs = _centeredness_from_tiles(pred_tiles)
 
             intersection_multi.append(intersect_multi)
             total_intersection.append(intersection)
@@ -323,16 +284,12 @@ def eval_intersection_run(
                     height=height,
                     ir=intersection,
                     overlap_count=overlap_count,
-                    density=density_kbrs,
-                    centeredness=centeredness_kbrs,
-                    mixture=mixture_kbrs,
                 )
             )
 
             synthetic_img_id += 1
 
         safe_mean = float(np.nanmean(temp_intersect)) if len(temp_intersect) else 0.0
-        # print(f"[Eval] test[{test_idx}] mean_intersection = {safe_mean:.4f}")
 
     total_intersection = [0 if (x != x) else x for x in total_intersection]
 
@@ -342,10 +299,7 @@ def eval_intersection_run(
     p90_ir = float(np.percentile(ir_values, 90)) if ir_values.size > 0 else 0.0
     coverage_any = float(np.mean(ir_values > 0.0)) if ir_values.size > 0 else 0.0
     multi_cov = float(np.mean(np.array([x.overlap_count for x in per_image]) >= 2)) if per_image else 0.0
-
-    dens_vals = np.array([x.density for x in per_image], dtype=float) if per_image else np.array([])
-    cent_vals = np.array([x.centeredness for x in per_image], dtype=float) if per_image else np.array([])
-    mix_vals = np.array([x.mixture for x in per_image], dtype=float) if per_image else np.array([])
+    multi_inter_mean = float(np.mean(intersection_multi)) if len(intersection_multi) > 0 else 0.0
 
     aggregates: Dict[str, float] = {
         "mean_ir": mean_ir,
@@ -353,10 +307,8 @@ def eval_intersection_run(
         "p90_ir": p90_ir,
         "coverage_any": coverage_any,
         "multi_coverage": multi_cov,
+        "multi_intersection": multi_inter_mean,
         "num_images": int(len(per_image)),
-        "mean_density": float(np.mean(dens_vals)) if dens_vals.size > 0 else 0.0,
-        "mean_centeredness": float(np.mean(cent_vals)) if cent_vals.size > 0 else 0.0,
-        "mean_mixture": float(np.mean(mix_vals)) if mix_vals.size > 0 else 0.0,
     }
     return per_image, aggregates
 
