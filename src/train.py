@@ -97,21 +97,31 @@ def train_model(
 ):
     Logger.info("[Stage] Starting training loop...")
     for epoch in tqdm.tqdm(range(num_epochs)):
+        epoch_t0 = time.time()
+
         # ---- train ----
+        t0 = time.time()
         train_stats = train_one_epoch(
             model, optimizer, data_loader_train, device, epoch, print_freq=10
         )
+        t_train = time.time() - t0
+        Logger.info(f"[Time][epoch {epoch}] train_one_epoch: {t_train:.1f}s")
+
         lr_scheduler.step()
 
         # ---- validation (매 epoch) ----
         eval_stats = None
+        t_eval = 0.0
         if data_loader_validation is not None:
+            t1 = time.time()
             eval_stats = evaluate(
                 model,
                 data_loader_validation,
                 device=device,
                 epoch=epoch,
             )
+            t_eval = time.time() - t1
+            Logger.info(f"[Time][epoch {epoch}] evaluate(val): {t_eval:.1f}s")
 
         log_dict = {
             "epoch": epoch,
@@ -123,13 +133,23 @@ def train_model(
             "Loss/rpn_box_reg": train_stats.loss_rpn_box_reg.global_avg,
         }
 
+        # ---- KBRS loss 항목 로그 ----
         if use_kbrs:
             meters = getattr(train_stats, "meters", {})
-            skip = {"loss_classifier","loss_box_reg","loss_mask","loss_objectness","loss_rpn_box_reg","loss"}
+            skip = {
+                "loss_classifier",
+                "loss_box_reg",
+                "loss_mask",
+                "loss_objectness",
+                "loss_rpn_box_reg",
+                "loss",
+            }
             for k, meter in meters.items():
-                if k.startswith("loss_") and k not in skip and hasattr(meter, "global_avg"):
+                if k.startswith("loss_") and k not in skip and hasattr(
+                    meter, "global_avg"
+                ):
                     log_dict[f"Loss/{k[5:]}"] = float(meter.global_avg)
-        
+
         # ---- Validation IC metrics 로깅 ----
         if eval_stats is not None and hasattr(eval_stats, "aggregates"):
             agg = eval_stats.aggregates
@@ -138,65 +158,132 @@ def train_model(
                     log_dict[f"Eval/{key}"] = float(agg[key])
 
         # ---- Test set 평가 (N epoch마다, 전체 test set) ----
+        t_test_eval = 0.0
         if (
             data_loader_test is not None
             and test_eval_every > 0
             and (epoch + 1) % test_eval_every == 0
         ):
             Logger.info(
-                f"[Stage] Test evaluation at epoch {epoch+1} (every {test_eval_every} epochs)"
+                f"[Stage] Test evaluation at epoch {epoch+1} "
+                f"(every {test_eval_every} epochs)"
             )
+            t_te0 = time.time()
             test_stats = evaluate(
                 model,
                 data_loader_test,
                 device=device,
                 epoch=epoch,
             )
+            t_test_eval = time.time() - t_te0
+            Logger.info(f"[Time][epoch {epoch}] evaluate(test): {t_test_eval:.1f}s")
+
             if hasattr(test_stats, "aggregates"):
                 t_agg = test_stats.aggregates
                 for key in ["ic@000", "ic@030", "ic@050", "ic_multi", "ic_ratio"]:
                     if key in t_agg:
                         log_dict[f"Test/{key}"] = float(t_agg[key])
 
+        # ---- KBRS epoch-level 통계 & 이미지 로그 ----
+        t_kbrs = 0.0
+        t_kbrs_img = 0.0
         if hasattr(model, "consume_epoch_kbrs"):
+            tk0 = time.time()
             scalars, cache = model.consume_epoch_kbrs()
+            t_kbrs = time.time() - tk0
+
             if scalars:
                 scalars = {**{k: v for k, v in scalars.items()}, "epoch": epoch}
                 log_dict.update(scalars)
 
             if cache is not None:
+                ti0 = time.time()
+
                 def _minmax01(t, eps=1e-6):
                     t = t.float()
-                    mn = t.amin(dim=(-2,-1), keepdim=True)
-                    mx = t.amax(dim=(-2,-1), keepdim=True)
+                    mn = t.amin(dim=(-2, -1), keepdim=True)
+                    mx = t.amax(dim=(-2, -1), keepdim=True)
                     return (t - mn) / (mx - eps + 1e-12)
-                def _to_rgb(gray01): return gray01.expand(3, -1, -1)
-                def _to_wandb_image(t3hw): return t3hw.permute(1,2,0).clamp(0,1).cpu().numpy()
+
+                def _to_rgb(gray01):
+                    return gray01.expand(3, -1, -1)
+
+                def _to_wandb_image(t3hw):
+                    return t3hw.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
 
                 total = cache["score_total"]
                 comps = cache["comp_maps"]
-                wandb.log({
-                    "epoch": epoch,
-                    "kbrs_epoch/total": wandb.Image(_to_wandb_image(_to_rgb(_minmax01(total))))
-                }, commit=False)
+
+                wandb.log(
+                    {
+                        "epoch": epoch,
+                        "kbrs_epoch/total": wandb.Image(
+                            _to_wandb_image(_to_rgb(_minmax01(total)))
+                        ),
+                    },
+                    commit=False,
+                )
 
                 for name, m in comps.items():
-                    wandb.log({
-                        "epoch": epoch,
-                        f"kbrs_epoch/{name}": wandb.Image(_to_wandb_image(_to_rgb(_minmax01(m))))
-                    }, commit=False)
+                    wandb.log(
+                        {
+                            "epoch": epoch,
+                            f"kbrs_epoch/{name}": wandb.Image(
+                                _to_wandb_image(_to_rgb(_minmax01(m)))
+                            ),
+                        },
+                        commit=False,
+                    )
 
+                t_kbrs_img = time.time() - ti0
+
+        # ---- wandb 스칼라 로그 ----
+        t_wandb = time.time()
         wandb.log(log_dict, commit=True)
+        t_wandb = time.time() - t_wandb
+        Logger.info(f"[Time][epoch {epoch}] wandb.log (scalars): {t_wandb:.3f}s")
 
+        # ---- 체크포인트 저장 ----
+        t_ckpt = 0.0
         if (epoch + 1) % 5 == 0 or (epoch + 1) == num_epochs:
+            tc0 = time.time()
             save_path = os.path.join(save_dir, f"model_{epoch+1:03d}.pth")
             torch.save(model.state_dict(), save_path)
-            Logger.info(f"[Info] Saved model checkpoint: {save_path}")
+            t_ckpt = time.time() - tc0
+            Logger.info(
+                f"[Info] Saved model checkpoint: {save_path} "
+                f"(time: {t_ckpt:.2f}s)"
+            )
 
+        # ---- 슬랙/시놀로지 알림 ----
+        t_msg = time.time()
         try:
             send_message(f"Epoch {epoch+1} completed.")
         except Exception as e:
             Logger.error(f"Failed to send message: {e}")
+        t_msg = time.time() - t_msg
+
+        # ---- epoch 전체 시간 요약 ----
+        epoch_time = time.time() - epoch_t0
+        Logger.info(
+            "[Time][epoch {e}] summary: "
+            "train={tr:.1f}s, val={ev:.1f}s, test={te:.1f}s, "
+            "kbrs_scalar={kb:.3f}s, kbrs_img={kbi:.3f}s, "
+            "wandb={wb:.3f}s, ckpt={ck:.2f}s, msg={msg:.2f}s, "
+            "total={tot:.1f}s".format(
+                e=epoch,
+                tr=t_train,
+                ev=t_eval,
+                te=t_test_eval,
+                kb=t_kbrs,
+                kbi=t_kbrs_img,
+                wb=t_wandb,
+                ck=t_ckpt,
+                msg=t_msg,
+                tot=epoch_time,
+            )
+        )
+
             
             
 def _unwrap_subset(ds):

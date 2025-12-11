@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-GPU=0
+GPU=3
 
 # mixture ablation (8 runs)
 NVIDIA_VISIBLE_DEVICES=$GPU make run ARGS="-m \
@@ -9,5 +9,5 @@ NVIDIA_VISIBLE_DEVICES=$GPU make run ARGS="-m \
   model=kbrs \
   seed=123 \
   kbrs_loss=kbrs025 \
-  kbrs_score=mixture100,mixture150,mixture200,mixture250,mixture350,mixture400,mixture450,mixture500 \
+  kbrs_score=mixture250,mixture350,mixture200,mixture400,mixture100,mixture450,mixture150,mixture500 \
   "
