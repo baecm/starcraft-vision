@@ -37,6 +37,10 @@ evaluate)
   log "Evaluating model..."
   exec python src/evaluate.py "$@"
   ;;
+estimate)
+  log "Estimating labels..."
+  exec python src/estimate.py "$@"
+  ;;
 run)
   log "Runninng train/inference squentially..."
   exec python src/pipeline.py "$@"

@@ -1,106 +1,166 @@
+# src/kbrs_from_input.py
 from __future__ import annotations
 
 import os
 import argparse
-from typing import List, Dict, Tuple, Optional
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+import torch
 from pycocotools.coco import COCO
-from multiprocessing import Pool, cpu_count
+
+import config
+from config import KBRS_PARAMS
+from model.utils import normalize_projections
+from model.kbrs import KBRSConvScorer
+
+from utils.logger import Logger
 
 
-# ---------------------------------------------------------------------
-# KBRS 유틸: 가우시안 커널 / 패치 스코어 / 슬라이딩 윈도우
-# ---------------------------------------------------------------------
-def make_gaussian_kernel(h: int, w: int, sigma: Optional[float] = None) -> np.ndarray:
-    if sigma is None:
-        sigma = h / 4.0
-    cy = (h - 1) / 2.0
-    cx = (w - 1) / 2.0
-    ys = np.arange(h, dtype=np.float32)[:, None]
-    xs = np.arange(w, dtype=np.float32)[None, :]
-    dist2 = (ys - cy) ** 2 + (xs - cx) ** 2
-    g = np.exp(-dist2 / (2.0 * sigma * sigma))
-    return g.astype(np.float32)
-
-
-def kbrs_scores_from_patch(
-    patch: np.ndarray,
-    threshold: float = 0.0,
-) -> Tuple[float, float, float]:
+# ----------------------------------------------------------------------
+# COCO / feature 경로 관련 유틸
+# ----------------------------------------------------------------------
+def build_feature_path_from_image(
+    input_root: str,
+    replay_id: str,
+    img: dict,
+    *,
+    use_file_name: bool = True,
+    feature_ext: str = ".npy",
+) -> str:
     """
-    patch: (C,H,W) 또는 (H,W)
+    COCO image 엔트리 하나(img)로부터 feature .npy 경로를 구성.
 
-    - density: binary map (patch2d > threshold)의 평균
-    - centeredness: binary map에 2D gaussian weight를 곱한 weighted mean
-    - mixture: density * centeredness
+    기본 가정:
+      - feature 디렉터리: {input_root}/{replay_id}.rep/
+      - 파일명 매핑:
+          use_file_name=True  → file_name에서 확장자만 교체
+          use_file_name=False → image id를 문자열로 써서 {id}.npy
     """
-    if patch.ndim == 3:
-        patch2d = patch.max(axis=0)  # 채널 max projection
-    elif patch.ndim == 2:
-        patch2d = patch
+    rep_dir = os.path.join(input_root, f"{replay_id}.rep")
+
+    if use_file_name:
+        file_name: str = img["file_name"]
+        base, _ext = os.path.splitext(file_name)
+        fname = base + feature_ext
     else:
-        raise ValueError(f"Unsupported patch shape: {patch.shape}")
+        img_id = img["id"]
+        fname = f"{img_id}{feature_ext}"
 
-    if patch2d.size == 0:
-        return 0.0, 0.0, 0.0
-
-    binary = (patch2d > threshold).astype(np.float32)
-    density = float(binary.mean())
-
-    h, w = binary.shape
-    g = make_gaussian_kernel(h, w, sigma=h / 4.0)
-    g_sum = float(g.sum()) + 1e-12
-
-    centered_raw = float((binary * g).sum() / g_sum)
-    centeredness = float(max(0.0, min(1.0, centered_raw)))
-    mixture = density * centeredness
-    return density, centeredness, mixture
+    return os.path.join(rep_dir, fname)
 
 
-def extract_window(
+def iter_frames_from_coco(
+    label_root: str,
+    replay_id: str,
+    *,
+    label_method: str,
+) -> List[dict]:
+    """
+    {label_root}/{replay_id}.rep/{label_method}.json 에서 COCO 객체를 읽고,
+    images 리스트를 그대로 반환.
+    """
+    gt_dir = os.path.join(label_root, f"{replay_id}.rep")
+    gt_path = os.path.join(gt_dir, f"{label_method}.json")
+
+    if not os.path.isfile(gt_path):
+        raise FileNotFoundError(f"Ground truth (COCO) file not found: {gt_path}")
+
+    coco = COCO(gt_path)
+    images = list(coco.dataset.get("images", []))
+    return images
+
+
+# ----------------------------------------------------------------------
+# KBRS map 계산: torch backend (모델과 동일 정의)
+# ----------------------------------------------------------------------
+def compute_kbrs_map_torch(
+    x: np.ndarray,
+    *,
+    device: torch.device,
+    kbrs_params: Dict[str, Any] | None = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    KBRSConvScorer 를 그대로 사용해서 density / centeredness / mixture 맵을 계산.
+
+    feat: (C,H,W) numpy array 또는 torch.Tensor
+    """
+    # 1) numpy → torch 변환 + 배치 차원 추가
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
+    elif isinstance(x, torch.Tensor):
+        x = x
+    else:
+        raise TypeError(f"Unsupported feat type: {type(x)}")
+
+    # (C,H,W) → (1,C,H,W), 이미 4D면 그대로 사용
+    if x.ndim == 3:
+        x = x.unsqueeze(0)
+    elif x.ndim == 4:
+        pass
+    else:
+        raise ValueError(f"Expected 3D or 4D feat, got shape {tuple(x.shape)}")
+
+    x = x.to(device=device, dtype=torch.float32)
+
+    # 2) KBRS 설정 (config.KBRS_PARAMS 기반)
+    if kbrs_params is None:
+        kbrs_params = getattr(config, "KBRS_PARAMS", {})
+
+    region_size = tuple(kbrs_params.get("region_size", (20, 12)))
+    weights = kbrs_params.get(
+        "score_weights",
+        kbrs_params.get(
+            "weights", {"density": 1.0, "mixture": 1.0, "centeredness": 1.0}
+        ),
+    )
+    projections = kbrs_params.get("projections", None)
+    mixture_tau = kbrs_params.get("mixture_tau", 2.0)
+    mixture_mode = kbrs_params.get("mixture_mode", "confusion")
+    mixture_power = kbrs_params.get("mixture_power", 1.0)
+    mask_channel = kbrs_params.get("mask_channel", None)
+    mask_gain = kbrs_params.get("mask_gain", 1.0)
+    score_stride = kbrs_params.get("score_stride", 1)
+    downsample_before = kbrs_params.get("downsample_before", None)
+
+    # 필요하다면 여기서 normalize_projections(...) 호출해서 projections 정규화해도 됨
+    scorer = KBRSConvScorer(
+        region_size=region_size,
+        weights=weights,
+        projections=projections,
+        mixture_tau=mixture_tau,
+        mixture_mode=mixture_mode,
+        mixture_power=mixture_power,
+        mask_channel=mask_channel,
+        mask_gain=mask_gain,
+        score_stride=score_stride,
+        downsample_before=downsample_before,
+    ).to(device=device, dtype=torch.float32)
+
+    scorer.eval()
+    with torch.no_grad():
+        score_map, comp_maps = scorer(x)
+
+    def _get(name: str) -> np.ndarray:
+        if name in comp_maps:
+            return comp_maps[name].squeeze(0).detach().cpu().numpy()
+        # 해당 컴포넌트가 없으면 score_map 모양에 맞는 0으로 채움
+        return np.zeros_like(score_map.squeeze(0).detach().cpu().numpy())
+
+    density_map = _get("density")
+    centeredness_map = _get("centeredness")
+    mixture_map = _get("mixture")
+
+    return density_map, centeredness_map, mixture_map
+
+
+# ----------------------------------------------------------------------
+# KBRS map 계산: numpy backend (근사 버전)
+# ----------------------------------------------------------------------
+def compute_kbrs_map_numpy(
     feat: np.ndarray,
-    center_x: float,
-    center_y: float,
-    win_w: int,
-    win_h: int,
-) -> np.ndarray:
-    """
-    feature 맵(feat)에서 (center_x, center_y)를 중심으로 win_w x win_h 패치 잘라오기.
-    feat: (C,H,W) 또는 (H,W)
-    """
-    if feat.ndim == 3:
-        C, H, W = feat.shape
-    elif feat.ndim == 2:
-        H, W = feat.shape
-    else:
-        raise ValueError(f"Unsupported feature shape: {feat.shape}")
-
-    half_w = win_w // 2
-    half_h = win_h // 2
-    x0 = int(round(center_x)) - half_w
-    y0 = int(round(center_y)) - half_h
-    x0 = max(0, x0)
-    y0 = max(0, y0)
-    x1 = min(W, x0 + win_w)
-    y1 = min(H, y0 + win_h)
-
-    if x1 <= x0 or y1 <= y0:
-        # 빈 패치 리턴
-        if feat.ndim == 3:
-            return feat[:, 0:0, 0:0]
-        else:
-            return feat[0:0, 0:0]
-
-    if feat.ndim == 3:
-        return feat[:, y0:y1, x0:x1]
-    else:
-        return feat[y0:y1, x0:x1]
-
-
-def compute_kbrs_grid(
-    feat: np.ndarray,
+    *,
     win_w: int,
     win_h: int,
     stride_x: int = 1,
@@ -108,252 +168,72 @@ def compute_kbrs_grid(
     threshold: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    전체 feature 맵 위를 슬라이딩 윈도우로 훑으면서 KBRS map 3개(density/centered/mixture)를 만든다.
-    (mode=feature 에서 사용)
+    순수 numpy 로 근사 KBRS-like density/centeredness/mixture 맵을 계산.
+    replay 단위 트렌드용.
     """
     if feat.ndim == 3:
         C, H, W = feat.shape
+        summed = feat.sum(axis=0)  # (H,W)
     elif feat.ndim == 2:
         H, W = feat.shape
+        summed = feat
     else:
-        raise ValueError(f"Unsupported feature shape: {feat.shape}")
+        raise ValueError(f"Unexpected feature shape: {feat.shape}")
 
-    out_h = max(0, (H - win_h) // stride_y + 1)
-    out_w = max(0, (W - win_w) // stride_x + 1)
+    binary = (summed > threshold).astype(np.float32)
+
+    out_h = 1 + (H - win_h) // stride_y if H >= win_h else 0
+    out_w = 1 + (W - win_w) // stride_x if W >= win_w else 0
 
     density_map = np.zeros((out_h, out_w), dtype=np.float32)
-    centeredness_map = np.zeros((out_h, out_w), dtype=np.float32)
-    mixture_map = np.zeros((out_h, out_w), dtype=np.float32)
+    centeredness_map = np.zeros_like(density_map)
+    mixture_map = np.zeros_like(density_map)
 
     for oy in range(out_h):
         for ox in range(out_w):
-            cx = ox * stride_x + win_w / 2.0
-            cy = oy * stride_y + win_h / 2.0
-            patch = extract_window(feat, cx, cy, win_w, win_h)
-            d, c, m = kbrs_scores_from_patch(patch, threshold=threshold)
-            density_map[oy, ox] = d
-            centeredness_map[oy, ox] = c
-            mixture_map[oy, ox] = m
+            y0 = oy * stride_y
+            x0 = ox * stride_x
+            y1 = y0 + win_h
+            x1 = x0 + win_w
+
+            patch = binary[y0:y1, x0:x1]
+            area = float(win_w * win_h)
+            mass = patch.sum()
+
+            if area <= 0:
+                continue
+
+            density = float(mass / area)
+
+            if mass <= 0:
+                centered = 0.0
+            else:
+                ys, xs = np.nonzero(patch)
+                tcx = xs.mean()
+                tcy = ys.mean()
+                cx = (win_w - 1) / 2.0
+                cy = (win_h - 1) / 2.0
+                dist = float(np.hypot(tcx - cx, tcy - cy))
+                half_diag = float(np.hypot(win_w, win_h) / 2.0)
+                centered = max(0.0, 1.0 - dist / (half_diag + 1e-12))
+
+            mixture = density * centered
+
+            density_map[oy, ox] = density
+            centeredness_map[oy, ox] = centered
+            mixture_map[oy, ox] = mixture
 
     return density_map, centeredness_map, mixture_map
 
 
-# ---------------------------------------------------------------------
-# COCO / 경로 유틸
-# ---------------------------------------------------------------------
-def centroid_from_coco_ann(ann: dict, img_w: int, img_h: int) -> Tuple[float, float]:
-    """
-    COCO annotation(예측/GT 둘 다)에 대해 bbox 중심을 픽셀 좌표로 반환.
-    segmentation 이 있어도 여기서는 bbox만 사용.
-    """
-    if "bbox" in ann and ann["bbox"] is not None:
-        x, y, w, h = ann["bbox"]
-        return float(x + w / 2.0), float(y + h / 2.0)
-    # fallback: 이미지 중앙
-    return float(img_w) / 2.0, float(img_h) / 2.0
-
-
-def build_feature_path_from_meta(
-    input_root: str,
-    replay_id: str,
-    file_name: str,
-    img_id: int,
-    use_file_name: bool,
-    feature_ext: str,
-) -> str:
-    """
-    feature 경로:
-      {input_root}/{replay_id}.rep/{file_name or id}.npy
-    """
-    rep_dir = os.path.join(input_root, f"{replay_id}.rep")
-
-    if use_file_name and file_name:
-        base, _ext = os.path.splitext(file_name)
-        fname = base + feature_ext
-    else:
-        fname = f"{img_id}{feature_ext}"
-
-    return os.path.join(rep_dir, fname)
-
-
-def load_coco_gt(label_root: str, replay_id: str, label_method: str) -> COCO:
-    """
-    GT COCO 경로:
-      {label_root}/{replay_id}.rep/{label_method}.json
-    예: /workspace/data/label/dst/275.rep/all_correct.json
-    """
-    gt_dir = os.path.join(label_root, f"{replay_id}.rep")
-    gt_path = os.path.join(gt_dir, f"{label_method}.json")
-    if not os.path.isfile(gt_path):
-        raise FileNotFoundError(f"Ground truth (COCO) file not found: {gt_path}")
-    coco = COCO(gt_path)
-    return coco
-
-
-def load_coco_preds(
-    pred_root: str,
-    model_name: str,
-    epoch: int,
-    replay_id: str,
-    label_method: str,
-) -> Dict[int, List[dict]]:
-    """
-    모델 prediction COCO 경로:
-      {pred_root}/{model_name}/model_{epoch}/{replay_id}.rep/{label_method}.json
-    """
-    pred_dir = os.path.join(
-        pred_root,
-        model_name,
-        f"model_{epoch}",
-        f"{replay_id}.rep",
-    )
-    pred_path = os.path.join(pred_dir, f"{label_method}.json")
-    if not os.path.isfile(pred_path):
-        raise FileNotFoundError(f"Prediction file not found: {pred_path}")
-
-    import json
-
-    with open(pred_path, "r", encoding="utf-8") as f:
-        loaded = json.load(f)
-
-    # COCO detection list 로 가정
-    if isinstance(loaded, dict) and "annotations" in loaded:
-        dets = loaded["annotations"]
-    elif isinstance(loaded, list):
-        dets = loaded
-    else:
-        raise ValueError("Unsupported prediction JSON format for COCO dets.")
-
-    preds_by_img: Dict[int, List[dict]] = {}
-    for det in dets:
-        img_id = int(det["image_id"])
-        preds_by_img.setdefault(img_id, []).append(det)
-    return preds_by_img
-
-
-# ---------------------------------------------------------------------
-# 멀티프로세싱 워커
-# ---------------------------------------------------------------------
-def _process_image_worker(args: Tuple) -> Optional[Dict]:
-    (
-        mode,
-        replay_id,
-        img_id,
-        file_name,
-        img_w,
-        img_h,
-        input_root,
-        feature_ext,
-        use_file_name,
-        win_w,
-        win_h,
-        stride_x,
-        stride_y,
-        threshold,
-        positions,  # None (feature) or List[(cx,cy)] for gt/model
-        source_tag,  # "feature", "gt", "model:xxx"
-    ) = args
-
-    feat_path = build_feature_path_from_meta(
-        input_root=input_root,
-        replay_id=replay_id,
-        file_name=file_name,
-        img_id=img_id,
-        use_file_name=use_file_name,
-        feature_ext=feature_ext,
-    )
-
-    if not os.path.isfile(feat_path):
-        print(
-            f"[Warn][replay={replay_id}] feature not found for "
-            f"image_id={img_id}, file_name='{file_name}': {feat_path}"
-        )
-        return None
-
-    try:
-        feat = np.load(feat_path)
-    except Exception as e:
-        print(
-            f"[Error][replay={replay_id}] failed to load feature "
-            f"for image_id={img_id}, path={feat_path}: {e}"
-        )
-        return None
-
-    # -------------------
-    # mode=feature
-    # -------------------
-    if mode == "feature":
-        density_map, centeredness_map, mixture_map = compute_kbrs_grid(
-            feat,
-            win_w=win_w,
-            win_h=win_h,
-            stride_x=stride_x,
-            stride_y=stride_y,
-            threshold=threshold,
-        )
-        row = {
-            "replay_id": replay_id,
-            "image_id": img_id,
-            "file_name": file_name,
-            "source": source_tag,
-            "num_points": 0,
-            "mean_density": float(density_map.mean()),
-            "max_density": float(density_map.max()),
-            "mean_centeredness": float(centeredness_map.mean()),
-            "max_centeredness": float(centeredness_map.max()),
-            "mean_mixture": float(mixture_map.mean()),
-            "max_mixture": float(mixture_map.max()),
-        }
-        return row
-
-    # -------------------
-    # mode=gt / mode=model
-    # -------------------
-    if not positions:
-        return None
-
-    ds, cs, ms = [], [], []
-    for cx, cy in positions:
-        patch = extract_window(feat, cx, cy, win_w, win_h)
-        d, c, m = kbrs_scores_from_patch(patch, threshold=threshold)
-        ds.append(d)
-        cs.append(c)
-        ms.append(m)
-
-    if not ds:
-        return None
-
-    ds_arr = np.array(ds, dtype=np.float32)
-    cs_arr = np.array(cs, dtype=np.float32)
-    ms_arr = np.array(ms, dtype=np.float32)
-
-    row = {
-        "replay_id": replay_id,
-        "image_id": img_id,
-        "file_name": file_name,
-        "source": source_tag,
-        "num_points": int(len(ds)),
-        "mean_density": float(ds_arr.mean()),
-        "max_density": float(ds_arr.max()),
-        "mean_centeredness": float(cs_arr.mean()),
-        "max_centeredness": float(cs_arr.max()),
-        "mean_mixture": float(ms_arr.mean()),
-        "max_mixture": float(ms_arr.max()),
-    }
-    return row
-
-
-# ---------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# Argparse
+# ----------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Compute KBRS-like density/centeredness/mixture scores over input feature maps.\n"
-            "Modes:\n"
-            "  feature: 슬라이딩 윈도우로 전체 feature 스캔\n"
-            "  gt     : GT object 중심 윈도우에서 KBRS 측정\n"
-            "  model  : model prediction bbox 중심 윈도우에서 KBRS 측정\n"
+            "Compute KBRS-like density/centeredness/mixture scores over replays, "
+            "aggregated per replay_id."
         )
     )
     p.add_argument(
@@ -361,67 +241,44 @@ def parse_args() -> argparse.Namespace:
         type=str,
         nargs="+",
         required=True,
-        help="리플레이 ID 목록 (예: 275 3613 4664)",
+        help="리플레이 ID 목록 (예: 275 3613 4520)",
     )
     p.add_argument(
         "--input-root",
         default="/workspace/data/input/dst",
-        help="입력 feature .npy 들이 있는 루트 디렉터리 (예: /workspace/data/input/dst)",
+        help="입력 feature .npy 들이 있는 루트 디렉터리",
     )
     p.add_argument(
         "--label-root",
         default="/workspace/data/label/dst",
-        help="COCO ground_truth 가 있는 루트 디렉터리 (예: /workspace/data/label/dst)",
+        help="COCO ground_truth 가 있는 루트 디렉터리",
     )
     p.add_argument(
         "--label-method",
         default="all_correct",
-        help="라벨링 방법 이름 (파일명으로 사용됨, 예: all_correct → all_correct.json)",
-    )
-    p.add_argument(
-        "--mode",
-        choices=["feature", "gt", "model"],
-        default="feature",
-        help="KBRS 계산 모드: feature(전체 슬라이딩), gt(GT object 중심), model(prediction 중심)",
-    )
-    p.add_argument(
-        "--pred-root",
-        default="/workspace/predictions",
-        help="모델 prediction JSON 상위 디렉터리 (예: /workspace/predictions)",
-    )
-    p.add_argument(
-        "--model-name",
-        type=str,
-        default=None,
-        help="mode=model 일 때 사용할 모델 이름",
-    )
-    p.add_argument(
-        "--epoch",
-        type=int,
-        default=None,
-        help="mode=model 일 때 사용할 epoch 번호 (예: 30 → model_30)",
+        help="사용할 COCO GT 파일 이름 (예: all_correct → {replay_id}.rep/all_correct.json)",
     )
     p.add_argument(
         "--window",
         default="20,12",
-        help="커널 크기 (w,h). 예: '20,12'",
+        help="(numpy backend용) 커널 크기 (w,h). 예: '20,12'",
     )
     p.add_argument(
         "--stride",
         default="1,1",
-        help="슬라이딩 stride (sx,sy). 예: '4,4' (mode=feature 에서만 사용)",
+        help="(numpy backend용) stride (sx,sy). 예: '1,1'",
     )
     p.add_argument(
         "--threshold",
         type=float,
         default=0.0,
-        help="binary map을 만들 때 사용할 threshold (default: 0.0)",
+        help="numpy backend에서 binary map threshold (default: 0.0)",
     )
     p.add_argument(
         "--max-frames",
         type=int,
         default=0,
-        help="0보다 크면 images 리스트 중 앞에서 이 개수만 사용.",
+        help="0보다 크면 각 replay에서 images 리스트 중 앞에서 이 개수만 사용.",
     )
     p.add_argument(
         "--use-file-name",
@@ -435,190 +292,193 @@ def parse_args() -> argparse.Namespace:
         help="feature 파일 확장자 (기본 .npy).",
     )
     p.add_argument(
+        "--model-name",
+        default=None,
+        help="이 run 을 구분할 model/tag 이름. csv 기본 파일명에 사용.",
+    )
+    p.add_argument(
+        "--backend",
+        choices=["torch", "numpy"],
+        default="torch",
+        help="KBRS 계산 backend: 'torch'(KBRSConvScorer) / 'numpy'(근사).",
+    )
+    p.add_argument(
+        "--device",
+        choices=["auto", "cuda", "cpu"],
+        default="auto",
+        help="torch backend에서 device 선택. auto=CUDA 있으면 cuda, 아니면 cpu.",
+    )
+    p.add_argument(
         "--csv-out",
         default=None,
         help=(
-            "CSV 출력 경로.\n"
-            "  - 디렉터리 경로면: replay별로 kbrs_{mode}_{replay}.csv 저장\n"
-            "  - 파일 경로면: 모든 replay 결과를 합쳐 한 파일에 저장"
+            "결과를 저장할 CSV 경로. "
+            "지정하지 않으면 /workspace/results/{model_name or kbrs_{backend}}.csv"
         ),
     )
-    p.add_argument(
-        "--num-workers",
-        type=int,
-        default=0,
-        help="멀티프로세싱 worker 수 (0이면 cpu_count(), 1이면 단일 프로세스)",
-    )
+
     return p.parse_args()
 
 
-# ---------------------------------------------------------------------
-# 메인 로직
-# ---------------------------------------------------------------------
-def main():
+# ----------------------------------------------------------------------
+# 메인 로직 (replay_id 단위 집계)
+# ----------------------------------------------------------------------
+def main() -> None:
     args = parse_args()
 
     win_w, win_h = map(int, args.window.split(","))
     stride_x, stride_y = map(int, args.stride.split(","))
 
-    if args.mode == "model":
-        if not args.model_name or args.epoch is None:
-            raise ValueError(
-                "mode=model 인 경우 --model-name 과 --epoch 를 지정해야 합니다."
-            )
+    # backend/device 설정
+    if args.backend == "torch":
+        if args.device == "auto":
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        elif args.device == "cuda":
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
+        Logger.info(f"[KBRS] Using torch backend on device={device}")
+    else:
+        device = torch.device("cpu")
+        Logger.info("[KBRS] Using numpy backend (CPU only)")
 
-    all_rows: List[Dict] = []
+    # csv 기본 경로 설정 (모델당 CSV 하나)
+    if not args.csv_out:
+        base_root = "/workspace/results"
+        os.makedirs(base_root, exist_ok=True)
 
+        if args.model_name:
+            csv_name = f"{args.model_name}.csv"
+        else:
+            csv_name = f"kbrs_{args.backend}.csv"
+
+        args.csv_out = os.path.join(base_root, csv_name)
+
+    Logger.info(f"[KBRS] Output CSV (per replay row): {args.csv_out}")
+
+    all_rows: List[Dict[str, Any]] = []
+
+    # 리플레이 루프
     for replay_id in args.replays:
-        replay_id = str(replay_id)
-        print(f"\n[Replay] {replay_id}")
+        replay_id_str = str(replay_id)
+        Logger.info(f"[Replay] replay_id={replay_id_str}")
 
-        # GT COCO 로드 (images 리스트 및 img size 얻기용)
-        coco_gt = load_coco_gt(
-            label_root=args.label_root,
-            replay_id=replay_id,
-            label_method=args.label_method,
-        )
-        images = list(coco_gt.dataset.get("images", []))
+        try:
+            images = iter_frames_from_coco(
+                label_root=args.label_root,
+                replay_id=replay_id_str,
+                label_method=args.label_method,
+            )
+        except FileNotFoundError as e:
+            Logger.error(str(e))
+            continue
+
         if args.max_frames > 0:
             images = images[: args.max_frames]
 
-        print(f"[Info] replay_id={replay_id}, num_images={len(images)}")
+        Logger.info(f"[Replay {replay_id_str}] num_images={len(images)}")
 
-        preds_by_img: Optional[Dict[int, List[dict]]] = None
-        model_tag: Optional[str] = None
-        if args.mode == "model":
-            preds_by_img = load_coco_preds(
-                pred_root=args.pred_root,
-                model_name=args.model_name,
-                epoch=args.epoch,
-                replay_id=replay_id,
-                label_method=args.label_method,
-            )
-            model_tag = f"{args.model_name}_e{args.epoch}"
+        # 이 replay 안에서 per-image mean 들을 모아서, 끝에서 replay 단위 평균
+        image_means_density: List[float] = []
+        image_means_centered: List[float] = []
+        image_means_mixture: List[float] = []
 
-        # ---- per-image task 리스트 구성 ----
-        tasks: List[Tuple] = []
-
-        for img in images:
-            img_id = int(img["id"])
+        for idx, img in enumerate(images):
+            img_id = img["id"]
             file_name = img.get("file_name", "")
-            img_w = int(img.get("width", 0))
-            img_h = int(img.get("height", 0))
+ 
+            feat_path = build_feature_path_from_image(
+                input_root=args.input_root,
+                replay_id=replay_id_str,
+                img=img,
+                use_file_name=args.use_file_name,
+                feature_ext=args.feature_ext,
+            )
 
-            # mode 별로 positions 준비
-            if args.mode == "feature":
-                positions = None
-                source_tag = "feature"
-
-            elif args.mode == "gt":
-                ann_ids = coco_gt.getAnnIds(imgIds=[img_id])
-                anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
-                if not anns:
-                    continue
-                positions = [centroid_from_coco_ann(ann, img_w, img_h) for ann in anns]
-                if not positions:
-                    continue
-                source_tag = "gt"
-
-            else:  # mode == "model"
-                assert preds_by_img is not None
-                img_preds = preds_by_img.get(img_id, [])
-                if not img_preds:
-                    continue
-                positions = [
-                    centroid_from_coco_ann(det, img_w, img_h)
-                    for det in img_preds
-                    if "bbox" in det and det["bbox"] is not None
-                ]
-                if not positions:
-                    continue
-                source_tag = f"model:{model_tag}"
-
-            tasks.append(
-                (
-                    args.mode,
-                    replay_id,
-                    img_id,
-                    file_name,
-                    img_w,
-                    img_h,
-                    args.input_root,
-                    args.feature_ext,
-                    args.use_file_name,
-                    win_w,
-                    win_h,
-                    stride_x,
-                    stride_y,
-                    args.threshold,
-                    positions,
-                    source_tag,
+            if not os.path.isfile(feat_path):
+                Logger.warning(
+                    f"[Warn] feature not found for replay={replay_id_str}, "
+                    f"image_id={img_id}, file_name='{file_name}': {feat_path}"
                 )
-            )
+                continue
 
-        if not tasks:
-            print(f"[Info] No tasks for replay={replay_id}.")
+            feat = np.load(feat_path)  # (C,H,W) 또는 (H,W)
+
+            if args.backend == "torch":
+                density_map, centeredness_map, mixture_map = compute_kbrs_map_torch(
+                    feat,
+                    device=device,
+                    kbrs_params=getattr(config, "KBRS_PARAMS", None),
+                )
+            else:
+                density_map, centeredness_map, mixture_map = compute_kbrs_map_numpy(
+                    feat,
+                    win_w=win_w,
+                    win_h=win_h,
+                    stride_x=stride_x,
+                    stride_y=stride_y,
+                    threshold=args.threshold,
+                )
+
+            image_means_density.append(float(density_map.mean()))
+            image_means_centered.append(float(centeredness_map.mean()))
+            image_means_mixture.append(float(mixture_map.mean()))
+
+            if idx % 200 == 0:
+                Logger.info(
+                    f"[Replay {replay_id_str} Image {idx}/{len(images)} id={img_id}] "
+                    f"mean_density={image_means_density[-1]:.4f}, "
+                    f"mean_centered={image_means_centered[-1]:.4f}, "
+                    f"mean_mixture={image_means_mixture[-1]:.4f}"
+                )
+
+        if not image_means_density:
+            Logger.info(
+                f"[Replay {replay_id_str}] No images with features processed, skipping."
+            )
             continue
 
-        rows: List[Dict] = []
+        # replay 단위 평균 (image mean 들의 평균)
+        mean_density_replay = float(np.mean(image_means_density))
+        mean_centered_replay = float(np.mean(image_means_centered))
+        mean_mixture_replay = float(np.mean(image_means_mixture))
 
-        # ---- 멀티프로세싱 실행 ----
-        if args.num_workers == 1:
-            # 단일 프로세스 (디버깅용)
-            for idx, t in enumerate(tasks, 1):
-                row = _process_image_worker(t)
-                if row is not None:
-                    rows.append(row)
-                if idx % 200 == 0:
-                    print(
-                        f"[Replay {replay_id}] processed {idx}/{len(tasks)} images (mode={args.mode})"
-                    )
-        else:
-            n_workers = args.num_workers or cpu_count()
-            print(
-                f"[Info] Using {n_workers} worker processes for replay={replay_id} (tasks={len(tasks)})"
-            )
-            with Pool(processes=n_workers) as pool:
-                for idx, row in enumerate(
-                    pool.imap_unordered(_process_image_worker, tasks), 1
-                ):
-                    if row is not None:
-                        rows.append(row)
-                    if idx % 200 == 0:
-                        print(
-                            f"[Replay {replay_id}] processed {idx}/{len(tasks)} images (mode={args.mode})"
-                        )
+        row = {
+            "replay_id": replay_id_str,
+            "backend": args.backend,
+            "model_name": args.model_name,
+            "num_images": len(image_means_density),
+            "mean_density": mean_density_replay,
+            "mean_centeredness": mean_centered_replay,
+            "mean_mixture": mean_mixture_replay,
+        }
+        all_rows.append(row)
 
-        if not rows:
-            print(f"[Info] No images processed for replay={replay_id}.")
-            continue
+        Logger.info(
+            f"[Replay {replay_id_str} summary] "
+            f"num_images={row['num_images']}, "
+            f"mean_density={mean_density_replay:.4f}, "
+            f"mean_centeredness={mean_centered_replay:.4f}, "
+            f"mean_mixture={mean_mixture_replay:.4f}"
+        )
 
-        df = pd.DataFrame(rows).sort_values("image_id")
-        print("\n[Summary over images]")
-        print(f"  images processed : {len(df)}")
-        print(f"  mean(mean_density)      = {df['mean_density'].mean():.4f}")
-        print(f"  mean(mean_centeredness) = {df['mean_centeredness'].mean():.4f}")
-        print(f"  mean(mean_mixture)      = {df['mean_mixture'].mean():.4f}")
+    if not all_rows:
+        Logger.info("[KBRS] No replay had valid images; not writing CSV.")
+        return
 
-        all_rows.extend(rows)
+    df = pd.DataFrame(all_rows).sort_values("replay_id")
 
-        # csv-out 이 디렉터리면 replay별 파일로 저장
-        if args.csv_out and os.path.isdir(args.csv_out):
-            out_path = os.path.join(args.csv_out, f"kbrs_{args.mode}_{replay_id}.csv")
-            df.to_csv(out_path, index=False)
-            print(f"[Info] saved per-image KBRS summary to: {out_path}")
+    out_dir = os.path.dirname(args.csv_out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
-    # csv-out 이 "파일 경로"면 전체 replay 합쳐서 저장
-    if args.csv_out and not os.path.isdir(args.csv_out):
-        if not all_rows:
-            print("[Info] No data to write CSV.")
-        else:
-            out_dir = os.path.dirname(args.csv_out)
-            if out_dir:
-                os.makedirs(out_dir, exist_ok=True)
-            df_all = pd.DataFrame(all_rows).sort_values(["replay_id", "image_id"])
-            df_all.to_csv(args.csv_out, index=False)
-            print(f"[Info] saved combined KBRS summary to: {args.csv_out}")
+    df.to_csv(args.csv_out, index=False)
+    Logger.info(f"[KBRS] Saved replay-level KBRS summary to: {args.csv_out}")
+    Logger.info(
+        f"[KBRS] Global mean(mean_density)={df['mean_density'].mean():.4f}, "
+        f"mean(mean_centeredness)={df['mean_centeredness'].mean():.4f}, "
+        f"mean(mean_mixture)={df['mean_mixture'].mean():.4f}"
+    )
 
 
 if __name__ == "__main__":

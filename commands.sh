@@ -74,3 +74,13 @@ NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
   kbrs_loss=kbrs025 \
   kbrs_score=centeredness050 \
 "
+
+make estimate ARGS=" \
+  --replays 36 212 438 522 1660 1559 1628 2351 6219 11251 275 1725 3613 4520 4664 6254 3529 3972 7191 7950 7970 9105 9301 9795 \
+  --mode=gt \
+"
+
+make estimate ARGS=" \
+  --replays 36 \
+  --mode=gt \
+"
