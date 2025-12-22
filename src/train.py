@@ -37,12 +37,6 @@ from utils.logger import Logger
 from utils.synology_chat import send_message
 
 
-# def get_transform(train):
-#     transforms = [T.ToTensor()]
-#     if train:
-#         transforms.append(T.RandomHorizontalFlip(0.5))
-#     return T.Compose(transforms)
-
 def set_global_seed(seed: int | None):
     """
     Python / NumPy / PyTorch (CPU/CUDA) 시드를 한 번에 설정.
