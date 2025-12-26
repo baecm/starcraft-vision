@@ -83,4 +83,48 @@ make estimate ARGS=" \
 make estimate ARGS=" \
   --replays 36 \
   --mode=gt \
+  --skip-kbrs \
 "
+
+# fold1
+make estimate ARGS="
+  --mode model \
+  --model-name all_correct_win4_kbrs_fold1_s123_kbrs025_mixture200_20251223_094128 \
+  --epoch 30 \
+  --replays 275 1725 3613 4520 4664 \
+  --skip-kbrs \
+  "
+
+# fold2
+make estimate ARGS="
+  --mode model \
+  --model-name all_correct_win4_kbrs_fold2_s123_kbrs025_base_score_20251222_080550 \
+  --epoch 30 \
+  --replays 1559 1628 2351 6219 11251 \
+  --skip-kbrs \
+  "
+
+# fold3
+make estimate ARGS="
+  --mode model \
+  --model-name all_correct_win4_kbrs_fold1_s123_kbrs025_centeredness040_20251224_064547 \
+  --epoch 30 \
+  --replays 36 212 438 522 1660 \
+  --skip-kbrs \
+  "
+
+make precheck ARGS="
+  --root_dir /workspace/data/label/dst \
+  --label_method all_correct \
+  --replays 36,212,438,522,1660,1559,1628,2351,6219,11251,275,1725,3613,4520,4664 \
+  --verbose \
+  "
+
+make precheck ARGS="
+  --root_dir /workspace/data/input/dst \
+  --replays 36,212,438,522,1660,1559,1628,2351,6219,11251,275,1725,3613,4520,4664 \
+  --mmap \
+  --max_abs_warn 1000000 \
+  --workers 32 \
+  --chunksize 64 \
+  "

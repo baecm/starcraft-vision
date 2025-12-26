@@ -45,6 +45,10 @@ run)
   log "Runninng train/inference squentially..."
   exec python src/pipeline.py "$@"
   ;;
+precheck)
+  log "Prechecking replays..."
+  exec python src/precheck.py "$@"
+  ;;
 debug)
   log "Debugging..."
   exec /bin/bash "$@"

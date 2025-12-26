@@ -15,7 +15,7 @@ seed: 123
 max_epoch: 30
 window_size: 4
 interval: 8
-batch_size: 16
+batch_size: 8
 sample_ratio: 1.0
 log_level: log
 do_inference_after_train: true
