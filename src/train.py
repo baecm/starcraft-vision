@@ -24,7 +24,8 @@ from ultralytics import settings
 import config
 
 import detection.transforms as T
-from detection.engine import train_one_epoch
+# NaN/Inf batch를 만나도 학습을 최대한 계속하기 위한 safe train loop
+from detection.engine_safe import train_one_epoch_safe as train_one_epoch
 from evaluate import evaluate
 
 from dataset.label_cache import ensure_label_pickles
@@ -96,8 +97,33 @@ def train_model(
 
         # ---- train ----
         t0 = time.time()
+        # --- NaN 회피 옵션 (cfg에 없으면 안전한 기본값 사용) ---
+        nan_log_path = os.path.join(save_dir, "nan_batches.jsonl")
+        grad_clip_norm = 0.0
+        lr_backoff = 0.5
+        max_consecutive_nan = 20
+        retry_fp32_on_nan = True
+
+        # hydra cfg가 있는 경우 덮어쓰기(없어도 동작)
+        try:
+            grad_clip_norm = float(getattr(config, "GRAD_CLIP_NORM", grad_clip_norm))
+        except Exception:
+            pass
+
         train_stats = train_one_epoch(
-            model, optimizer, data_loader_train, device, epoch, print_freq=10
+            model,
+            optimizer,
+            data_loader_train,
+            device,
+            epoch,
+            print_freq=10,
+            scaler=None,
+            nan_log_path=nan_log_path,
+            skip_nonfinite=True,
+            max_consecutive_nan=max_consecutive_nan,
+            grad_clip_norm=grad_clip_norm,
+            lr_backoff=lr_backoff,
+            retry_fp32_on_nan=retry_fp32_on_nan,
         )
         t_train = time.time() - t0
         Logger.info(f"[Time][epoch {epoch}] train_one_epoch: {t_train:.1f}s")
@@ -113,6 +139,12 @@ def train_model(
             "Loss/objectness": train_stats.loss_objectness.global_avg,
             "Loss/rpn_box_reg": train_stats.loss_rpn_box_reg.global_avg,
         }
+
+        # ---- NaN/스킵 통계 (engine_safe meters) ----
+        for k in ("skipped", "nan", "grad_nonfinite", "grad_norm"):
+            m = getattr(train_stats, k, None)
+            if m is not None and hasattr(m, "global_avg"):
+                log_dict[f"Train/{k}"] = float(m.global_avg)
 
         # ---- KBRS loss 항목 로그 ----
         if use_kbrs:
