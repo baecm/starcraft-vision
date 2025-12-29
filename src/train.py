@@ -381,6 +381,9 @@ def run_training(cfg: DictConfig):
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
 
+    if wandb.run is not None:
+        wandb.finish()
+
     # 4) W&B init (DictConfig → dict 변환)
     wandb.init(
         project="starcraft",
@@ -530,7 +533,7 @@ def run_training(cfg: DictConfig):
         test_eval_every=test_eval_every,
         id_string=cfg.id_string,
     )
-
+    torch.cuda.empty_cache()
     send_message(f"@work Training run '{cfg.id_string}' completed successfully.")
     wandb.finish()
 
