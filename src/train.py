@@ -369,7 +369,7 @@ def run_training(cfg: DictConfig):
             if kbrs_loss_name:
                 run_tags.append(f"{kbrs_loss_name}")
             if kbrs_score_name:
-                run_tags.append(f"{kbrs_score_name}")
+                run_tags.append(kbrs_score_name.replace("/", "_"))
 
         run_tags.append(f"{time.strftime('%Y%m%d_%H%M%S')}")
 
@@ -383,6 +383,8 @@ def run_training(cfg: DictConfig):
 
     if wandb.run is not None:
         wandb.finish()
+
+    # Logger.info(f"CFG: \n{OmegaConf.to_yaml(cfg)}")
 
     # 4) W&B init (DictConfig → dict 변환)
     wandb.init(

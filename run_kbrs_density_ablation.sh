@@ -9,5 +9,5 @@ NVIDIA_VISIBLE_DEVICES=$GPU make run ARGS="-m \
   model=kbrs \
   seed=123 \
   kbrs_loss=kbrs025 \
-  kbrs_score=density020,density040,density010,density050,density060,density070,density080,density090 \
+  kbrs_score=density/000,density/010,density/020,density/040,density/050,density/060,density/070,density/080,density/090 \
   "

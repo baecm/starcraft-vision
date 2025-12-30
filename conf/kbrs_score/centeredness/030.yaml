@@ -1,4 +1,4 @@
 # @package kbrs_score
-density: 0.3
-mixture: 3.0
+defaults:
+  - /kbrs_score/base_score
 centeredness: 0.3
