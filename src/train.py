@@ -369,7 +369,7 @@ def run_training(cfg: DictConfig):
             if kbrs_loss_name:
                 run_tags.append(f"{kbrs_loss_name}")
             if kbrs_score_name:
-                run_tags.append(f"{kbrs_score_name}")
+                run_tags.append(kbrs_score_name.replace("/", "_"))
 
         run_tags.append(f"{time.strftime('%Y%m%d_%H%M%S')}")
 
@@ -380,6 +380,11 @@ def run_training(cfg: DictConfig):
     log_save_path = os.path.join(cfg.log_root, f"{cfg.id_string}/")
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
+
+    if wandb.run is not None:
+        wandb.finish()
+
+    # Logger.info(f"CFG: \n{OmegaConf.to_yaml(cfg)}")
 
     # 4) W&B init (DictConfig → dict 변환)
     wandb.init(
@@ -530,7 +535,7 @@ def run_training(cfg: DictConfig):
         test_eval_every=test_eval_every,
         id_string=cfg.id_string,
     )
-
+    torch.cuda.empty_cache()
     send_message(f"@work Training run '{cfg.id_string}' completed successfully.")
     wandb.finish()
 

@@ -96,6 +96,15 @@ def train_one_epoch_safe(
     metric_logger.add_meter("grad_norm", utils.SmoothedValue(window_size=1, fmt="{value:.4f}"))
     header = f"Epoch: [{epoch}]"
 
+    # MetricLogger가 첫 로그를 찍을 때(count=0) division by zero를 피하기 위해 초기값을 넣어둔다.
+    metric_logger.update(
+        lr=float(optimizer.param_groups[0]["lr"]),
+        skipped=0.0,
+        nan=0.0,
+        grad_nonfinite=0.0,
+        grad_norm=0.0,
+    )
+
     # warmup: 기존 engine.py와 동일
     lr_scheduler = None
     if epoch == 0:

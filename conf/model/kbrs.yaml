@@ -16,7 +16,7 @@ kbrs_params:
   mixture_power: 1.0
   window_size: ${window_size}    # 위쪽 공통 값과 연결
   per_window: 9
-
+  
   score_weights:
     density:      ${kbrs_score.density}
     mixture:      ${kbrs_score.mixture}

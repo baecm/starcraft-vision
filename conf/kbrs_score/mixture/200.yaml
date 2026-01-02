@@ -1,0 +1,4 @@
+# @package kbrs_score
+defaults:
+  - /kbrs_score/base_score
+mixture: 2.0

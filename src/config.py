@@ -17,6 +17,8 @@ TRAIN_LR_SCHEDULER_GAMMA = 0.1
 TRAIN_LOG_INTERVAL = 10
 TRAIN_SAVE_INTERVAL = 1
 
+GRAD_CLIP_NORM = 2.0
+
 LABEL_METHODS = [
     'legacy',
     'consider_previous',
