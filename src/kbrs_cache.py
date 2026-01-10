@@ -38,7 +38,9 @@ import numpy as np
 import pandas as pd
 from pycocotools.coco import COCO
 from multiprocessing import Pool, cpu_count
+from tqdm import tqdm
 
+from utils.logger import Logger
 
 # ---------------------------------------------------------------------
 # KBRS core
@@ -876,6 +878,7 @@ def run_cache(args: argparse.Namespace) -> None:
     sx, sy = map(int, args.stride.split(","))
 
     cache_root = args.cache_root or default_cache_root(args.input_root)
+    Logger.info(f"Using cache root: {cache_root}")
 
     all_rows: List[Dict[str, Any]] = []
 
@@ -912,20 +915,17 @@ def run_cache(args: argparse.Namespace) -> None:
 
         n_workers = args.num_workers or cpu_count()
         if n_workers <= 1:
-            for idx, t in enumerate(tasks, 1):
+            for t in tqdm(tasks, desc=f"[cache] {replay_id}", total=len(tasks)):
                 r = _cache_worker(t)
                 if r is not None:
                     rows.append(r)
-                if idx % 500 == 0:
-                    print(f"[cache][{replay_id}] processed {idx}/{len(tasks)}")
         else:
             print(f"[Info] Using {n_workers} workers (tasks={len(tasks)})")
             with Pool(processes=n_workers) as pool:
-                for idx, r in enumerate(pool.imap_unordered(_cache_worker, tasks), 1):
+                it = pool.imap_unordered(_cache_worker, tasks, chunksize=32)
+                for r in tqdm(it, desc=f"[cache] {replay_id}", total=len(tasks)):
                     if r is not None:
                         rows.append(r)
-                    if idx % 500 == 0:
-                        print(f"[cache][{replay_id}] processed {idx}/{len(tasks)}")
 
         print(f"[cache][{replay_id}] cache created/verified for {len(rows)} images.")
         all_rows.extend(rows)
@@ -1051,7 +1051,7 @@ def run_lookup(args: argparse.Namespace) -> None:
 
         n_workers = args.num_workers or cpu_count()
         if n_workers <= 1:
-            for idx, t in enumerate(tasks, 1):
+            for t in tqdm(tasks, desc=f"[lookup:{args.source}] {replay_id}", total=len(tasks)):
                 r = _lookup_worker(t)
                 if r is not None:
                     rows.append(r)
@@ -1060,7 +1060,8 @@ def run_lookup(args: argparse.Namespace) -> None:
         else:
             print(f"[Info] Using {n_workers} workers (tasks={len(tasks)})")
             with Pool(processes=n_workers) as pool:
-                for idx, r in enumerate(pool.imap_unordered(_lookup_worker, tasks), 1):
+                it = pool.imap_unordered(_lookup_worker, tasks, chunksize=32)
+                for r in tqdm(it, desc=f"[lookup:{args.source}] {replay_id}", total=len(tasks)):
                     if r is not None:
                         rows.append(r)
                     if idx % 200 == 0:
