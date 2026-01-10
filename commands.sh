@@ -128,3 +128,10 @@ make precheck ARGS="
   --workers 32 \
   --chunksize 64 \
   "
+
+# python kbrs_cli.py cache --replays 275 3613 --num-workers 16
+NVIDIA_VISIBLE_DEVICES=0 make cache ARGS=" \
+  cache \
+  --replays 275 \
+  --num-workers 16 \
+"

@@ -45,6 +45,10 @@ run)
   log "Runninng train/inference squentially..."
   exec python src/pipeline.py "$@"
   ;;
+cache)
+  log "Caching replays..."
+  exec python src/kbrs_cache.py "$@"
+  ;;
 precheck)
   log "Prechecking replays..."
   exec python src/precheck.py "$@"
