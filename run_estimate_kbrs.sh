@@ -4,7 +4,7 @@ set -e
 # fold1
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
   --mode model \
-  --model-name all_correct_win4_vanilla_fold1_s123_20251201_072032 \
+  --model-name all_correct_win4_kbrs_fold1_s123_kbrs025_base_score_20251219_080334 \
   --epoch 30 \
   --replays 275 1725 3613 4520 4664 \
   --skip-kbrs \
@@ -12,7 +12,7 @@ NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
 
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
   --mode model \
-  --model-name all_correct_win4_vanilla_fold1_s456_20251202_003952 \
+  --model-name all_correct_win4_kbrs_fold1_s456_kbrs025_base_score_20260101_175816 \
   --epoch 30 \
   --replays 275 1725 3613 4520 4664 \
   --skip-kbrs \
@@ -20,7 +20,7 @@ NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
 
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
   --mode model \
-  --model-name all_correct_win4_vanilla_fold1_s789_20251202_163217 \
+  --model-name all_correct_win4_kbrs_fold1_s789_kbrs025_base_score_20251230_004200 \
   --epoch 30 \
   --replays 275 1725 3613 4520 4664 \
   --skip-kbrs \
@@ -29,7 +29,7 @@ NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
 # fold2
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
   --mode model \
-  --model-name all_correct_win4_vanilla_fold2_s123_20251203_081925 \
+  --model-name all_correct_win4_kbrs_fold2_s123_kbrs025_base_score_20251222_080550 \
   --epoch 30 \
   --replays 1559 1628 2351 6219 11251 \
   --skip-kbrs \
@@ -37,7 +37,7 @@ NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
 
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
   --mode model \
-  --model-name all_correct_win4_vanilla_fold2_s456_20251204_002252 \
+  --model-name all_correct_win4_kbrs_fold2_s456_kbrs025_base_score_20251231_031613 \
   --epoch 30 \
   --replays 1559 1628 2351 6219 11251 \
   --skip-kbrs \
@@ -45,7 +45,7 @@ NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
 
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
   --mode model \
-  --model-name all_correct_win4_vanilla_fold2_s789_20251204_163313 \
+  --model-name all_correct_win4_kbrs_fold2_s789_kbrs025_base_score_20251231_215319 \
   --epoch 30 \
   --replays 1559 1628 2351 6219 11251 \
   --skip-kbrs \
@@ -54,7 +54,7 @@ NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
 # fold3
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
   --mode model \
-  --model-name all_correct_win4_vanilla_fold3_s123_20251205_081306 \
+  --model-name all_correct_win4_kbrs_fold3_s123_kbrs025_base_score_20251230_083127 \
   --epoch 30 \
   --replays 36 212 438 522 1660 \
   --skip-kbrs \
@@ -62,7 +62,7 @@ NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
 
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
   --mode model \
-  --model-name all_correct_win4_vanilla_fold3_s456_20251205_235535 \
+  --model-name all_correct_win4_kbrs_fold3_s456_kbrs025_base_score_20251231_151012 \
   --epoch 30 \
   --replays 36 212 438 522 1660 \
   --skip-kbrs \
@@ -70,7 +70,7 @@ NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
   
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
   --mode model \
-  --model-name all_correct_win4_vanilla_fold3_s789_20251206_161212 \
+  --model-name all_correct_win4_kbrs_fold3_s789_kbrs025_base_score_20260102_163643 \
   --epoch 30 \
   --replays 36 212 438 522 1660 \
   --skip-kbrs \
