@@ -1,251 +1,71 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-KBRS cache/lookup CLI (subcommands)
-
-A안: 서브커맨드로 분리
-  - cache : feature(.npy)마다 KBRS grid cache(.npz) 생성/갱신
-  - lookup: GT 또는 pred bbox 중심 좌표에 대해 cache에서 KBRS 값을 lookup하여 CSV 출력
-
-핵심 아이디어:
-- KBRS grid cache는 feature만으로 deterministic하게 계산 가능(= GT/model과 무관)
-- lookup 단계에서만 GT/pred에 따라 (x,y) 좌표 집합이 달라진다.
-
-주의(경계 처리):
-- cache는 기본적으로 "valid grid"만 정의한다.
-- lookup은 기본적으로 (x,y)를 grid 범위로 clamp하여 캐시와 일관되게 값을 뽑는다(--border clamp).
-- 기존 on-the-fly(경계에서 잘린 패치 허용)와 1:1 비교가 필요하면 --border on_the_fly.
-
-사용 예:
-  # 1) 캐시 생성(리플레이 2개, 병렬 16)
-  python kbrs_cli.py cache --replays 275 3613 --num-workers 16
-
-  # 2) GT 중심 lookup CSV
-  python kbrs_cli.py lookup --source gt --replays 275 --csv-out /tmp/kbrs_gt_275.csv --num-workers 8
-
-  # 3) model pred 중심 lookup CSV
-  python kbrs_cli.py lookup --source pred --replays 275 --model-name XXX --epoch 30 --csv-out /tmp/kbrs_pred.csv
-"""
-
+# cache.py
 from __future__ import annotations
 
 import os
 import json
 import argparse
-from typing import List, Dict, Tuple, Optional, Any, Iterable
+from dataclasses import dataclass
+from typing import Dict, List, Tuple, Optional, Any
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from pycocotools.coco import COCO
 from multiprocessing import Pool, cpu_count
-from tqdm import tqdm
 
 from utils.logger import Logger
 
-# ---------------------------------------------------------------------
-# KBRS core
-# ---------------------------------------------------------------------
-def make_gaussian_kernel(h: int, w: int, sigma: Optional[float] = None) -> np.ndarray:
+# ============================================================
+# 채널/컴포넌트 정의 (config.py 기반)
+# ============================================================
+CHANNEL_NAMES_11 = [
+    "Player_1_Worker",    # 0
+    "Player_1_Ground",    # 1
+    "Player_1_Air",       # 2
+    "Player_1_Building",  # 3
+    "Player_2_Worker",    # 4
+    "Player_2_Ground",    # 5
+    "Player_2_Air",       # 6
+    "Player_2_Building",  # 7
+    "Resource",           # 8
+    "Vision",             # 9
+    "Terrain",            # 10
+]
+
+COMPONENT_CHANNEL_MAP_11: Dict[str, List[int]] = {
+    "worker":   [0, 4],
+    "ground":   [1, 5],
+    "air":      [2, 6],
+    "building": [3, 7],
+    "resource": [8],
+    "vision":   [9],
+    "terrain":  [10],
+}
+
+
+# ============================================================
+# KBRSConvScorer import (프로젝트 코드 재사용)
+# ============================================================
+def _import_kbrs_scorer():
     """
-    (h, w) 크기의 2D 가우시안 커널을 생성한다.
+    프로젝트 내 `KBRSConvScorer`를 import한다.
 
-    Args:
-        h: 커널 높이
-        w: 커널 너비
-        sigma: 표준편차. None이면 h/4.0을 사용한다.
-
-    Returns:
-        shape=(h, w) float32 가우시안 커널.
-
-    Notes:
-        centeredness 계산에서 binary 맵에 가중치로 곱해 사용한다.
+    - 목적: 캐시 계산을 학습/추론에서 쓰는 scorer 정의와 1:1로 맞추기.
+    - 실패 시: ImportError를 발생시켜서 사용자가 PYTHONPATH/경로를 맞추도록 유도.
     """
-    if sigma is None:
-        sigma = h / 4.0
-    cy = (h - 1) / 2.0
-    cx = (w - 1) / 2.0
-    ys = np.arange(h, dtype=np.float32)[:, None]
-    xs = np.arange(w, dtype=np.float32)[None, :]
-    dist2 = (ys - cy) ** 2 + (xs - cx) ** 2
-    g = np.exp(-dist2 / (2.0 * sigma * sigma))
-    return g.astype(np.float32)
+    from model.kbrs import KBRSConvScorer  # 프로젝트 경로에 맞게 조정 가능
+    return KBRSConvScorer
 
 
-def kbrs_scores_from_patch(patch: np.ndarray, threshold: float = 0.0) -> Tuple[float, float, float]:
-    """
-    단일 패치에서 KBRS 스코어(density/centeredness/mixture)를 계산한다.
-
-    Args:
-        patch: (C,H,W) 또는 (H,W)
-        threshold: binary map 기준. patch2d > threshold 를 1로 간주한다.
-
-    Returns:
-        (density, centeredness, mixture)
-          - density: binary 평균(= 1 비율) [0,1]
-          - centeredness: gaussian weighted mean [0,1]
-          - mixture: density * centeredness
-
-    Notes:
-        (C,H,W)이면 채널 max projection으로 2D 맵을 만든다.
-    """
-    if patch.ndim == 3:
-        patch2d = patch.max(axis=0)
-    elif patch.ndim == 2:
-        patch2d = patch
-    else:
-        raise ValueError(f"Unsupported patch shape: {patch.shape}")
-
-    if patch2d.size == 0:
-        return 0.0, 0.0, 0.0
-
-    binary = (patch2d > threshold).astype(np.float32)
-    density = float(binary.mean())
-
-    h, w = binary.shape
-    g = make_gaussian_kernel(h, w, sigma=h / 4.0)
-    g_sum = float(g.sum()) + 1e-12
-
-    centered_raw = float((binary * g).sum() / g_sum)
-    centeredness = float(max(0.0, min(1.0, centered_raw)))
-    mixture = density * centeredness
-    return density, centeredness, mixture
-
-
-def extract_window(feat: np.ndarray, center_x: float, center_y: float, win_w: int, win_h: int) -> np.ndarray:
-    """
-    feature 맵에서 (center_x, center_y)를 중심으로 win_w x win_h 패치를 잘라낸다.
-
-    Args:
-        feat: (C,H,W) 또는 (H,W)
-        center_x: 중심 x(픽셀)
-        center_y: 중심 y(픽셀)
-        win_w: 윈도우 너비
-        win_h: 윈도우 높이
-
-    Returns:
-        경계에서 잘린 "부분 패치"를 포함할 수 있는 패치 배열.
-        유효 영역이 없으면 빈 배열(0:0 슬라이스).
-
-    Notes:
-        --border on_the_fly에서 기존 방식 재현용으로 사용한다.
-    """
-    if feat.ndim == 3:
-        _, H, W = feat.shape
-    elif feat.ndim == 2:
-        H, W = feat.shape
-    else:
-        raise ValueError(f"Unsupported feature shape: {feat.shape}")
-
-    half_w = win_w // 2
-    half_h = win_h // 2
-
-    x0 = int(round(center_x)) - half_w
-    y0 = int(round(center_y)) - half_h
-    x0 = max(0, x0)
-    y0 = max(0, y0)
-    x1 = min(W, x0 + win_w)
-    y1 = min(H, y0 + win_h)
-
-    if x1 <= x0 or y1 <= y0:
-        if feat.ndim == 3:
-            return feat[:, 0:0, 0:0]
-        return feat[0:0, 0:0]
-
-    if feat.ndim == 3:
-        return feat[:, y0:y1, x0:x1]
-    return feat[y0:y1, x0:x1]
-
-
-def compute_kbrs_grid(
-    feat: np.ndarray,
-    win_w: int,
-    win_h: int,
-    stride_x: int,
-    stride_y: int,
-    threshold: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    feature 전체를 valid 슬라이딩 윈도우로 스캔해 KBRS map 3종을 만든다.
-
-    Args:
-        feat: (C,H,W) 또는 (H,W)
-        win_w, win_h: 윈도우 크기
-        stride_x, stride_y: stride
-        threshold: binary map threshold
-
-    Returns:
-        (density_map, centeredness_map, mixture_map)
-        각 map은 shape=(out_h, out_w) (y,x 순서)
-
-    Notes:
-        out_h = (H - win_h)//stride_y + 1
-        out_w = (W - win_w)//stride_x + 1
-        즉 윈도우가 "완전히 들어가는(valid)" 위치만 계산한다.
-    """
-    if feat.ndim == 3:
-        _, H, W = feat.shape
-    elif feat.ndim == 2:
-        H, W = feat.shape
-    else:
-        raise ValueError(f"Unsupported feature shape: {feat.shape}")
-
-    out_h = max(0, (H - win_h) // stride_y + 1)
-    out_w = max(0, (W - win_w) // stride_x + 1)
-
-    density_map = np.zeros((out_h, out_w), dtype=np.float32)
-    centeredness_map = np.zeros((out_h, out_w), dtype=np.float32)
-    mixture_map = np.zeros((out_h, out_w), dtype=np.float32)
-
-    for oy in range(out_h):
-        for ox in range(out_w):
-            cx = ox * stride_x + win_w / 2.0
-            cy = oy * stride_y + win_h / 2.0
-            patch = extract_window(feat, cx, cy, win_w, win_h)
-            d, c, m = kbrs_scores_from_patch(patch, threshold=threshold)
-            density_map[oy, ox] = d
-            centeredness_map[oy, ox] = c
-            mixture_map[oy, ox] = m
-
-    return density_map, centeredness_map, mixture_map
-
-
-# ---------------------------------------------------------------------
-# COCO + path utils
-# ---------------------------------------------------------------------
-def centroid_from_coco_ann(ann: dict, img_w: int, img_h: int) -> Tuple[float, float]:
-    """
-    COCO annotation(dict)에서 bbox 중심 좌표를 계산한다.
-
-    Args:
-        ann: COCO annotation 또는 detection dict. 'bbox'가 [x,y,w,h]로 있다고 가정한다.
-        img_w, img_h: bbox가 없을 때 fallback(이미지 중앙)에 사용.
-
-    Returns:
-        (cx, cy): bbox 중심(픽셀 float)
-    """
-    if "bbox" in ann and ann["bbox"] is not None:
-        x, y, w, h = ann["bbox"]
-        return float(x + w / 2.0), float(y + h / 2.0)
-    return float(img_w) / 2.0, float(img_h) / 2.0
-
-
+# ============================================================
+# 경로/COCO 로딩 유틸
+# ============================================================
 def load_coco_gt(label_root: str, replay_id: str, label_method: str) -> COCO:
     """
-    GT COCO JSON을 로드한다.
+    GT COCO 파일을 로드한다.
 
-    Path 규칙:
-        {label_root}/{replay_id}.rep/{label_method}.json
-
-    Args:
-        label_root: GT 라벨 루트
-        replay_id: 리플레이 ID
-        label_method: 라벨 파일 베이스명
-
-    Returns:
-        pycocotools.COCO 객체
-
-    Raises:
-        FileNotFoundError: 파일이 없을 때
+    경로 규칙:
+      {label_root}/{replay_id}.rep/{label_method}.json
     """
     gt_dir = os.path.join(label_root, f"{replay_id}.rep")
     gt_path = os.path.join(gt_dir, f"{label_method}.json")
@@ -254,28 +74,25 @@ def load_coco_gt(label_root: str, replay_id: str, label_method: str) -> COCO:
     return COCO(gt_path)
 
 
-def load_coco_preds(pred_root: str, model_name: str, epoch: int, replay_id: str, label_method: str) -> Dict[int, List[dict]]:
+def load_coco_preds(
+    pred_root: str,
+    model_name: str,
+    epoch: int,
+    replay_id: str,
+    label_method: str,
+) -> Dict[int, List[dict]]:
     """
-    모델 prediction COCO JSON을 로드하고 image_id별로 grouping하여 반환한다.
+    모델 prediction COCO dets(JSON)를 로드해서 image_id별로 묶어 반환한다.
 
-    Path 규칙:
-        {pred_root}/{model_name}/model_{epoch}/{replay_id}.rep/{label_method}.json
+    경로 규칙:
+      {pred_root}/{model_name}/model_{epoch}/{replay_id}.rep/{label_method}.json
 
-    Args:
-        pred_root: prediction 루트
-        model_name: 모델 이름
-        epoch: epoch 번호
-        replay_id: 리플레이 ID
-        label_method: 라벨 파일 베이스명
-
-    Returns:
-        preds_by_img: Dict[image_id -> list of detection dict]
-
-    Raises:
-        FileNotFoundError: 파일이 없을 때
-        ValueError: JSON 포맷이 예상과 다를 때
+    반환:
+      preds_by_img[image_id] = [det, det, ...]
     """
-    pred_dir = os.path.join(pred_root, model_name, f"model_{epoch}", f"{replay_id}.rep")
+    pred_dir = os.path.join(
+        pred_root, model_name, f"model_{epoch}", f"{replay_id}.rep"
+    )
     pred_path = os.path.join(pred_dir, f"{label_method}.json")
     if not os.path.isfile(pred_path):
         raise FileNotFoundError(f"Prediction file not found: {pred_path}")
@@ -306,21 +123,10 @@ def build_feature_path_from_meta(
     feature_ext: str,
 ) -> str:
     """
-    COCO image 메타정보로 feature(.npy) 경로를 만든다.
+    feature 경로를 구성한다.
 
-    Path 규칙:
-        {input_root}/{replay_id}.rep/{file_name_base or img_id}{feature_ext}
-
-    Args:
-        input_root: feature 루트
-        replay_id: 리플레이 ID
-        file_name: COCO image file_name
-        img_id: COCO image id
-        use_file_name: True면 file_name 기반, False면 img_id 기반
-        feature_ext: 확장자(기본 .npy)
-
-    Returns:
-        feature 파일 경로
+    규칙:
+      {input_root}/{replay_id}.rep/{file_name or id}{feature_ext}
     """
     rep_dir = os.path.join(input_root, f"{replay_id}.rep")
     if use_file_name and file_name:
@@ -331,650 +137,708 @@ def build_feature_path_from_meta(
     return os.path.join(rep_dir, fname)
 
 
-# ---------------------------------------------------------------------
-# Cache utils
-# ---------------------------------------------------------------------
-def default_cache_root(input_root: str) -> str:
-    """
-    기본 캐시 루트 디렉터리 경로를 반환한다.
-
-    Args:
-        input_root: feature 루트
-
-    Returns:
-        {input_root}/__kbrs_cache__
-    """
-    return os.path.join(input_root, "__kbrs_cache__")
-
-
-def cache_tag(win_w: int, win_h: int, sx: int, sy: int, thr: float) -> str:
-    """
-    캐시 파일명에 포함할 파라미터 tag를 만든다.
-
-    Args:
-        win_w, win_h: 윈도우 크기
-        sx, sy: stride
-        thr: threshold
-
-    Returns:
-        예) "w20h12_sx1sy1_thr0p0"
-    """
-    thr_s = str(thr).replace(".", "p").replace("-", "m")
-    return f"w{win_w}h{win_h}_sx{sx}sy{sy}_thr{thr_s}"
-
-
 def build_cache_path(
     cache_root: str,
     replay_id: str,
-    feature_path: str,
-    win_w: int,
-    win_h: int,
-    sx: int,
-    sy: int,
-    thr: float,
+    file_name: str,
+    img_id: int,
+    use_file_name: bool,
+    cache_ext: str = ".npz",
 ) -> str:
     """
-    feature 파일에 대응하는 캐시(.npz) 경로를 생성한다.
+    캐시 파일 경로를 구성한다.
 
-    Path 규칙:
-        {cache_root}/{replay_id}.rep/{feature_base}.kbrs.{tag}.npz
-
-    Args:
-        cache_root: 캐시 루트
-        replay_id: 리플레이 ID
-        feature_path: 원본 feature 파일 경로
-        win_w, win_h, sx, sy, thr: 캐시 파라미터
-
-    Returns:
-        캐시 파일 경로
+    기본 규칙:
+      {cache_root}/{replay_id}.rep/{file_name or id}{cache_ext}
     """
     rep_dir = os.path.join(cache_root, f"{replay_id}.rep")
-    os.makedirs(rep_dir, exist_ok=True)
-
-    base = os.path.basename(feature_path)
-    base_noext, _ = os.path.splitext(base)
-    tag = cache_tag(win_w, win_h, sx, sy, thr)
-    return os.path.join(rep_dir, f"{base_noext}.kbrs.{tag}.npz")
-
-
-def save_kbrs_cache(
-    cache_path: str,
-    density_map: np.ndarray,
-    centeredness_map: np.ndarray,
-    mixture_map: np.ndarray,
-    meta: Dict[str, Any],
-    dtype: str,
-) -> None:
-    """
-    KBRS map 3종과 메타데이터를 .npz로 저장한다.
-
-    Args:
-        cache_path: 저장 경로
-        density_map, centeredness_map, mixture_map: KBRS map들(shape=(out_h,out_w))
-        meta: 파라미터/shape/원본 경로 등 메타데이터
-        dtype: "float16" 또는 "float32"
-
-    Notes:
-        - meta는 JSON 문자열(meta_json)로 직렬화해 저장한다.
-        - 저장은 np.savez_compressed 사용.
-    """
-    if dtype == "float16":
-        d = density_map.astype(np.float16, copy=False)
-        c = centeredness_map.astype(np.float16, copy=False)
-        m = mixture_map.astype(np.float16, copy=False)
-    elif dtype == "float32":
-        d = density_map.astype(np.float32, copy=False)
-        c = centeredness_map.astype(np.float32, copy=False)
-        m = mixture_map.astype(np.float32, copy=False)
+    if use_file_name and file_name:
+        base, _ext = os.path.splitext(file_name)
+        fname = base + cache_ext
     else:
-        raise ValueError(f"Unsupported cache dtype: {dtype}")
-
-    meta_json = json.dumps(meta, ensure_ascii=False)
-    np.savez_compressed(
-        cache_path,
-        density=d,
-        centeredness=c,
-        mixture=m,
-        meta_json=np.array([meta_json], dtype=object),
-    )
+        fname = f"{img_id}{cache_ext}"
+    return os.path.join(rep_dir, fname)
 
 
-def load_kbrs_cache(cache_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+def centroid_from_coco_ann(ann: dict, img_w: int, img_h: int) -> Tuple[float, float]:
     """
-    KBRS cache(.npz)를 로드한다.
+    COCO annotation(예측/GT)에 대해 bbox 중심을 픽셀 좌표로 반환한다.
 
-    Args:
-        cache_path: 캐시 파일 경로
-
-    Returns:
-        (density, centeredness, mixture, meta)
-          - map은 float32로 변환하여 반환
-          - meta는 dict로 복원
+    - bbox가 없으면 이미지 중앙으로 fallback한다.
     """
-    with np.load(cache_path, allow_pickle=True) as z:
-        density = z["density"].astype(np.float32)
-        centeredness = z["centeredness"].astype(np.float32)
-        mixture = z["mixture"].astype(np.float32)
-        meta_json = str(z["meta_json"][0])
-        meta = json.loads(meta_json)
-    return density, centeredness, mixture, meta
+    if "bbox" in ann and ann["bbox"] is not None:
+        x, y, w, h = ann["bbox"]
+        return float(x + w / 2.0), float(y + h / 2.0)
+    return float(img_w) / 2.0, float(img_h) / 2.0
 
 
-def ensure_kbrs_cache(
-    replay_id: str,
-    feature_path: str,
-    cache_root: str,
-    win_w: int,
-    win_h: int,
-    sx: int,
-    sy: int,
-    thr: float,
-    cache_dtype: str,
-    rebuild: bool,
-) -> Optional[str]:
+# ============================================================
+# 채널 선택/재매핑
+# ============================================================
+def build_selected_channels_11(include_components: List[str]) -> List[int]:
     """
-    캐시가 있으면 재사용하고, 없으면 생성한 뒤 캐시 경로를 반환한다.
+    include_components 목록을 기반으로, 원본 11채널에서 사용할 채널 인덱스 리스트를 만든다.
 
-    Args:
-        replay_id: 리플레이 ID
-        feature_path: 원본 feature(.npy) 경로
-        cache_root: 캐시 루트
-        win_w, win_h, sx, sy, thr: 캐시 파라미터
-        cache_dtype: 캐시 저장 dtype
-        rebuild: True면 캐시가 있어도 강제 재생성
-
-    Returns:
-        캐시 파일 경로(성공) 또는 feature가 없으면 None
-
-    Notes:
-        - 파라미터(tag)가 파일명에 포함되므로, 파라미터가 다르면 다른 캐시가 생성된다.
-        - 여기서는 meta 검증을 최소화하고(tag가 사실상 구분), rebuild로 강제 갱신을 지원한다.
+    예:
+      include_components = [worker, ground, air, building, vision]
+      -> [0,1,2,3,4,5,6,7,9]
     """
-    if not os.path.isfile(feature_path):
-        return None
+    chs: List[int] = []
+    for comp in include_components:
+        if comp not in COMPONENT_CHANNEL_MAP_11:
+            raise ValueError(f"Unknown component: {comp}")
+        chs.extend(COMPONENT_CHANNEL_MAP_11[comp])
+    # 중복 제거 + 순서 유지
+    chs = list(dict.fromkeys(chs))
+    return chs
 
-    cpath = build_cache_path(cache_root, replay_id, feature_path, win_w, win_h, sx, sy, thr)
-    if os.path.isfile(cpath) and not rebuild:
-        return cpath
 
-    feat = np.load(feature_path)
-    density, centeredness, mixture = compute_kbrs_grid(feat, win_w, win_h, sx, sy, thr)
+def remap_indices(old_to_new: Dict[int, int], idxs: List[int]) -> List[int]:
+    """
+    원본 인덱스 리스트(idxs)를 old_to_new 매핑으로 재인덱싱한다.
 
-    if feat.ndim == 3:
-        _, H, W = feat.shape
-    else:
-        H, W = feat.shape
+    - old_to_new[old_idx] = new_idx
+    """
+    out: List[int] = []
+    for i in idxs:
+        if i not in old_to_new:
+            raise ValueError(f"Index {i} not in old_to_new remap.")
+        out.append(old_to_new[i])
+    return out
 
-    meta = {
-        "feature_path": feature_path,
-        "feature_shape": list(feat.shape),
-        "H": int(H),
-        "W": int(W),
-        "win_w": int(win_w),
-        "win_h": int(win_h),
-        "stride_x": int(sx),
-        "stride_y": int(sy),
-        "threshold": float(thr),
-        "grid_h": int(density.shape[0]),
-        "grid_w": int(density.shape[1]),
-        "grid_mode": "valid",
-    }
-    save_kbrs_cache(cpath, density, centeredness, mixture, meta, dtype=cache_dtype)
-    return cpath
+
+# ============================================================
+# cache 계산 (워커)
+# ============================================================
+@dataclass(frozen=True)
+class CacheTask:
+    """
+    캐시 생성 작업 단위(프레임 단위).
+
+    - mode/cache 공통 메타를 포함하되, worker는 frame별로 독립 실행 가능하도록 구성한다.
+    """
+    replay_id: str
+    image_id: int
+    file_name: str
+    input_root: str
+    label_root: str
+    label_method: str
+    feature_ext: str
+    use_file_name: bool
+
+    cache_root: str
+    cache_dtype: str
+    compress: bool
+    rebuild_cache: bool
+
+    include_components: Tuple[str, ...]
+    region_size: Tuple[int, int]      # (kH, kW)  ※ conv2d 기준
+    score_stride: int
+    downsample_before: Optional[Dict[str, Any]]
+
+    score_weights: Dict[str, float]
+    projections_9: Dict[str, List[int]]  # 9ch 기준 인덱스
+    mixture_mode: str
+    mixture_power: float
+
+    gate_channels_9: List[int]
+    gate_reduce: str
+    gate_gain: float
+
+
+def _cache_worker(t: CacheTask) -> Dict[str, Any]:
+    """
+    단일 프레임에 대해 KBRS cache(npz)를 생성한다.
+
+    반환 dict는 tqdm/postfix 및 요약 집계에 사용한다:
+      - status: "hit" | "build" | "skip_missing_feature" | "error"
+      - path: cache_path
+      - mean/max: (optional) 간단한 통계
+    """
+    try:
+        Logger.info(f"[cache_worker] start replay={t.replay_id} image_id={t.image_id} file_name='{t.file_name}'")
+
+        feat_path = build_feature_path_from_meta(
+            input_root=t.input_root,
+            replay_id=t.replay_id,
+            file_name=t.file_name,
+            img_id=t.image_id,
+            use_file_name=t.use_file_name,
+            feature_ext=t.feature_ext,
+        )
+        Logger.info(f"[cache_worker] feat_path={feat_path}")
+
+        if not os.path.isfile(feat_path):
+            Logger.warn(f"[cache_worker] missing feature -> skip: {feat_path}")
+            return {"status": "skip_missing_feature", "path": feat_path}
+
+        cache_path = build_cache_path(
+            cache_root=t.cache_root,
+            replay_id=t.replay_id,
+            file_name=t.file_name,
+            img_id=t.image_id,
+            use_file_name=t.use_file_name,
+            cache_ext=".npz",
+        )
+        Logger.info(f"[cache_worker] cache_path={cache_path}")
+
+        if (not t.rebuild_cache) and os.path.isfile(cache_path):
+            Logger.info("[cache_worker] cache hit")
+            return {"status": "hit", "path": cache_path}
+
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+
+        Logger.info("[cache_worker] np.load feature")
+        feat = np.load(feat_path, allow_pickle=True)
+        Logger.info(f"[cache_worker] feat.shape={getattr(feat, 'shape', None)} feat.dtype={getattr(feat, 'dtype', None)} type={type(feat)}")
+
+        if not hasattr(feat, "ndim") or feat.ndim != 3:
+            Logger.error(f"[cache_worker] bad feat ndim/shape: {feat_path} shape={getattr(feat, 'shape', None)}")
+            return {"status": "error", "path": feat_path, "error": f"bad feat shape: {getattr(feat, 'shape', None)}"}
+
+        # HWC(128,128,11) 저장 케이스를 자동 보정
+        if feat.shape[0] != 11 and feat.shape[-1] == 11:
+            Logger.warn(f"[cache_worker] detected HWC, transpose -> CHW: {feat.shape}")
+            feat = np.transpose(feat, (2, 0, 1))
+            Logger.info(f"[cache_worker] after transpose feat.shape={feat.shape}")
+
+        # 이미 9채널로 저장된 케이스도 허용(개발단계 편의)
+        if feat.shape[0] not in (11, 9):
+            Logger.error(f"[cache_worker] unexpected channel count: C={feat.shape[0]} path={feat_path}")
+            return {"status": "error", "path": feat_path, "error": f"unexpected C={feat.shape[0]}"}
+
+        include_components = list(t.include_components)
+
+        if feat.shape[0] == 11:
+            sel11 = build_selected_channels_11(include_components)
+            Logger.info(f"[cache_worker] selected sel11={sel11}")
+            feat9 = feat[sel11, :, :]
+            Logger.info(f"[cache_worker] feat9.shape={feat9.shape}")
+        else:
+            # feat가 이미 9ch이면 그대로 사용(assume 학습 입력 채널 순서)
+            sel11 = None
+            feat9 = feat
+            Logger.warn("[cache_worker] feature already has 9 channels; skipping 11->9 selection")
+
+        Logger.info("[cache_worker] import KBRSConvScorer")
+        KBRSConvScorer = _import_kbrs_scorer()
+
+        Logger.info("[cache_worker] instantiate scorer")
+        scorer = KBRSConvScorer(
+            region_size=t.region_size,
+            weights=t.score_weights,
+            projections=t.projections_9,
+            mixture_mode=t.mixture_mode,
+            mixture_power=t.mixture_power,
+            score_stride=t.score_stride,
+            downsample_before=t.downsample_before,
+        )
+        scorer.eval()
+
+        import torch
+
+        x = torch.from_numpy(feat9).unsqueeze(0).float()  # (1,9,H,W)
+        Logger.info(f"[cache_worker] torch input shape={tuple(x.shape)} dtype={x.dtype} device={x.device}")
+
+        with torch.no_grad():
+            score_map, comp_maps = scorer(x)
+
+        Logger.info(f"[cache_worker] score_map.shape={tuple(score_map.shape)} comp_keys={list(comp_maps.keys())}")
+
+        def _to_np(a: torch.Tensor) -> np.ndarray:
+            arr = a.detach().cpu().numpy()
+            if t.cache_dtype == "float16":
+                return arr.astype(np.float16)
+            if t.cache_dtype == "float32":
+                return arr.astype(np.float32)
+            return arr
+
+        score_np = _to_np(score_map[0])
+        den_np = _to_np(comp_maps.get("density", torch.zeros_like(score_map))[0])
+        cen_np = _to_np(comp_maps.get("centeredness", torch.zeros_like(score_map))[0])
+        mix_np = _to_np(comp_maps.get("mixture", torch.zeros_like(score_map))[0])
+
+        meta = {
+            "replay_id": t.replay_id,
+            "image_id": int(t.image_id),
+            "file_name": t.file_name,
+            "feat_path": feat_path,
+            "feat_shape": list(getattr(feat, "shape", [])),
+            "selected_channels_11": sel11,
+            "selected_channel_names_11": [CHANNEL_NAMES_11[i] for i in sel11] if sel11 is not None else None,
+            "region_size_kh_kw": list(t.region_size),
+            "score_stride": int(t.score_stride),
+            "downsample_before": t.downsample_before,
+            "score_weights": t.score_weights,
+            "projections_9": t.projections_9,
+            "mixture_mode": t.mixture_mode,
+            "mixture_power": float(t.mixture_power),
+            "gate_channels_9": t.gate_channels_9,
+            "gate_reduce": t.gate_reduce,
+            "gate_gain": float(t.gate_gain),
+            "note": "score_map is weighted sum of density/centeredness/mixture (gate not applied here).",
+        }
+        meta_json = json.dumps(meta, ensure_ascii=False)
+
+        Logger.info(f"[cache_worker] saving npz -> {cache_path} compress={t.compress} dtype={t.cache_dtype}")
+        if t.compress:
+            np.savez_compressed(
+                cache_path,
+                score=score_np,
+                density=den_np,
+                centeredness=cen_np,
+                mixture=mix_np,
+                meta_json=np.array([meta_json], dtype=object),
+            )
+        else:
+            np.savez(
+                cache_path,
+                score=score_np,
+                density=den_np,
+                centeredness=cen_np,
+                mixture=mix_np,
+                meta_json=np.array([meta_json], dtype=object),
+            )
+
+        Logger.info("[cache_worker] build done")
+        return {
+            "status": "build",
+            "path": cache_path,
+            "mean_score": float(np.mean(score_np)),
+            "max_score": float(np.max(score_np)),
+        }
+
+    except Exception:
+        import traceback
+        tb = traceback.format_exc()
+        Logger.error("[cache_worker] exception\n", tb)
+        return {"status": "error", "path": "", "error": tb}
+
+
+# ============================================================
+# lookup 계산 (워커)
+# ============================================================
+@dataclass(frozen=True)
+class LookupTask:
+    """
+    lookup 작업 단위(프레임 단위).
+
+    - cache(npz)에서 score/comp 맵을 읽고,
+      GT 또는 pred의 bbox 중심 좌표들을 맵으로 매핑해 값을 집계한다.
+    """
+    replay_id: str
+    image_id: int
+    file_name: str
+    img_w: int
+    img_h: int
+
+    cache_root: str
+    use_file_name: bool
+
+    region_size: Tuple[int, int]  # (kH,kW)
+    score_stride: int
+    border_mode: str              # clamp|skip
+
+    source: str                   # "gt" | "pred"
+    positions: List[Tuple[float, float]]  # (x,y) in pixel coords
+    label_method: str             # for row metadata
 
 
 def xy_to_grid_index(
     x: float,
     y: float,
-    win_w: int,
-    win_h: int,
-    sx: int,
-    sy: int,
-    grid_w: int,
-    grid_h: int,
-    border: str,
+    H: int,
+    W: int,
+    kH: int,
+    kW: int,
+    stride: int,
+    border_mode: str,
 ) -> Optional[Tuple[int, int]]:
     """
-    (x,y) 픽셀 좌표를 KBRS grid 인덱스(oy, ox)로 매핑한다.
+    픽셀 좌표(x,y)를 KBRS score_map의 grid index(oy,ox)로 매핑한다.
 
-    Args:
-        x, y: 픽셀 좌표
-        win_w, win_h: 윈도우 크기
-        sx, sy: stride
-        grid_w, grid_h: KBRS map 크기(out_w,out_h)
-        border:
-            - "clamp": 범위를 벗어나면 가장 가까운 셀로 clamp
-            - "skip": 범위를 벗어나면 None 반환
+    conv2d(valid) 기준:
+      out_h = (H - kH)//stride + 1
+      out_w = (W - kW)//stride + 1
 
-    Returns:
-        (oy, ox) 또는 None
+    윈도우의 "중심" 기준으로 가장 가까운 셀을 찾는다:
+      center_x = ox*stride + kW/2
+      center_y = oy*stride + kH/2
 
-    Notes:
-        cache grid의 중심 정의:
-            center_x = ox*sx + win_w/2
-            center_y = oy*sy + win_h/2
-        역으로:
-            ox ≈ (x - win_w/2)/sx
-            oy ≈ (y - win_h/2)/sy
-        를 round하여 가장 가까운 셀을 선택한다.
+    border_mode:
+      - "clamp": 범위 밖이면 가장 가까운 유효 인덱스로 clamp
+      - "skip" : 범위 밖이면 None
     """
-    if grid_w <= 0 or grid_h <= 0:
+    out_h = (H - kH) // stride + 1
+    out_w = (W - kW) // stride + 1
+    if out_h <= 0 or out_w <= 0:
         return None
 
-    ox = int(round((x - win_w / 2.0) / float(sx)))
-    oy = int(round((y - win_h / 2.0) / float(sy)))
+    # 중심 기준 역변환
+    ox = int(round((x - (kW / 2.0)) / float(stride)))
+    oy = int(round((y - (kH / 2.0)) / float(stride)))
 
-    if border == "skip":
-        if ox < 0 or ox >= grid_w or oy < 0 or oy >= grid_h:
+    if border_mode == "skip":
+        if ox < 0 or oy < 0 or ox >= out_w or oy >= out_h:
             return None
         return oy, ox
 
-    ox = max(0, min(grid_w - 1, ox))
-    oy = max(0, min(grid_h - 1, oy))
+    # clamp (default)
+    ox = max(0, min(out_w - 1, ox))
+    oy = max(0, min(out_h - 1, oy))
     return oy, ox
 
 
-# ---------------------------------------------------------------------
-# Workers
-# ---------------------------------------------------------------------
-def _cache_worker(args: Tuple) -> Optional[Dict[str, Any]]:
+def _load_cache_npz(cache_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
     """
-    cache 서브커맨드에서 이미지(feature) 단위로 캐시를 생성/갱신하는 워커.
+    cache npz에서 score/density/centeredness/mixture 및 meta(dict)를 읽는다.
 
-    Args:
-        args:
-            (replay_id, img_id, file_name, input_root, feature_ext, use_file_name,
-             cache_root, win_w, win_h, sx, sy, thr, cache_dtype, rebuild)
-
-    Returns:
-        Optional[Dict]:
-            캐시 생성 성공 시 간단한 로그 row(dict),
-            feature가 없거나 실패하면 None
+    meta_json은 object 배열로 저장되어 있으므로 allow_pickle=True가 필요하다.
     """
-    (
-        replay_id,
-        img_id,
-        file_name,
-        input_root,
-        feature_ext,
-        use_file_name,
-        cache_root,
-        win_w,
-        win_h,
-        sx,
-        sy,
-        thr,
-        cache_dtype,
-        rebuild,
-    ) = args
-
-    feat_path = build_feature_path_from_meta(
-        input_root=input_root,
-        replay_id=replay_id,
-        file_name=file_name,
-        img_id=img_id,
-        use_file_name=use_file_name,
-        feature_ext=feature_ext,
-    )
-
-    if not os.path.isfile(feat_path):
-        return None
-
-    cpath = ensure_kbrs_cache(
-        replay_id=replay_id,
-        feature_path=feat_path,
-        cache_root=cache_root,
-        win_w=win_w,
-        win_h=win_h,
-        sx=sx,
-        sy=sy,
-        thr=thr,
-        cache_dtype=cache_dtype,
-        rebuild=rebuild,
-    )
-    if cpath is None:
-        return None
-
-    # summary용(가볍게)
-    return {
-        "replay_id": replay_id,
-        "image_id": int(img_id),
-        "file_name": file_name,
-        "cache_path": cpath,
-    }
+    with np.load(cache_path, allow_pickle=True) as z:
+        score = z["score"]
+        den = z["density"]
+        cen = z["centeredness"]
+        mix = z["mixture"]
+        meta_json = str(z["meta_json"][0])
+    meta = json.loads(meta_json)
+    return score, den, cen, mix, meta
 
 
-def _lookup_worker(args: Tuple) -> Optional[Dict[str, Any]]:
+def _lookup_worker(t: LookupTask) -> Optional[Dict[str, Any]]:
     """
-    lookup 서브커맨드에서 이미지 단위로 (GT/pred 중심) KBRS 값을 뽑아 요약 row를 만드는 워커.
+    단일 프레임에 대해 lookup을 수행하고, per-image row를 반환한다.
 
-    Args:
-        args:
-            (replay_id, img_id, file_name, img_w, img_h,
-             input_root, feature_ext, use_file_name,
-             cache_root, win_w, win_h, sx, sy, thr, cache_dtype, rebuild,
-             border, positions, source_tag)
-
-    Returns:
-        Optional[Dict]:
-            per-image 요약 row(dict) 또는 None
+    반환 row는 CSV로 저장될 수 있는 dict 형태이다.
     """
-    (
-        replay_id,
-        img_id,
-        file_name,
-        img_w,
-        img_h,
-        input_root,
-        feature_ext,
-        use_file_name,
-        cache_root,
-        win_w,
-        win_h,
-        sx,
-        sy,
-        thr,
-        cache_dtype,
-        rebuild,
-        border,
-        positions,
-        source_tag,
-    ) = args
-
-    feat_path = build_feature_path_from_meta(
-        input_root=input_root,
-        replay_id=replay_id,
-        file_name=file_name,
-        img_id=img_id,
-        use_file_name=use_file_name,
-        feature_ext=feature_ext,
+    cache_path = build_cache_path(
+        cache_root=t.cache_root,
+        replay_id=t.replay_id,
+        file_name=t.file_name,
+        img_id=t.image_id,
+        use_file_name=t.use_file_name,
+        cache_ext=".npz",
     )
-    if not os.path.isfile(feat_path):
+    if not os.path.isfile(cache_path):
         return None
 
-    if not positions:
-        return None
+    score, den, cen, mix, meta = _load_cache_npz(cache_path)
 
-    # on_the_fly: 기존 방식(경계 부분 패치 포함) 재현
-    if border == "on_the_fly":
-        feat = np.load(feat_path)
-        ds, cs, ms = [], [], []
-        for cx, cy in positions:
-            patch = extract_window(feat, cx, cy, win_w, win_h)
-            d, c, m = kbrs_scores_from_patch(patch, threshold=thr)
-            ds.append(d)
-            cs.append(c)
-            ms.append(m)
+    # feature 원본 크기(128x128)를 기준으로 grid 매핑한다.
+    # 여기서는 meta에 원본 H,W를 저장하지 않았으므로, label json에서 받은 img_w/img_h를 사용한다.
+    # (학습에서 항상 128x128이면 문제 없음. 다를 경우 meta에 ORIGIN_SHAPE 저장을 권장.)
+    H = int(t.img_h)
+    W = int(t.img_w)
+    kH, kW = t.region_size
+    stride = int(t.score_stride)
 
-        if not ds:
-            return None
+    vals_score = []
+    vals_den = []
+    vals_cen = []
+    vals_mix = []
 
-        ds_arr = np.asarray(ds, dtype=np.float32)
-        cs_arr = np.asarray(cs, dtype=np.float32)
-        ms_arr = np.asarray(ms, dtype=np.float32)
-
-        return {
-            "replay_id": replay_id,
-            "image_id": int(img_id),
-            "file_name": file_name,
-            "source": source_tag,
-            "num_points": int(len(ds)),
-            "mean_density": float(ds_arr.mean()),
-            "max_density": float(ds_arr.max()),
-            "mean_centeredness": float(cs_arr.mean()),
-            "max_centeredness": float(cs_arr.max()),
-            "mean_mixture": float(ms_arr.mean()),
-            "max_mixture": float(ms_arr.max()),
-        }
-
-    # cache lookup
-    cpath = ensure_kbrs_cache(
-        replay_id=replay_id,
-        feature_path=feat_path,
-        cache_root=cache_root,
-        win_w=win_w,
-        win_h=win_h,
-        sx=sx,
-        sy=sy,
-        thr=thr,
-        cache_dtype=cache_dtype,
-        rebuild=rebuild,
-    )
-    if cpath is None:
-        return None
-
-    density_map, centeredness_map, mixture_map, _meta = load_kbrs_cache(cpath)
-    grid_h, grid_w = density_map.shape
-
-    ds, cs, ms = [], [], []
-    for cx, cy in positions:
-        idx = xy_to_grid_index(cx, cy, win_w, win_h, sx, sy, grid_w, grid_h, border=border)
+    for (x, y) in t.positions:
+        idx = xy_to_grid_index(
+            x=x, y=y,
+            H=H, W=W,
+            kH=kH, kW=kW,
+            stride=stride,
+            border_mode=t.border_mode,
+        )
         if idx is None:
             continue
         oy, ox = idx
-        ds.append(float(density_map[oy, ox]))
-        cs.append(float(centeredness_map[oy, ox]))
-        ms.append(float(mixture_map[oy, ox]))
+        vals_score.append(float(score[oy, ox]))
+        vals_den.append(float(den[oy, ox]))
+        vals_cen.append(float(cen[oy, ox]))
+        vals_mix.append(float(mix[oy, ox]))
 
-    if not ds:
+    if not vals_score:
         return None
 
-    ds_arr = np.asarray(ds, dtype=np.float32)
-    cs_arr = np.asarray(cs, dtype=np.float32)
-    ms_arr = np.asarray(ms, dtype=np.float32)
-
-    return {
-        "replay_id": replay_id,
-        "image_id": int(img_id),
-        "file_name": file_name,
-        "source": source_tag,
-        "num_points": int(len(ds)),
-        "mean_density": float(ds_arr.mean()),
-        "max_density": float(ds_arr.max()),
-        "mean_centeredness": float(cs_arr.mean()),
-        "max_centeredness": float(cs_arr.max()),
-        "mean_mixture": float(ms_arr.mean()),
-        "max_mixture": float(ms_arr.max()),
+    row = {
+        "replay_id": t.replay_id,
+        "image_id": int(t.image_id),
+        "file_name": t.file_name,
+        "source": t.source,
+        "label_method": t.label_method,
+        "num_points": int(len(vals_score)),
+        "mean_score": float(np.mean(vals_score)),
+        "max_score": float(np.max(vals_score)),
+        "mean_density": float(np.mean(vals_den)),
+        "max_density": float(np.max(vals_den)),
+        "mean_centeredness": float(np.mean(vals_cen)),
+        "max_centeredness": float(np.max(vals_cen)),
+        "mean_mixture": float(np.mean(vals_mix)),
+        "max_mixture": float(np.max(vals_mix)),
     }
+    return row
 
 
-# ---------------------------------------------------------------------
-# CLI parsing (subcommands)
-# ---------------------------------------------------------------------
+# ============================================================
+# CLI
+# ============================================================
 def parse_args() -> argparse.Namespace:
     """
-    서브커맨드(cache/lookup)를 포함한 CLI 인자를 파싱한다.
+    커맨드라인 인자를 파싱한다.
 
-    Returns:
-        argparse.Namespace: 파싱 결과
-
-    Subcommands:
-        cache:
-            replay들의 모든 image(feature)에 대해 KBRS cache(.npz)를 만든다.
-        lookup:
-            GT 또는 pred bbox 중심 좌표에서 KBRS 값을 cache로부터 lookup하여 CSV를 만든다.
+    서브커맨드:
+      - cache  : 프레임별 KBRS 맵(npz) 생성
+      - lookup : GT/pred 좌표를 기반으로 캐시에서 값 추출하여 CSV 저장
     """
-    p = argparse.ArgumentParser(description="KBRS cache/lookup CLI (subcommands)")
-    sub = p.add_subparsers(dest="command", required=True)
+    p = argparse.ArgumentParser(description="KBRS cache/lookup tool (conv-based, 11->9 channel selection).")
+    sub = p.add_subparsers(dest="cmd", required=True)
 
-    # 공통
-    def add_common(p2: argparse.ArgumentParser) -> None:
-        p2.add_argument("--replays", type=str, nargs="+", required=True, help="리플레이 ID 목록")
-        p2.add_argument("--input-root", default="/workspace/data/input/dst", help="입력 feature .npy 루트")
-        p2.add_argument("--label-root", default="/workspace/data/label/dst", help="GT COCO 루트")
-        p2.add_argument("--label-method", default="all_correct", help="라벨링 방법(파일명)")
-        p2.add_argument("--window", default="20,12", help="윈도우 (w,h)")
-        p2.add_argument("--stride", default="1,1", help="stride (sx,sy)")
-        p2.add_argument("--threshold", type=float, default=0.0, help="binary threshold")
-        p2.add_argument("--max-frames", type=int, default=0, help="0보다 크면 images 리스트 앞에서 이 개수만 사용")
-        p2.add_argument("--use-file-name", action="store_true", help="feature 파일명을 image['file_name'] 기반으로 가정")
-        p2.add_argument("--feature-ext", default=".npy", help="feature 파일 확장자")
-        p2.add_argument("--cache-root", default=None, help="캐시 루트(미지정 시 input-root 기반 기본값)")
-        p2.add_argument("--rebuild-cache", action="store_true", help="캐시가 있어도 강제로 재생성")
-        p2.add_argument("--cache-dtype", choices=["float16", "float32"], default="float16", help="캐시 저장 dtype")
-        p2.add_argument("--num-workers", type=int, default=0, help="worker 수(0이면 cpu_count())")
+    # -------- cache --------
+    pc = sub.add_parser("cache", help="Build per-frame KBRS cache (.npz).")
+    pc.add_argument("--replays", type=str, nargs="+", required=True)
 
-    # cache command
-    pc = sub.add_parser("cache", help="KBRS cache 생성/갱신")
-    add_common(pc)
-    pc.add_argument("--csv-out", default=None, help="(선택) cache 생성 로그를 CSV로 저장(디렉터리/파일 둘 다 가능)")
+    pc.add_argument("--data-root", default="/workspace/data")
+    pc.add_argument("--input-root", default="/workspace/data/input/dst")
+    pc.add_argument("--label-root", default="/workspace/data/label/dst")
+    pc.add_argument("--label-method", default="all_correct")
 
-    # lookup command
-    pl = sub.add_parser("lookup", help="GT 또는 pred bbox 중심에서 KBRS 값을 lookup")
-    add_common(pl)
-    pl.add_argument("--source", choices=["gt", "pred"], required=True, help="좌표 source (gt 또는 pred)")
-    pl.add_argument("--pred-root", default="/workspace/predictions", help="prediction 루트")
-    pl.add_argument("--model-name", type=str, default=None, help="source=pred일 때 모델 이름")
-    pl.add_argument("--epoch", type=int, default=None, help="source=pred일 때 epoch 번호")
-    pl.add_argument(
-        "--border",
-        choices=["clamp", "skip", "on_the_fly"],
-        default="clamp",
-        help=(
-            "경계 처리.\n"
-            "  clamp: valid grid 범위로 clamp 후 cache lookup(기본)\n"
-            "  skip: valid grid 밖은 버림\n"
-            "  on_the_fly: 기존 방식(경계 부분 패치 포함)으로 직접 계산(느림)"
-        ),
+    pc.add_argument("--feature-ext", default=".npy")
+    pc.add_argument("--use-file-name", action="store_true")
+
+    pc.add_argument("--cache-root", default=None)
+    pc.add_argument("--cache-dtype", default="float16", choices=["float16", "float32"])
+    pc.add_argument("--compress", action="store_true")
+    pc.add_argument("--rebuild-cache", action="store_true")
+
+    pc.add_argument(
+        "--include-components",
+        nargs="+",
+        default=["worker", "ground", "air", "building", "vision"],
+        help="11채널에서 사용할 컴포넌트 목록 (예: worker ground air building vision).",
     )
-    pl.add_argument("--csv-out", required=True, help="lookup 결과 CSV 출력 경로(디렉터리 또는 파일)")
+
+    # KBRS params (config.py KBRS_PARAMS 기반)
+    pc.add_argument("--region-size", default="20,12", help="(kH,kW) conv 기준. 예: 20,12")
+    pc.add_argument("--score-stride", type=int, default=1)
+    pc.add_argument("--downsample-before", default=None, help='예: {"type":"avg","stride":2} (JSON 문자열)')
+
+    pc.add_argument("--w-density", type=float, default=0.3)
+    pc.add_argument("--w-mixture", type=float, default=3.0)
+    pc.add_argument("--w-centeredness", type=float, default=0.3)
+
+    pc.add_argument("--proj-A", default="0,1,2,3", help="9ch 기준 A projection 채널 인덱스")
+    pc.add_argument("--proj-B", default="4,5,6,7", help="9ch 기준 B projection 채널 인덱스")
+
+    pc.add_argument("--mixture-mode", default="confusion", choices=["confusion", "entropy"])
+    pc.add_argument("--mixture-power", type=float, default=2.0)
+
+    pc.add_argument("--gate-channels", default="8", help="9ch 기준 gate 채널(보통 vision=8)")
+    pc.add_argument("--gate-reduce", default="mean", choices=["mean"])
+    pc.add_argument("--gate-gain", type=float, default=0.8)
+
+    pc.add_argument("--max-frames", type=int, default=0)
+    pc.add_argument("--num-workers", type=int, default=0)
+    pc.add_argument("--chunksize", type=int, default=1)
+    pc.add_argument(
+        "--sample-ratio",
+        type=float,
+        default=1.0,
+        help="0~1 사이. replay 내 frames 중 앞에서 이 비율만 처리(개발용). 예: 0.05",
+    )
+
+    pc.add_argument(
+    "--log-level",
+    default="log",
+    choices=["none", "log", "debug"],
+    help="Logger 출력 레벨. debug면 워커 단계 로그까지 볼 수 있음.",
+    )
+    pc.add_argument(
+        "--debug-samples",
+        type=int,
+        default=0,
+        help="0이면 워커 단계 로그 없음. >0이면 replay별로 처음 N개 task만 상세 로그 출력.",
+    )
+    pc.add_argument(
+        "--error-samples",
+        type=int,
+        default=5,
+        help="replay별로 에러 메시지 샘플을 최대 N개까지 모아서 출력.",
+    )
+
+
+    # -------- lookup --------
+    pl = sub.add_parser("lookup", help="Lookup values at GT/pred positions from cache and write CSV.")
+    pl.add_argument("--replays", type=str, nargs="+", required=True)
+
+    pl.add_argument("--data-root", default="/workspace/data")
+    pl.add_argument("--label-root", default=None)
+    pl.add_argument("--label-method", default="all_correct")
+    pl.add_argument("--use-file-name", action="store_true")
+
+    pl.add_argument("--cache-root", default=None)
+
+    pl.add_argument("--source", default="gt", choices=["gt", "pred"])
+    pl.add_argument("--pred-root", default="/workspace/predictions")
+    pl.add_argument("--model-name", default=None)
+    pl.add_argument("--epoch", type=int, default=None)
+
+    pl.add_argument("--border-mode", default="clamp", choices=["clamp", "skip"])
+    pl.add_argument("--csv-out", required=True)
+
+    pl.add_argument("--region-size", default="20,12", help="(kH,kW) conv 기준. 예: 20,12")
+    pl.add_argument("--score-stride", type=int, default=1)
+    pl.add_argument("--max-frames", type=int, default=0)
+    pl.add_argument("--num-workers", type=int, default=0)
+    pl.add_argument("--chunksize", type=int, default=1)
+    pl.add_argument(
+        "--sample-ratio",
+        type=float,
+        default=1.0,
+        help="0~1 사이. replay 내 frames 중 앞에서 이 비율만 처리(개발용). 예: 0.05",
+    )
 
     return p.parse_args()
 
 
-# ---------------------------------------------------------------------
-# Command runners
-# ---------------------------------------------------------------------
-def _iter_images(coco_gt: COCO, max_frames: int) -> List[dict]:
+def _parse_int_list(s: str) -> List[int]:
     """
-    COCO GT에서 images 리스트를 꺼내고 max_frames를 적용한다.
-
-    Args:
-        coco_gt: GT COCO 객체
-        max_frames: 0이면 전체, 0보다 크면 앞에서 해당 개수만 사용
-
-    Returns:
-        images 리스트
+    '0,1,2' 형태 문자열을 int 리스트로 파싱한다.
     """
-    images = list(coco_gt.dataset.get("images", []))
-    if max_frames > 0:
-        images = images[:max_frames]
-    return images
+    s = s.strip()
+    if not s:
+        return []
+    return [int(x.strip()) for x in s.split(",") if x.strip() != ""]
 
 
 def run_cache(args: argparse.Namespace) -> None:
     """
     cache 서브커맨드를 실행한다.
 
-    동작:
-        - replay별로 GT COCO를 로드해서 images 목록을 얻는다(파일명/이미지 id 사용 목적).
-        - 각 image에 대해 feature 경로를 만들고 KBRS cache(.npz)를 ensure(없으면 생성).
-        - 옵션으로 생성 로그를 CSV로 남길 수 있다.
+    - COCO GT의 images 리스트를 기준으로 프레임을 순회하며,
+      feature(.npy)를 읽어 11->9 채널 선택 후 KBRSConvScorer로 맵을 계산하고 npz로 저장한다.
+    - 진행도(tqdm)와 hit/build/skip/error 카운트를 표시한다.
+    """    
+    input_root = args.input_root or os.path.join(args.data_root, "input/dst")
+    label_root = args.label_root or os.path.join(args.data_root, "label/dst")
+    cache_root = args.cache_root or os.path.join(input_root, "__kbrs_cache__")
 
-    Notes:
-        - cache 계산은 GT/model과 무관하므로, GT COCO는 "images 메타"만 얻기 위해 사용한다.
-    """
-    win_w, win_h = map(int, args.window.split(","))
-    sx, sy = map(int, args.stride.split(","))
+    kH, kW = map(int, args.region_size.split(","))
+    score_weights = {"density": args.w_density, "mixture": args.w_mixture, "centeredness": args.w_centeredness}
 
-    cache_root = args.cache_root or default_cache_root(args.input_root)
-    Logger.info(f"Using cache root: {cache_root}")
+    downsample_before = None
+    if args.downsample_before:
+        downsample_before = json.loads(args.downsample_before)
 
-    all_rows: List[Dict[str, Any]] = []
+    projections_9 = {"A": _parse_int_list(args.proj_A), "B": _parse_int_list(args.proj_B)}
+    gate_channels_9 = _parse_int_list(args.gate_channels)
 
-    for replay_id in map(str, args.replays):
-        print(f"\n[cache][Replay] {replay_id}")
-        coco_gt = load_coco_gt(args.label_root, replay_id, args.label_method)
-        images = _iter_images(coco_gt, args.max_frames)
-        print(f"[Info] num_images={len(images)}")
+    Logger.set_level(args.log_level)
+    Logger.info(f"[cache] input_root={input_root}")
+    Logger.info(f"[cache] label_root={label_root}")
+    Logger.info(f"[cache] cache_root={cache_root}")
+    Logger.info(f"[cache] include_components={args.include_components}")
+    Logger.info(f"[cache] region_size(kH,kW)=({kH},{kW}) score_stride={args.score_stride}")
+    Logger.info(f"[cache] projections_9={projections_9} mixture_mode={args.mixture_mode} mixture_power={args.mixture_power}")
 
-        tasks: List[Tuple] = []
-        for img in images:
+    for replay_id in args.replays:
+        replay_id = str(replay_id)
+        coco = load_coco_gt(label_root=label_root, replay_id=replay_id, label_method=args.label_method)
+        images = list(coco.dataset.get("images", []))
+        if args.max_frames > 0:
+            images = images[: args.max_frames]
+        # 개발용: replay 내 일부만 처리
+        if args.sample_ratio < 1.0:
+            if not (0.0 < args.sample_ratio <= 1.0):
+                raise ValueError("--sample-ratio must be in (0, 1].")
+            n = max(1, int(len(images) * args.sample_ratio))
+            images = images[:n]
+
+        tasks: List[CacheTask] = []
+        for i, img in enumerate(images):
             img_id = int(img["id"])
             file_name = img.get("file_name", "")
             tasks.append(
-                (
-                    replay_id,
-                    img_id,
-                    file_name,
-                    args.input_root,
-                    args.feature_ext,
-                    args.use_file_name,
-                    cache_root,
-                    win_w,
-                    win_h,
-                    sx,
-                    sy,
-                    args.threshold,
-                    args.cache_dtype,
-                    args.rebuild_cache,
+                CacheTask(
+                    replay_id=replay_id,
+                    image_id=img_id,
+                    file_name=file_name,
+                    input_root=input_root,
+                    label_root=label_root,
+                    label_method=args.label_method,
+                    feature_ext=args.feature_ext,
+                    use_file_name=args.use_file_name,
+                    cache_root=cache_root,
+                    cache_dtype=args.cache_dtype,
+                    compress=bool(args.compress),
+                    rebuild_cache=bool(args.rebuild_cache),
+                    include_components=tuple(args.include_components),
+                    region_size=(kH, kW),
+                    score_stride=int(args.score_stride),
+                    downsample_before=downsample_before,
+                    score_weights=score_weights,
+                    projections_9=projections_9,
+                    mixture_mode=str(args.mixture_mode),
+                    mixture_power=float(args.mixture_power),
+                    gate_channels_9=gate_channels_9,
+                    gate_reduce=str(args.gate_reduce),
+                    gate_gain=float(args.gate_gain),
                 )
             )
 
-        rows: List[Dict[str, Any]] = []
+        if not tasks:
+            print(f"[cache] replay={replay_id}: no tasks")
+            continue
 
         n_workers = args.num_workers or cpu_count()
-        if n_workers <= 1:
-            for t in tqdm(tasks, desc=f"[cache] {replay_id}", total=len(tasks)):
+        chunksize = max(1, int(args.chunksize))
+
+        counters = {"hit": 0, "build": 0, "skip_missing_feature": 0, "error": 0}
+        error_samples: List[str] = []
+
+        desc = f"[cache] {replay_id}"
+        if n_workers == 1:
+            for t in tqdm(tasks, desc=desc, total=len(tasks)):
                 r = _cache_worker(t)
-                if r is not None:
-                    rows.append(r)
+                st = r.get("status", "error")
+                counters[st] = counters.get(st, 0) + 1
+                
         else:
-            print(f"[Info] Using {n_workers} workers (tasks={len(tasks)})")
             with Pool(processes=n_workers) as pool:
-                it = pool.imap_unordered(_cache_worker, tasks, chunksize=32)
-                for r in tqdm(it, desc=f"[cache] {replay_id}", total=len(tasks)):
-                    if r is not None:
-                        rows.append(r)
+                it = pool.imap_unordered(_cache_worker, tasks, chunksize=chunksize)
+                for r in tqdm(it, desc=desc, total=len(tasks)):
+                    st = r.get("status", "error")
+                    counters[st] = counters.get(st, 0) + 1
 
-        print(f"[cache][{replay_id}] cache created/verified for {len(rows)} images.")
-        all_rows.extend(rows)
+                    if st == "error":
+                        msg = str(r.get("error", ""))
+                        if msg and len(error_samples) < int(args.error_samples):
+                            error_samples.append(msg)
 
-        # per-replay csv-out 디렉터리 처리
-        if args.csv_out and os.path.isdir(args.csv_out):
-            out_path = os.path.join(args.csv_out, f"kbrs_cache_{replay_id}.csv")
-            pd.DataFrame(rows).sort_values(["image_id"]).to_csv(out_path, index=False)
-            print(f"[Info] saved cache log to: {out_path}")
-
-    # combined csv-out 파일 처리
-    if args.csv_out and not os.path.isdir(args.csv_out):
-        out_dir = os.path.dirname(args.csv_out)
-        if out_dir:
-            os.makedirs(out_dir, exist_ok=True)
-        pd.DataFrame(all_rows).sort_values(["replay_id", "image_id"]).to_csv(args.csv_out, index=False)
-        print(f"[Info] saved combined cache log to: {args.csv_out}")
-
+        Logger.info(f"[cache] replay={replay_id} done: {counters}  cache_root={cache_root}")
+        if error_samples:
+            Logger.error(f"[cache] replay={replay_id} error samples (up to {args.error_samples}):")
+            for e in error_samples:
+                Logger.error("  -", e)
 
 def run_lookup(args: argparse.Namespace) -> None:
     """
     lookup 서브커맨드를 실행한다.
 
-    동작:
-        - replay별로 GT COCO를 로드해서 images 메타(+GT ann) 또는 pred를 읽는다.
-        - 각 image에 대해 (GT bbox 중심) 또는 (pred bbox 중심) 좌표 리스트를 만든다.
-        - KBRS cache를 ensure한 뒤(border 옵션에 따라 cache lookup 또는 on-the-fly) 값을 추출한다.
-        - per-image 요약 row를 CSV로 저장한다.
+    - GT 또는 pred bbox 중심 좌표를 구하고,
+      cache(npz)의 score/comp 맵에서 해당 위치 값을 샘플링해 per-image 요약을 만들고 CSV로 저장한다.
     """
-    win_w, win_h = map(int, args.window.split(","))
-    sx, sy = map(int, args.stride.split(","))
+    label_root = args.label_root or os.path.join(args.data_root, "label/dst")
+    cache_root = args.cache_root or os.path.join(os.path.join(args.data_root, "input/dst"), "__kbrs_cache__")
 
-    cache_root = args.cache_root or default_cache_root(args.input_root)
-
-    # pred 설정 검증
-    preds_by_img_all: Dict[str, Dict[int, List[dict]]] = {}
-    model_tag = None
+    kH, kW = map(int, args.region_size.split(","))
     if args.source == "pred":
         if not args.model_name or args.epoch is None:
-            raise ValueError("lookup --source pred 인 경우 --model-name 과 --epoch 가 필요합니다.")
-        model_tag = f"{args.model_name}_e{args.epoch}"
+            raise ValueError("source=pred 인 경우 --model-name 과 --epoch 를 지정해야 합니다.")
 
     all_rows: List[Dict[str, Any]] = []
 
-    for replay_id in map(str, args.replays):
-        print(f"\n[lookup][Replay] {replay_id}")
-        coco_gt = load_coco_gt(args.label_root, replay_id, args.label_method)
-        images = _iter_images(coco_gt, args.max_frames)
-        print(f"[Info] num_images={len(images)}")
+    for replay_id in args.replays:
+        replay_id = str(replay_id)
+        coco = load_coco_gt(label_root=label_root, replay_id=replay_id, label_method=args.label_method)
+        images = list(coco.dataset.get("images", []))
+        if args.max_frames > 0:
+            images = images[: args.max_frames]
 
         preds_by_img: Optional[Dict[int, List[dict]]] = None
         if args.source == "pred":
@@ -986,120 +850,106 @@ def run_lookup(args: argparse.Namespace) -> None:
                 label_method=args.label_method,
             )
 
-        tasks: List[Tuple] = []
+        tasks: List[LookupTask] = []
 
         for img in images:
             img_id = int(img["id"])
             file_name = img.get("file_name", "")
-            img_w = int(img.get("width", 0))
-            img_h = int(img.get("height", 0))
+            img_w = int(img.get("width", 128))
+            img_h = int(img.get("height", 128))
 
             positions: List[Tuple[float, float]] = []
 
             if args.source == "gt":
-                ann_ids = coco_gt.getAnnIds(imgIds=[img_id])
-                anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
+                ann_ids = coco.getAnnIds(imgIds=[img_id])
+                anns = coco.loadAnns(ann_ids) if ann_ids else []
                 if not anns:
                     continue
-                positions = [centroid_from_coco_ann(ann, img_w, img_h) for ann in anns]
-                if not positions:
-                    continue
-                source_tag = "gt"
+                positions = [centroid_from_coco_ann(a, img_w, img_h) for a in anns]
+
             else:
                 assert preds_by_img is not None
                 dets = preds_by_img.get(img_id, [])
                 if not dets:
                     continue
                 positions = [
-                    centroid_from_coco_ann(det, img_w, img_h)
-                    for det in dets
-                    if "bbox" in det and det["bbox"] is not None
+                    centroid_from_coco_ann(d, img_w, img_h)
+                    for d in dets
+                    if "bbox" in d and d["bbox"] is not None
                 ]
-                if not positions:
-                    continue
-                source_tag = f"pred:{model_tag}"
+
+            if not positions:
+                continue
 
             tasks.append(
-                (
-                    replay_id,
-                    img_id,
-                    file_name,
-                    img_w,
-                    img_h,
-                    args.input_root,
-                    args.feature_ext,
-                    args.use_file_name,
-                    cache_root,
-                    win_w,
-                    win_h,
-                    sx,
-                    sy,
-                    args.threshold,
-                    args.cache_dtype,
-                    args.rebuild_cache,
-                    args.border,
-                    positions,
-                    source_tag,
+                LookupTask(
+                    replay_id=replay_id,
+                    image_id=img_id,
+                    file_name=file_name,
+                    img_w=img_w,
+                    img_h=img_h,
+                    cache_root=cache_root,
+                    use_file_name=args.use_file_name,
+                    region_size=(kH, kW),
+                    score_stride=int(args.score_stride),
+                    border_mode=str(args.border_mode),
+                    source=args.source,
+                    positions=positions,
+                    label_method=args.label_method,
                 )
             )
 
         if not tasks:
-            print(f"[Info] No tasks for replay={replay_id}.")
+            print(f"[lookup] replay={replay_id}: no tasks")
             continue
 
-        rows: List[Dict[str, Any]] = []
-
         n_workers = args.num_workers or cpu_count()
-        if n_workers <= 1:
-            for t in tqdm(tasks, desc=f"[lookup:{args.source}] {replay_id}", total=len(tasks)):
+        chunksize = max(1, int(args.chunksize))
+        desc = f"[lookup:{args.source}] {replay_id}"
+
+        rows: List[Dict[str, Any]] = []
+        if n_workers == 1:
+            for t in tqdm(tasks, desc=desc, total=len(tasks)):
                 r = _lookup_worker(t)
                 if r is not None:
                     rows.append(r)
-                if idx % 200 == 0:
-                    print(f"[lookup][{replay_id}] processed {idx}/{len(tasks)}")
         else:
-            print(f"[Info] Using {n_workers} workers (tasks={len(tasks)})")
             with Pool(processes=n_workers) as pool:
-                it = pool.imap_unordered(_lookup_worker, tasks, chunksize=32)
-                for r in tqdm(it, desc=f"[lookup:{args.source}] {replay_id}", total=len(tasks)):
+                it = pool.imap_unordered(_lookup_worker, tasks, chunksize=chunksize)
+                for r in tqdm(it, desc=desc, total=len(tasks)):
                     if r is not None:
                         rows.append(r)
-                    if idx % 200 == 0:
-                        print(f"[lookup][{replay_id}] processed {idx}/{len(tasks)}")
 
-        print(f"[lookup][{replay_id}] images processed: {len(rows)}")
-        all_rows.extend(rows)
+        if rows:
+            all_rows.extend(rows)
+            print(f"[lookup] replay={replay_id}: rows={len(rows)}")
 
-        # csv-out이 디렉터리면 replay별 저장
-        if os.path.isdir(args.csv_out):
-            out_path = os.path.join(args.csv_out, f"kbrs_lookup_{args.source}_{replay_id}.csv")
-            pd.DataFrame(rows).sort_values(["image_id"]).to_csv(out_path, index=False)
-            print(f"[Info] saved per-replay lookup csv to: {out_path}")
+    if not all_rows:
+        print("[lookup] no rows to write")
+        return
 
-    # csv-out이 파일이면 전체 합쳐 저장
-    if not os.path.isdir(args.csv_out):
-        out_dir = os.path.dirname(args.csv_out)
-        if out_dir:
-            os.makedirs(out_dir, exist_ok=True)
-        pd.DataFrame(all_rows).sort_values(["replay_id", "image_id"]).to_csv(args.csv_out, index=False)
-        print(f"[Info] saved combined lookup csv to: {args.csv_out}")
+    out_dir = os.path.dirname(args.csv_out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    df = pd.DataFrame(all_rows).sort_values(["replay_id", "image_id"])
+    df.to_csv(args.csv_out, index=False)
+    print(f"[lookup] saved: {args.csv_out}  rows={len(df)}")
 
 
 def main() -> None:
     """
-    엔트리 포인트.
+    엔트리포인트.
 
-    흐름:
-        - parse_args()로 command를 읽고
-        - cache면 run_cache(), lookup이면 run_lookup()를 호출한다.
+    - parse_args()로 커맨드/옵션을 읽고,
+      cache 또는 lookup 실행 함수를 호출한다.
     """
     args = parse_args()
-    if args.command == "cache":
+    if args.cmd == "cache":
         run_cache(args)
-    elif args.command == "lookup":
+    elif args.cmd == "lookup":
         run_lookup(args)
     else:
-        raise ValueError(f"Unknown command: {args.command}")
+        raise ValueError(f"Unknown cmd: {args.cmd}")
 
 
 if __name__ == "__main__":
