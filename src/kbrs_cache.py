@@ -738,7 +738,7 @@ def run_cache(args: argparse.Namespace) -> None:
     Logger.info(f"[cache] projections_9={projections_9} mixture_mode={args.mixture_mode} mixture_power={args.mixture_power}")
 
     for replay_id in args.replays:
-        send_message("@worker" + f"[cache] Starting replay {replay_id}")
+        send_message("@work " + f"[cache] Starting replay {replay_id}")
         replay_id = str(replay_id)
         coco = load_coco_gt(label_root=label_root, replay_id=replay_id, label_method=args.label_method)
         images = list(coco.dataset.get("images", []))
@@ -817,7 +817,7 @@ def run_cache(args: argparse.Namespace) -> None:
             Logger.error(f"[cache] replay={replay_id} error samples (up to {args.error_samples}):")
             for e in error_samples:
                 Logger.error("  -", e)
-        send_message("@worker" + f"[cache] Finished replay {replay_id}: {counters}")
+        send_message("@work " + f"[cache] Finished replay {replay_id}: {counters}")
 
 def run_lookup(args: argparse.Namespace) -> None:
     """
