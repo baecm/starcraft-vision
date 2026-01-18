@@ -135,6 +135,8 @@ make precheck ARGS="
 # fold3: 36 212 438 522 1660
 NVIDIA_VISIBLE_DEVICES=0 make cache ARGS=" \
   cache \
-  --replays 1725 \
+  --replays 275 1725 3613 4520 4664 1559 1628 2351 6219 11251 36 212 438 522 1660 \
   --num-workers 16 \
+  --sample-ratio 1.0 \
+  --log-level none \
 "
