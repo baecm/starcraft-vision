@@ -49,21 +49,38 @@ def sample_channels_at_xy(npz, xy, clip_to_bounds: bool, coord_mode: str):
     return dens, cent, mix
 
 
-def resolve_paths(args):
+def resolve_paths_for_replay(args, replay_id: int):
     data_root = args.data_root
-    npz_dir = os.path.join(data_root, args.cache_subdir, f"{args.replay_id}.rep")
+    npz_dir = os.path.join(data_root, args.cache_subdir, f"{replay_id}.rep")
     label_json = os.path.join(
         data_root,
         args.label_subdir,
-        f"{args.replay_id}.rep",
+        f"{replay_id}.rep",
         f"{args.label_method}.json",
     )
     return label_json, npz_dir
 
 
+def parse_replays(values) -> list[int]:
+    out = []
+    for v in values:
+        parts = str(v).split(",")
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            out.append(int(p))
+    return sorted(set(out))
+
+
+def out_path_for_replay(result_root: str, replay_id: int, label_method: str) -> str:
+    os.makedirs(result_root, exist_ok=True)
+    return os.path.join(result_root, f"kbrs_samples_{replay_id}_{label_method}.json")
+
+
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Sample KBRS cache channels (density/centeredness/mixture) at bbox (x,y) for all frames in a replay."
+        description="Sample KBRS cache channels (density/centeredness/mixture) at bbox (x,y) for all frames in replays."
     )
 
     p.add_argument(
@@ -72,7 +89,15 @@ def parse_args():
         default=os.path.join(os.getcwd(), "data"),
         help="Root data directory",
     )
-    p.add_argument("--replay-id", type=int, required=True)
+
+    p.add_argument(
+        "--replays",
+        type=str,
+        nargs="+",
+        required=True,
+        help="Replay IDs. Examples: --replays 275 438 OR --replays 275,438",
+    )
+
     p.add_argument("--label-method", type=str, default="all_correct")
 
     p.add_argument(
@@ -95,40 +120,32 @@ def parse_args():
         choices=["int", "round", "floor", "ceil"],
     )
 
-    p.add_argument("--out-json", type=str, default="")
     p.add_argument("--only-frames-with-anns", action="store_true")
+
+    p.add_argument(
+        "--result-root",
+        type=str,
+        default=os.path.join(os.getcwd(), "results", "kbrs_scores"),
+        help="Directory to write per-replay results: {result_root}/kbrs_samples_{replay_id}_{label_method}.json",
+    )
 
     p.add_argument(
         "--log-level",
         type=str,
         default="log",
         choices=["none", "log", "debug"],
-        help="Logger verbosity (default: log)",
     )
 
     return p.parse_args()
 
 
-def main():
-    args = parse_args()
+def run_one_replay(args, replay_id: int):
+    label_json, npz_dir = resolve_paths_for_replay(args, replay_id)
 
-    Logger.set_level(args.log_level)
-
-    label_json, npz_dir = resolve_paths(args)
-
-    Logger.info("Starting calculate_kernel_score")
-    Logger.info("replay_id =", args.replay_id, "| label_method =", args.label_method)
-    Logger.debug("data_root =", args.data_root)
+    Logger.info("-----")
+    Logger.info("Replay:", replay_id)
     Logger.debug("label_json =", label_json)
-    Logger.debug("npz_dir =", npz_dir)
-    Logger.debug(
-        "clip =",
-        args.clip,
-        "| coord_mode =",
-        args.coord_mode,
-        "| skip_missing_npz =",
-        args.skip_missing_npz,
-    )
+    Logger.debug("npz_dir     =", npz_dir)
 
     if not os.path.exists(label_json):
         Logger.error("Label JSON not found:", label_json)
@@ -141,14 +158,13 @@ def main():
 
     if "images" in label_coco and label_coco["images"]:
         image_ids = sorted(int(img["id"]) for img in label_coco["images"])
-        Logger.info(
-            "Using label_coco['images'] for frame list. frames =", len(image_ids)
-        )
+        Logger.info("frames =", len(image_ids), "(from images)")
     else:
         image_ids = sorted(ann_by_image_id.keys())
         Logger.warn(
-            "label_coco['images'] missing/empty. Using annotation keys. frames =",
+            "label_coco['images'] missing/empty. frames =",
             len(image_ids),
+            "(from annotations)",
         )
 
     rows = []
@@ -173,7 +189,7 @@ def main():
         npz_path = os.path.join(npz_dir, f"{image_id}.npz")
 
         Logger.debug(
-            f"[{idx+1}/{len(image_ids)}] frame={image_id} anns={len(anns)} xy={len(xy)} npz={npz_path}"
+            f"[{idx+1}/{len(image_ids)}] frame={image_id} anns={len(anns)} xy={len(xy)}"
         )
 
         if not os.path.exists(npz_path):
@@ -183,7 +199,7 @@ def main():
             if args.skip_missing_npz:
                 rows.append(
                     {
-                        "replay_id": int(args.replay_id),
+                        "replay_id": int(replay_id),
                         "image_id": int(image_id),
                         "num_anns": int(len(anns)),
                         "xy": xy,
@@ -194,8 +210,6 @@ def main():
                     }
                 )
                 continue
-
-            Logger.error("NPZ not found and skip_missing_npz is False:", npz_path)
             raise FileNotFoundError(f"NPZ not found: {npz_path}")
 
         npz = np.load(npz_path, allow_pickle=True)
@@ -208,7 +222,7 @@ def main():
 
         rows.append(
             {
-                "replay_id": int(args.replay_id),
+                "replay_id": int(replay_id),
                 "image_id": int(image_id),
                 "num_anns": int(len(anns)),
                 "xy": xy,
@@ -233,15 +247,44 @@ def main():
             )
 
     Logger.info(
-        f"Done. replay_id={args.replay_id} frames_total={len(image_ids)} processed={processed} "
+        f"Done replay={replay_id} frames_total={len(image_ids)} processed={processed} "
         f"missing_npz={missing_npz} skipped_no_anns={skipped_no_anns}"
     )
+    return rows
 
-    if args.out_json:
-        os.makedirs(os.path.dirname(args.out_json) or ".", exist_ok=True)
-        with open(args.out_json, "w", encoding="utf-8") as f:
-            json.dump(rows, f, ensure_ascii=False, indent=2)
-        Logger.info("Saved:", args.out_json)
+
+def main():
+    args = parse_args()
+    Logger.set_level(args.log_level)
+
+    replay_ids = parse_replays(args.replays)
+    Logger.info("Starting calculate_kernel_score")
+    Logger.info("replays =", replay_ids)
+    Logger.info("label_method =", args.label_method)
+    Logger.debug("data_root =", args.data_root)
+
+    # result-root 없으면 저장 안 함 (원하면 required=True로 바꿔도 됨)
+    if args.result_root:
+        os.makedirs(args.result_root, exist_ok=True)
+        Logger.info("result_root =", args.result_root)
+    else:
+        Logger.warn("result_root is empty -> will not write output files.")
+
+    total_rows = 0
+
+    for replay_id in replay_ids:
+        rows = run_one_replay(args, replay_id)
+        total_rows += len(rows)
+
+        if args.result_root:
+            out_path = out_path_for_replay(
+                args.result_root, replay_id, args.label_method
+            )
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(rows, f, ensure_ascii=False, indent=2)
+            Logger.info("Saved:", out_path)
+
+    Logger.info("All done. total_rows =", total_rows)
 
 
 if __name__ == "__main__":
