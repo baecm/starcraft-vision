@@ -614,7 +614,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     # KBRS params (config.py KBRS_PARAMS 기반)
-    pc.add_argument("--region-size", default="20,12", help="(kH,kW) conv 기준. 예: 20,12")
+    pc.add_argument("--region-size", default="20,12", help="(kW,kH). 예: 20,12 (w,h)")
     pc.add_argument("--score-stride", type=int, default=1)
     pc.add_argument("--downsample-before", default=None, help='예: {"type":"avg","stride":2} (JSON 문자열)')
 
@@ -718,7 +718,7 @@ def run_cache(args: argparse.Namespace) -> None:
     label_root = args.label_root or os.path.join(args.data_root, "label/dst")
     cache_root = args.cache_root or os.path.join(input_root, "__kbrs_cache__")
 
-    kH, kW = map(int, args.region_size.split(","))
+    kW, kH = map(int, args.region_size.split(","))
     score_weights = {"density": args.w_density, "mixture": args.w_mixture, "centeredness": args.w_centeredness}
 
     downsample_before = None
@@ -733,7 +733,7 @@ def run_cache(args: argparse.Namespace) -> None:
     Logger.info(f"[cache] label_root={label_root}")
     Logger.info(f"[cache] cache_root={cache_root}")
     Logger.info(f"[cache] include_components={args.include_components}")
-    Logger.info(f"[cache] region_size(kH,kW)=({kH},{kW}) score_stride={args.score_stride}")
+    Logger.info(f"[cache] region_size(kW,kH)=({kW},{kH}) -> internal(kH,kW)=({kH},{kW}) score_stride={args.score_stride}")
     Logger.info(f"[cache] projections_9={projections_9} mixture_mode={args.mixture_mode} mixture_power={args.mixture_power}")
 
     for replay_id in args.replays:
