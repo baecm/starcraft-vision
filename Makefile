@@ -71,6 +71,12 @@ cache:
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/cache.cid
 
+lookup:
+	CONTAINER_NAME=lookup_$(shell date +%Y%m%d_%H%M%S); \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher lookup $(ARGS) \
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/lookup.cid
+
 precheck:
 	CONTAINER_NAME=precheck_$(shell date +%Y%m%d_%H%M%S); \
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher precheck $(ARGS) \

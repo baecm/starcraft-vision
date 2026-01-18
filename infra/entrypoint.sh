@@ -49,6 +49,10 @@ cache)
   log "Caching replays..."
   exec python src/kbrs_cache.py "$@"
   ;;
+lookup)
+  log "Looking up replays..."
+  exec python src/kbrs_lookup.py "$@"
+  ;;
 precheck)
   log "Prechecking replays..."
   exec python src/precheck.py "$@"
