@@ -106,6 +106,12 @@ class CustomPennFudanDataset(BasePennFudanDataset):
         anns = ann_dict.get(target_img_id, [])
         target = self._make_target_from_anns(anns, H, W, target_img_id)
 
+        # ---- 디버깅/추적용 메타 (model forward에는 영향 없음; engine에서 텐서만 .to(device) 함) ----
+        # NaN/폭발 배치를 기록할 때 어떤 replay/window였는지 역추적 가능하게.
+        target["rid"] = str(rid)
+        target["window_image_ids"] = [int(x) for x in window_image_ids]
+        target["sample_idx"] = int(idx)
+
         return input_tensor, target
 
     def get_coco_structure(self):

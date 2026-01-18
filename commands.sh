@@ -74,3 +74,69 @@ NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
   kbrs_loss=kbrs025 \
   kbrs_score=centeredness050 \
 "
+
+make estimate ARGS=" \
+  --replays 36 212 438 522 1660 1559 1628 2351 6219 11251 275 1725 3613 4520 4664 6254 3529 3972 7191 7950 7970 9105 9301 9795 \
+  --mode=gt \
+"
+
+make estimate ARGS=" \
+  --replays 36 \
+  --mode=gt \
+  --skip-kbrs \
+"
+
+# fold1
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
+  --mode model \
+  --model-name all_correct_win4_vanilla_fold1_s123_20251201_072032 \
+  --epoch 30 \
+  --replays 275 1725 3613 4520 4664 \
+  --skip-kbrs \
+  "
+
+# fold2
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
+  --mode model \
+  --model-name all_correct_win4_kbrs_fold2_s789_kbrs025_base_score_20251231_215319 \
+  --epoch 30 \
+  --replays 1559 1628 2351 6219 11251 \
+  --skip-kbrs \
+  "
+
+# fold3
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
+  --mode model \
+  --model-name all_correct_win4_kbrs_fold3_s456_kbrs025_base_score_20251231_151012 \
+  --epoch 30 \
+  --replays 36 212 438 522 1660 \
+  --skip-kbrs \
+  "
+
+make precheck ARGS="
+  --root_dir /workspace/data/label/dst \
+  --label_method all_correct \
+  --replays 36,212,438,522,1660,1559,1628,2351,6219,11251,275,1725,3613,4520,4664 \
+  --verbose \
+  "
+
+make precheck ARGS="
+  --root_dir /workspace/data/input/dst \
+  --replays 36,212,438,522,1660,1559,1628,2351,6219,11251,275,1725,3613,4520,4664 \
+  --mmap \
+  --max_abs_warn 1000000 \
+  --workers 32 \
+  --chunksize 64 \
+  "
+
+# python kbrs_cli.py cache --replays 275 3613 --num-workers 16
+# fold1: 275 1725 3613 4520 4664
+# fold2: 1559 1628 2351 6219 11251
+# fold3: 36 212 438 522 1660
+NVIDIA_VISIBLE_DEVICES=0 make cache ARGS=" \
+  cache \
+  --replays 275 1725 3613 4520 4664 1559 1628 2351 6219 11251 36 212 438 522 1660 \
+  --num-workers 16 \
+  --sample-ratio 1.0 \
+  --log-level none \
+"

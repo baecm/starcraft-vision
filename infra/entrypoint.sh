@@ -37,9 +37,21 @@ evaluate)
   log "Evaluating model..."
   exec python src/evaluate.py "$@"
   ;;
+estimate)
+  log "Estimating labels..."
+  exec python src/estimate.py "$@"
+  ;;
 run)
   log "Runninng train/inference squentially..."
   exec python src/pipeline.py "$@"
+  ;;
+cache)
+  log "Caching replays..."
+  exec python src/kbrs_cache.py "$@"
+  ;;
+precheck)
+  log "Prechecking replays..."
+  exec python src/precheck.py "$@"
   ;;
 debug)
   log "Debugging..."

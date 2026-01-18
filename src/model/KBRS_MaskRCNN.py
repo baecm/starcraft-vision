@@ -41,11 +41,22 @@ class KBRS_MaskRCNN(MaskRCNN):
         self._detach_scorer_input: bool = bool(self.kbrs_params.get("detach_scorer_input", True))
 
         self._projections_cfg = self.kbrs_params.get("projections", None)
-        # score_weights: 내부 합성 비율 (구식 'weights'도 허용)
-        _ws = self.kbrs_params.get("score_weights", None)
-        if _ws is None:
-            _ws = self.kbrs_params.get("weights", None)  # backward-compat
-        self._weights = dict(_ws or {"density": 1.0, "mixture": 1.0, "centeredness": 1.0})
+        
+        # Log.warning(f"KBRS_Parameters: {self.kbrs_params}")
+        # Log.warning(f"Loss Weights: {self.loss_weights}, Learnable: {self.learnable_loss_weights}")
+        # # score_weights: 내부 합성 비율 (구식 'weights'도 허용)
+        # _ws = self.kbrs_params.get("score_weights", None)
+        # if _ws is None:
+        #     _ws = self.kbrs_params.get("weights", None)  # backward-compat
+        # self._weights = dict(_ws or {"density": 1.0, "mixture": 1.0, "centeredness": 1.0})
+        density_weights = self.kbrs_params.get("density", None)
+        mixture_weights = self.kbrs_params.get("mixture", None)
+        centeredness_weights = self.kbrs_params.get("centeredness", None)
+        self._weights = {
+            "density":      density_weights      if density_weights      is not None else 1.0,
+            "mixture":      mixture_weights      if mixture_weights      is not None else 1.0,
+            "centeredness": centeredness_weights if centeredness_weights is not None else 1.0,
+        }
 
         self._mixture_between = self.kbrs_params.get("mixture_between", None)  # (미사용)
         self._downsample_before = self.kbrs_params.get("downsample_before", None)

@@ -9,5 +9,5 @@ NVIDIA_VISIBLE_DEVICES=$GPU make run ARGS="-m \
   model=kbrs \
   seed=123 \
   kbrs_loss=kbrs025 \
-  kbrs_score=centeredness010,centeredness020,centeredness040,centeredness050,centeredness060,centeredness070,centeredness080,centeredness090 \
+  kbrs_score=centeredness/000,centeredness/010,centeredness/020,centeredness/040,centeredness/050,centeredness/060,centeredness/070,centeredness/080,centeredness/090 \
   "

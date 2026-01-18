@@ -59,6 +59,24 @@ evaluate:
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/evaluate.cid
 
+estimate:
+	CONTAINER_NAME=estimate_$$(date +%Y%m%d_%H%M%S); \
+	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher estimate $(ARGS) \
+		> logs/$$CONTAINER_NAME.log 2>&1; \
+	echo $$CONTAINER_NAME > $(PID_DIR)/estimate.cid
+
+cache:
+	CONTAINER_NAME=cache_$(shell date +%Y%m%d_%H%M%S); \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher cache $(ARGS) \
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/cache.cid
+
+precheck:
+	CONTAINER_NAME=precheck_$(shell date +%Y%m%d_%H%M%S); \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher precheck $(ARGS) \
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/precheck.cid
+
 run:
 	CONTAINER_NAME=run_$(shell date +%Y%m%d_%H%M%S); \
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher run $(ARGS) \
