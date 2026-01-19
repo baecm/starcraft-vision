@@ -6,9 +6,10 @@ from collections import defaultdict
 import multiprocessing as mp
 
 from tqdm import tqdm
+import sys
 
-from utils.logger import Logger  # src 기준 import 가정
-
+from utils.logger import Logger  
+from utils.synology_chat import send_message 
 
 def build_ann_index(label_coco: dict) -> dict[int, list[dict]]:
     ann_by_image_id = defaultdict(list)
@@ -64,64 +65,81 @@ def parse_replays(values) -> list[int]:
     return sorted(set(out))
 
 
+def parse_id_strings(values) -> list[str]:
+    """
+    supports:
+      --id-strings a b c
+      --id-strings a,b,c
+    """
+    if not values:
+        return []
+    out = []
+    for v in values:
+        parts = str(v).split(",")
+        for p in parts:
+            p = p.strip()
+            if p:
+                out.append(p)
+    # dedup preserving order
+    seen = set()
+    uniq = []
+    for s in out:
+        if s in seen:
+            continue
+        seen.add(s)
+        uniq.append(s)
+    return uniq
+
+
 def resolve_npz_dir_for_replay(args, replay_id: int) -> str:
     # cache: {data_root}/{cache_subdir}/{replay_id}.rep/{image_id}.npz
     return os.path.join(args.data_root, args.cache_subdir, f"{replay_id}.rep")
 
 
-def resolve_label_json(args, replay_id: int) -> str:
-    """
-    gt:
-      {data_root}/{label_subdir}/{replay_id}.rep/{label_method}.json
-    pred:
-      {prediction_path}/{id_string}/epoch_{epoch}/{replay_id}.rep/{label_method}.json
-    """
-    if args.label_source == "gt":
-        return os.path.join(
-            args.data_root,
-            args.label_subdir,
-            f"{replay_id}.rep",
-            f"{args.label_method}.json",
-        )
-
-    # pred
-    if not args.prediction_path:
-        raise ValueError("--prediction-path is required when --label-source pred")
-    if not args.id_string:
-        raise ValueError("--id-string is required when --label-source pred")
-    if args.epoch is None:
-        raise ValueError("--epoch is required when --label-source pred")
-
+def resolve_label_json_gt(args, replay_id: int) -> str:
     return os.path.join(
-        args.prediction_path,
-        args.id_string,
-        f"epoch_{int(args.epoch)}",
+        args.data_root,
+        args.label_subdir,
         f"{replay_id}.rep",
         f"{args.label_method}.json",
     )
 
 
-def resolve_result_dir(args) -> str:
-    """
-    gt:
-      {result_root}/gt/{label_method}
-    pred:
-      {result_root}/pred/{id_string}/epoch_{epoch}/{label_method}
-    """
-    if args.label_source == "gt":
-        return os.path.join(args.result_root, "gt", args.label_method)
+def resolve_label_json_pred(args, replay_id: int, id_string: str) -> str:
+    # pred: {prediction_path}/{id_string}/model_{epoch}/{replay_id}.rep/{label_method}.json
+    return os.path.join(
+        args.prediction_path,
+        id_string,
+        f"model_{int(args.epoch):03d}",
+        f"{replay_id}.rep",
+        f"{args.label_method}.json",
+    )
 
+
+def resolve_result_dir_gt(args) -> str:
+    # gt: {result_root}/gt/{label_method}
+    return os.path.join(args.result_root, "gt", args.label_method)
+
+
+def resolve_result_dir_pred(args, id_string: str) -> str:
+    # pred: {result_root}/pred/{id_string}/model_{epoch}/{label_method}
     return os.path.join(
         args.result_root,
         "pred",
-        args.id_string,
-        f"epoch_{int(args.epoch)}",
+        id_string,
+        f"model_{int(args.epoch):03d}",
         args.label_method,
     )
 
 
-def out_path_for_replay(args, replay_id: int) -> str:
-    out_dir = resolve_result_dir(args)
+def out_path_for_replay_gt(args, replay_id: int) -> str:
+    out_dir = resolve_result_dir_gt(args)
+    os.makedirs(out_dir, exist_ok=True)
+    return os.path.join(out_dir, f"kbrs_samples_{replay_id}.json")
+
+
+def out_path_for_replay_pred(args, replay_id: int, id_string: str) -> str:
+    out_dir = resolve_result_dir_pred(args, id_string)
     os.makedirs(out_dir, exist_ok=True)
     return os.path.join(out_dir, f"kbrs_samples_{replay_id}.json")
 
@@ -131,10 +149,6 @@ def out_path_for_replay(args, replay_id: int) -> str:
 # -------------------------
 
 def _lookup_worker(task_q, result_q, worker_args: dict):
-    """
-    task: (image_id, num_anns, xy)
-    result: dict row (always exactly 1 row per task, unless process is killed)
-    """
     Logger.set_level(worker_args["log_level"])
 
     replay_id = worker_args["replay_id"]
@@ -160,7 +174,6 @@ def _lookup_worker(task_q, result_q, worker_args: dict):
         }
 
         try:
-            # xy가 비어있으면 로드 생략 가능
             if not xy:
                 base_row.update(
                     {
@@ -224,17 +237,7 @@ def _lookup_worker(task_q, result_q, worker_args: dict):
 
 
 def _writer_worker(result_q, out_path: str, total_tasks: int, log_level: str, use_tqdm: bool):
-    """
-    Writes a JSON array streamingly:
-      [
-        {...},
-        {...}
-      ]
-    Terminates only after writing total_tasks rows.
-    If receives ("__FATAL__", msg), raises RuntimeError.
-    """
     Logger.set_level(log_level)
-
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
     with open(out_path, "w", encoding="utf-8") as f:
@@ -248,8 +251,9 @@ def _writer_worker(result_q, out_path: str, total_tasks: int, log_level: str, us
                 desc=f"write {os.path.basename(out_path)}",
                 dynamic_ncols=True,
                 leave=True,
+                mininterval=2.0,
+                miniters=200,
             )
-
         written = 0
         while written < total_tasks:
             msg = result_q.get()
@@ -269,6 +273,9 @@ def _writer_worker(result_q, out_path: str, total_tasks: int, log_level: str, us
 
             json.dump(row, f, ensure_ascii=False)
             written += 1
+
+            if written % 1000 == 0:
+                Logger.info(f"progress {written}/{total_tasks}")
 
             if pbar:
                 pbar.update(1)
@@ -317,7 +324,6 @@ def parse_args():
         help="Used only when --label-source gt",
     )
 
-    # label source selection
     p.add_argument(
         "--label-source",
         type=str,
@@ -325,6 +331,8 @@ def parse_args():
         choices=["gt", "pred"],
         help="Where to read labels from (gt or pred)",
     )
+
+    # pred settings (epoch is shared; id_strings can be multiple)
     p.add_argument(
         "--prediction-path",
         type=str,
@@ -332,16 +340,17 @@ def parse_args():
         help="Prediction root dir (required if --label-source pred)",
     )
     p.add_argument(
-        "--id-string",
+        "--id-strings",
         type=str,
-        default="",
-        help="Model id_string (required if --label-source pred)",
+        nargs="*",
+        default=[],
+        help='Model id_strings (pred only). Examples: --id-strings a b OR --id-strings "a,b"',
     )
     p.add_argument(
         "--epoch",
         type=int,
         default=None,
-        help="Epoch number (required if --label-source pred). Directory name is epoch_{epoch}",
+        help="Epoch number (pred only). Directory name is model_{epoch}",
     )
 
     p.add_argument("--clip", action="store_true")
@@ -392,23 +401,7 @@ def parse_args():
     return p.parse_args()
 
 
-def run_one_replay(args, replay_id: int):
-    label_json = resolve_label_json(args, replay_id)
-    npz_dir = resolve_npz_dir_for_replay(args, replay_id)
-
-    Logger.info("-----")
-    Logger.info("Replay:", replay_id)
-    Logger.info("label_source =", args.label_source)
-    Logger.debug("label_json =", label_json)
-    Logger.debug("npz_dir     =", npz_dir)
-
-    if not os.path.exists(label_json):
-        Logger.error("Label JSON not found:", label_json)
-        raise FileNotFoundError(f"Label JSON not found: {label_json}")
-
-    with open(label_json, "r", encoding="utf-8") as f:
-        label_coco = json.load(f)
-
+def _build_tasks(args, label_coco: dict) -> tuple[list[tuple[int, int, list[tuple[float, float]]]], int]:
     ann_by_image_id = build_ann_index(label_coco)
 
     if "images" in label_coco and label_coco["images"]:
@@ -437,37 +430,49 @@ def run_one_replay(args, replay_id: int):
 
         tasks.append((int(image_id), int(len(anns)), xy))
 
+    return tasks, skipped_no_anns
+
+
+def _run_replay_with_label_json(args, replay_id: int, label_json: str, out_path: str):
+    npz_dir = resolve_npz_dir_for_replay(args, replay_id)
+
+    Logger.debug("label_json =", label_json)
+    Logger.debug("npz_dir     =", npz_dir)
+    Logger.info("out_path =", out_path)
+
+    if not os.path.exists(label_json):
+        Logger.error("Label JSON not found:", label_json)
+        raise FileNotFoundError(f"Label JSON not found: {label_json}")
+
+    with open(label_json, "r", encoding="utf-8") as f:
+        label_coco = json.load(f)
+
+    tasks, skipped_no_anns = _build_tasks(args, label_coco)
     total_tasks = len(tasks)
     Logger.info("tasks =", total_tasks, "skipped_no_anns =", skipped_no_anns)
-
-    out_path = out_path_for_replay(args, replay_id)
-    Logger.info("out_path =", out_path)
 
     ctx = mp.get_context("spawn")
     task_q = ctx.Queue(maxsize=args.queue_size)
     result_q = ctx.Queue(maxsize=args.queue_size)
 
-    # worker args
     worker_args = {
         "replay_id": int(replay_id),
         "npz_dir": npz_dir,
         "clip": bool(args.clip),
         "coord_mode": args.coord_mode,
         "skip_missing_npz": bool(args.skip_missing_npz),
-        # lossless 목적이면 에러도 row로 남기는 게 안전
         "force_row_on_error": bool(args.force_row_on_error) or bool(args.skip_missing_npz),
         "log_level": args.log_level,
     }
-
-    # writer first
+    
+    use_tqdm = (not args.no_tqdm) and sys.stderr.isatty()
     writer = ctx.Process(
         target=_writer_worker,
-        args=(result_q, out_path, total_tasks, args.log_level, (not args.no_tqdm)),
+        args=(result_q, out_path, total_tasks, args.log_level, use_tqdm),
         daemon=False,
     )
     writer.start()
 
-    # lookup workers
     num_workers = max(1, int(args.num_workers))
     workers = []
     for _ in range(num_workers):
@@ -479,21 +484,36 @@ def run_one_replay(args, replay_id: int):
         p.start()
         workers.append(p)
 
-    # enqueue tasks
     for t in tasks:
         task_q.put(t)
 
-    # sentinels
     for _ in workers:
         task_q.put(None)
 
-    # join workers
     for p in workers:
         p.join()
 
     writer.join()
 
-    Logger.info(f"Done replay={replay_id} saved={out_path} tasks={total_tasks}")
+
+def run_one_replay_gt(args, replay_id: int):
+    label_json = resolve_label_json_gt(args, replay_id)
+    out_path = out_path_for_replay_gt(args, replay_id)
+
+    Logger.info("-----")
+    Logger.info("Replay:", replay_id, "| source=gt")
+    _run_replay_with_label_json(args, replay_id, label_json, out_path)
+    Logger.info(f"Done replay={replay_id} saved={out_path}")
+
+
+def run_one_replay_pred(args, replay_id: int, id_string: str):
+    label_json = resolve_label_json_pred(args, replay_id, id_string)
+    out_path = out_path_for_replay_pred(args, replay_id, id_string)
+
+    Logger.info("-----")
+    Logger.info("Replay:", replay_id, "| source=pred | id_string =", id_string, "| epoch =", args.epoch)
+    _run_replay_with_label_json(args, replay_id, label_json, out_path)
+    Logger.info(f"Done replay={replay_id} id_string={id_string} saved={out_path}")
 
 
 def main():
@@ -502,31 +522,40 @@ def main():
 
     replay_ids = parse_replays(args.replays)
 
-    # pred mode validation
-    if args.label_source == "pred":
-        if not args.prediction_path:
-            raise ValueError("--prediction-path is required when --label-source pred")
-        if not args.id_string:
-            raise ValueError("--id-string is required when --label-source pred")
-        if args.epoch is None:
-            raise ValueError("--epoch is required when --label-source pred")
-
     Logger.info("Starting calculate_kernel_score")
     Logger.info("label_source =", args.label_source)
     Logger.info("replays =", replay_ids)
     Logger.info("label_method =", args.label_method)
     Logger.info("result_root =", args.result_root)
-    Logger.debug("data_root =", args.data_root)
-    if args.label_source == "pred":
-        Logger.info("prediction_path =", args.prediction_path)
-        Logger.info("id_string =", args.id_string)
-        Logger.info("epoch =", args.epoch)
 
     os.makedirs(args.result_root, exist_ok=True)
 
-    for replay_id in replay_ids:
-        run_one_replay(args, replay_id)
+    if args.label_source == "gt":
+        for replay_id in replay_ids:
+            run_one_replay_gt(args, replay_id)
+        Logger.info("All done.")
+        return
 
+    # pred mode validations
+    if not args.prediction_path:
+        raise ValueError("--prediction-path is required when --label-source pred")
+    if args.epoch is None:
+        raise ValueError("--epoch is required when --label-source pred")
+    id_strings = parse_id_strings(args.id_strings)
+    if not id_strings:
+        raise ValueError("--id-strings is required (non-empty) when --label-source pred")
+
+    Logger.info("prediction_path =", args.prediction_path)
+    Logger.info("epoch =", args.epoch)
+    Logger.info("id_strings =", id_strings)
+
+    # iterate models then replays (or swap order if you prefer)
+    for id_string in id_strings:
+        send_message(f"@work [lookup] Starting KBRS lookup for id_string={id_string}")
+        for replay_id in replay_ids:
+            run_one_replay_pred(args, replay_id, id_string)
+            send_message(f"@work [lookup] KBRS lookup done for id_string={id_string} replay={replay_id}")
+        send_message(f"@work [lookup] KBRS lookup done for id_string={id_string}")
     Logger.info("All done.")
 
 

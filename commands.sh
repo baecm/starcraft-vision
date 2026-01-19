@@ -142,7 +142,7 @@ NVIDIA_VISIBLE_DEVICES=0 make cache ARGS=" \
 "
 
 NVIDIA_VISIBLE_DEVICES=0 make lookup ARGS=" \
-  --replays 1628 \
+  --replays 275 1725 3613 4520 4664 1559 1628 2351 6219 11251 36 212 438 522 1660 \
   --label-source gt \
   --label-method all_correct \
   --skip-missing-npz \
@@ -151,8 +151,9 @@ NVIDIA_VISIBLE_DEVICES=0 make lookup ARGS=" \
   --log-level log \
   "
 
+#fold 1
 NVIDIA_VISIBLE_DEVICES=0 make lookup ARGS=" \
-  --replays 1628 \
+  --replays 275 1725 3613 4520 4664 \
   --label-source pred \
   --id-string all_correct_win4_kbrs_fold1_s123_kbrs025_mixture_500_20260117_032417 \
   --epoch 30 \
