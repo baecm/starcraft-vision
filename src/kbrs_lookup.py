@@ -550,12 +550,14 @@ def main():
     Logger.info("id_strings =", id_strings)
 
     # iterate models then replays (or swap order if you prefer)
+    send_message(f"@work [lookup] Starting KBRS lookups for {len(id_strings)} id_strings and {len(replay_ids)} replays.")
     for id_string in id_strings:
-        send_message(f"@work [lookup] Starting KBRS lookup for id_string={id_string}")
+        send_message(f"[lookup/id start] Starting KBRS lookup for id_string={id_string}")
         for replay_id in replay_ids:
             run_one_replay_pred(args, replay_id, id_string)
-            send_message(f"@work [lookup] KBRS lookup done for id_string={id_string} replay={replay_id}")
-        send_message(f"@work [lookup] KBRS lookup done for id_string={id_string}")
+            send_message(f"[lookup] KBRS lookup done for id_string={id_string} replay={replay_id}")
+        send_message(f"[lookup/id done] KBRS lookup done for id_string={id_string}")
+    send_message(f"@work [lookup] All KBRS lookups done.")
     Logger.info("All done.")
 
 
