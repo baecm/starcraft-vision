@@ -10,7 +10,7 @@ class Logger:
             cls._level = "none"
         else:
             cls._level = level
-            print(f"[Logger] Log level set to '{cls._level}'")
+            # print(f"[Logger] Log level set to '{cls._level}'")
 
     @classmethod
     def debug(cls, *args):
