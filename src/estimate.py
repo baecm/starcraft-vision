@@ -504,6 +504,72 @@ def compute_ic_for_replay(
         f"num_images={num_images}, num_preds={num_preds})"
     )
 
+    # ------------------------------------------------------------
+    # mode=gt: GT annotations를 "preds_all" 형태(list[dict])로 만들어
+    #         eval_kernel_from_coco를 호출해서 IC를 계산한다.
+    # ------------------------------------------------------------
+    if mode == "gt":
+        gt_dets: List[dict] = []
+        for img in images:
+            img_id = int(img["id"])
+            ann_ids = coco_gt.getAnnIds(imgIds=[img_id])
+            anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
+            for ann in anns:
+                bbox = ann.get("bbox", None)
+                if bbox is None:
+                    continue
+                gt_dets.append(
+                    {
+                        "image_id": img_id,
+                        "bbox": bbox,
+                        "score": 1.0,  # GT는 score가 없으니 1로 채움
+                        "category_id": int(ann.get("category_id", 1)),
+                    }
+                )
+
+        if gt_dets:
+            tag = f"gt_r{replay_id}"
+            print(
+                f"[IC replay={replay_id}] calling eval_kernel_from_coco(...) for GT (n={len(gt_dets)})"
+            )
+            row, per_img_ic, agg_ic = eval_kernel_from_coco(
+                coco_gt,
+                gt_dets,
+                name=tag,
+                kernel=(ic_x_len, ic_y_len),
+                grid=(ic_grid_w, ic_grid_h),
+                maxcoord=(ic_max_x, ic_max_y),
+            )
+
+            mean_ir = agg_ic.get("mean_ir", float("nan"))
+            median_ir = agg_ic.get("median_ir", float("nan"))
+            coverage_any = agg_ic.get("coverage_any", float("nan"))
+            multi_cov = agg_ic.get("multi_coverage", float("nan"))
+            n_img_ic = agg_ic.get("num_images", len(per_img_ic))
+
+            print(
+                f"[IC replay={replay_id}] finished GT eval_kernel_from_coco: "
+                f"num_images={n_img_ic}, "
+                f"mean_ir={mean_ir:.4f}, median_ir={median_ir:.4f}, "
+                f"coverage_any={coverage_any:.4f}, multi_coverage={multi_cov:.4f}"
+            )
+            print(f"[IC replay={replay_id}] GT summary row: {row}")
+            return row
+
+        print(f"[IC replay={replay_id}] GT has no bbox annotations → NaN filled.")
+        return {
+            "kernel": f"{ic_x_len}x{ic_y_len}",
+            "num_images": num_images,
+            "ic@000": float("nan"),
+            "ic@030": float("nan"),
+            "ic@050": float("nan"),
+            "ic_multi": float("nan"),
+            "ic_ratio": float("nan"),
+            "median_ir": float("nan"),
+            "p90_ir": float("nan"),
+        }
+
+
     if mode == "model" and preds_all:
         # eval_kernel_from_coco 안에서 coco → labels_tests → eval_intersection_run 이 수행됨
         print(f"[IC replay={replay_id}] calling eval_kernel_from_coco(...)")
