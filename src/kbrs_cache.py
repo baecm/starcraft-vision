@@ -1,4 +1,4 @@
-# cache.py
+# src/kbrs_cache.py
 from __future__ import annotations
 
 import os
@@ -623,8 +623,8 @@ def parse_args() -> argparse.Namespace:
     pc.add_argument("--w-mixture", type=float, default=3.0)
     pc.add_argument("--w-centeredness", type=float, default=0.3)
 
-    pc.add_argument("--proj-A", default="0,1,2,3", help="9ch 기준 A projection 채널 인덱스")
-    pc.add_argument("--proj-B", default="4,5,6,7", help="9ch 기준 B projection 채널 인덱스")
+    pc.add_argument("--proj-A", default="0,2,4,6", help="9ch 기준 A projection 채널 인덱스")
+    pc.add_argument("--proj-B", default="1,3,5,7", help="9ch 기준 B projection 채널 인덱스")
 
     pc.add_argument("--mixture-mode", default="confusion", choices=["confusion", "entropy"])
     pc.add_argument("--mixture-power", type=float, default=2.0)
