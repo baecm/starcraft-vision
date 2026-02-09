@@ -83,6 +83,12 @@ precheck:
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/precheck.cid
 
+profile_kbrs:
+	CONTAINER_NAME=profile_kbrs_$(shell date +%Y%m%d_%H%M%S); \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher profile_kbrs $(ARGS) \
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/profile_kbrs.cid
+
 run:
 	CONTAINER_NAME=run_$(shell date +%Y%m%d_%H%M%S); \
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher run $(ARGS) \
@@ -104,23 +110,6 @@ preprocess_label:
 status:
 	@echo "Running container IDs:"; \
 	ls $(PID_DIR) | xargs -I {} sh -c 'echo "{} -> $$(cat $(PID_DIR)/{})"'
-
-# 종료 명령
-stop-train:
-	-@docker stop $$(cat $(PID_DIR)/train.cid) 2>/dev/null || true
-	@rm -f $(PID_DIR)/train.cid
-
-stop-inference:
-	-@docker stop $$(cat $(PID_DIR)/inference.cid) 2>/dev/null || true
-	@rm -f $(PID_DIR)/inference.cid
-
-stop-evaluate:
-	-@docker stop $$(cat $(PID_DIR)/evaluate.cid) 2>/dev/null || true
-	@rm -f $(PID_DIR)/evaluate.cid
-
-stop-run:
-	-@docker stop $$(cat $(PID_DIR)/run.cid) 2>/dev/null || true
-	@rm -f $(PID_DIR)/run.cid
 
 stop:
 	@echo "Stopping all tracked containers..."
