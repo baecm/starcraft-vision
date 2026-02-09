@@ -35,12 +35,6 @@ build:
 rebuild:
 	docker compose -f $(COMPOSE_FILE) build --no-cache
 
-up:
-	docker compose -f $(COMPOSE_FILE) up -d
-
-down:
-	docker compose -f $(COMPOSE_FILE) down --remove-orphans
-
 train:
 	CONTAINER_NAME=train_$(shell date +%Y%m%d_%H%M%S); \
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher train $(ARGS) \
@@ -105,11 +99,6 @@ preprocess_input:
 	$(call run_or_parallel,preprocess_input)
 preprocess_label:
 	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_label $(ARGS)
-
-# 상태 확인
-status:
-	@echo "Running container IDs:"; \
-	ls $(PID_DIR) | xargs -I {} sh -c 'echo "{} -> $$(cat $(PID_DIR)/{})"'
 
 stop:
 	@echo "Stopping all tracked containers..."
