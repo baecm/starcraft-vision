@@ -1,4 +1,0 @@
-# @package kbrs_score
-defaults:
-  - /kbrs_score/base_score
-density: 0.2
