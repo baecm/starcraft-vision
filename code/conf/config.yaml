@@ -32,8 +32,8 @@ max_size: 1333
 rpn_small_anchors: false
 cuda: true
 num_workers: 16
-data_root: /workspace/data
-log_root: /workspace/models
+data_root: /data
+log_root: /results/models
 id_string: ""
 
 use_kbrs:      ${model.use_kbrs}
@@ -44,9 +44,6 @@ mode: "train_and_inference" # ["train_only", "inference_only", "train_and_infere
 
 hydra:
   run:
-    # 단일 실행 결과
-    dir: /workspace/results/hydra/run/${now:%Y%m%d_%H%M%S}
+    dir: /results/hydra/run/${now:%Y%m%d_%H%M%S}
   sweep:
-    # 멀티런 결과
-    dir: /workspace/results/hydra/multirun
-    subdir: ${now:%Y%m%d_%H%M%S}_${hydra.job.num}
+    dir: /results/hydra/multirun
