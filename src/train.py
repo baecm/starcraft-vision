@@ -262,12 +262,11 @@ def run_training(cfg: DictConfig):
         Logger.info(f"[Seed] Using seed={seed}")
     set_global_seed(int(seed))
 
-    # 2) 디바이스
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
     Logger.info(f"[Info] Using device: {device} (torch.cuda.is_available(): {torch.cuda.is_available()} / cfg.cuda: {cfg.cuda})")
 
     run_tags = []
-    # 3) id_string / tag_string
+    # id_string / tag_string
     if not cfg.id_string:
         run_tags.append(cfg.label_method)         # all_correct
         run_tags.append(f"win{cfg.window_size}")  # win4
@@ -306,13 +305,10 @@ def run_training(cfg: DictConfig):
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
 
-    # Logger.info(f"CFG: \n{OmegaConf.to_yaml(cfg)}")
-
-    # 5) 경로 설정
     input_root = os.path.join(cfg.data_root, "input/dst")
     label_root = os.path.join(cfg.data_root, "label/dst")
 
-    # 6) 라벨 pickle 준비: train + test 전체
+    # 라벨 pickle 준비: train + test 전체
     train_replays = list(cfg.dataset.train_replays)
     test_replays = list(getattr(cfg.dataset, "test_replays", []) or [])
     all_replays = [str(r) for r in (train_replays + test_replays)]
@@ -325,7 +321,7 @@ def run_training(cfg: DictConfig):
     )
     Logger.info("[Info] JSON to Pickle conversion completed.")
 
-    # 7) train + val 로더 (val은 test_replays에서 cfg.val_count 만큼)
+    # train + val 로더 (val은 test_replays에서 cfg.val_count 만큼)
     data_loader_train, data_loader_validation, inner_ds = load_data(
         input_root=input_root,
         label_root=label_root,
@@ -342,7 +338,7 @@ def run_training(cfg: DictConfig):
         seed=int(seed),
     )
 
-    # 8) test 로더 (test_replays 전체)
+    # test 로더 (test_replays 전체)
     test_loader = None
     if test_replays:
         test_dataset = CustomPennFudanDataset(
