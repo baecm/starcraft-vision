@@ -1,11 +1,6 @@
 #!/bin/bash
 set -e
 
-export WANDB_API_KEY=$(cat /run/secrets/wandb_api_key)
-# echo "[Entrypoint] WANDB_API_KEY = $WANDB_API_KEY"
-export SYNOLOGY_CHAT_WEBHOOK_URL=$(cat /run/secrets/synology_chat_webhook_url)
-# echo "[Entrypoint] SYNOLOGY_CHAT_WEBHOOK_URL = $SYNOLOGY_CHAT_WEBHOOK_URL"
-
 COMMAND="$1"
 shift
 

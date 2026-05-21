@@ -78,20 +78,6 @@ class KBRS_MaskRCNN(MaskRCNN):
                 for k in loss_keys
             })
 
-    def consume_epoch_kbrs(self):
-        """train.py에서 epoch끝에 불러 WANDB로 올릴 수 있게 제공."""
-        scalars = None
-        cache = None
-        if hasattr(self, "_kbrs_epoch_sums") and self._kbrs_epoch_count > 0:
-            cnt = float(self._kbrs_epoch_count)
-            scalars = {f"kbrs_epoch/{k}": v / cnt for k, v in self._kbrs_epoch_sums.items()}
-            self._kbrs_epoch_sums = {}
-            self._kbrs_epoch_count = 0
-        if self.kbrs_cache is not None:
-            cache = self.kbrs_cache
-            self.kbrs_cache = None
-        return scalars, cache
-
     def forward(self, images, targets=None):
         """
         Full forward (train/eval):

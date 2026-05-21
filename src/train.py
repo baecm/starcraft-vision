@@ -18,9 +18,6 @@ from typing import Optional
 import torch
 from torch.utils.data import Subset
 
-import wandb
-from ultralytics import settings
-
 import config
 
 import detection.transforms as T
@@ -209,65 +206,6 @@ def train_model(
         #             if key in t_agg:
         #                 log_dict[f"Test/{key}"] = float(t_agg[key])
 
-        # # ---- KBRS epoch-level 통계 & 이미지 로그 ----
-        # t_kbrs = 0.0
-        # t_kbrs_img = 0.0
-        # if hasattr(model, "consume_epoch_kbrs"):
-        #     tk0 = time.time()
-        #     scalars, cache = model.consume_epoch_kbrs()
-        #     t_kbrs = time.time() - tk0
-
-        #     if scalars:
-        #         scalars = {**{k: v for k, v in scalars.items()}, "epoch": epoch}
-        #         log_dict.update(scalars)
-
-        #     if cache is not None:
-        #         ti0 = time.time()
-
-        #         def _minmax01(t, eps=1e-6):
-        #             t = t.float()
-        #             mn = t.amin(dim=(-2, -1), keepdim=True)
-        #             mx = t.amax(dim=(-2, -1), keepdim=True)
-        #             return (t - mn) / (mx - eps + 1e-12)
-
-        #         def _to_rgb(gray01):
-        #             return gray01.expand(3, -1, -1)
-
-        #         def _to_wandb_image(t3hw):
-        #             return t3hw.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
-
-        #         total = cache["score_total"]
-        #         comps = cache["comp_maps"]
-
-        #         wandb.log(
-        #             {
-        #                 "epoch": epoch,
-        #                 "kbrs_epoch/total": wandb.Image(
-        #                     _to_wandb_image(_to_rgb(_minmax01(total)))
-        #                 ),
-        #             },
-        #             commit=False,
-        #         )
-
-        #         for name, m in comps.items():
-        #             wandb.log(
-        #                 {
-        #                     "epoch": epoch,
-        #                     f"kbrs_epoch/{name}": wandb.Image(
-        #                         _to_wandb_image(_to_rgb(_minmax01(m)))
-        #                     ),
-        #                 },
-        #                 commit=False,
-        #             )
-
-        #         t_kbrs_img = time.time() - ti0
-
-        # ---- wandb 스칼라 로그 ----
-        t_wandb = time.time()
-        wandb.log(log_dict, commit=True)
-        t_wandb = time.time() - t_wandb
-        Logger.info(f"[Time][epoch {epoch}] wandb.log (scalars): {t_wandb:.3f}s")
-
         # ---- 체크포인트 저장 ----
         t_ckpt = 0.0
         if (epoch + 1) % 5 == 0 or (epoch + 1) == num_epochs:
@@ -286,7 +224,6 @@ def train_model(
         #     "[Time][epoch {e}] summary: "
         #     "train={tr:.1f}s, val={ev:.1f}s, test={te:.1f}s, "
         #     "kbrs_scalar={kb:.3f}s, kbrs_img={kbi:.3f}s, "
-        #     "wandb={wb:.3f}s, ckpt={ck:.2f}s, msg={msg:.2f}s, "
         #     "total={tot:.1f}s".format(
         #         e=epoch,
         #         tr=t_train,
@@ -294,7 +231,6 @@ def train_model(
         #         te=t_test_eval,
         #         kb=t_kbrs,
         #         kbi=t_kbrs_img,
-        #         wb=t_wandb,
         #         ck=t_ckpt,
         #         msg=t_msg,
         #         tot=epoch_time,
@@ -313,7 +249,6 @@ def run_training(cfg: DictConfig):
     Hydra DictConfig를 받아서 학습 전체를 수행.
     (예전 argparse-style args를 완전히 대체)
     """
-    settings.update({"wandb": True})
     Logger.info("[Stage] Preparing environment...]")
 
     # 1) seed 처리 (필요하면 여기서 generate + set)
@@ -371,18 +306,7 @@ def run_training(cfg: DictConfig):
     os.makedirs(log_save_path, exist_ok=True)
     Logger.info(f"[Info] Log save path: {log_save_path}")
 
-    if wandb.run is not None:
-        wandb.finish()
-
     # Logger.info(f"CFG: \n{OmegaConf.to_yaml(cfg)}")
-
-    # 4) W&B init (DictConfig → dict 변환)
-    wandb.init(
-        project="starcraft",
-        name=cfg.id_string,
-        config=OmegaConf.to_container(cfg, resolve=True),
-        tags=run_tags,
-    )
 
     # 5) 경로 설정
     input_root = os.path.join(cfg.data_root, "input/dst")
@@ -526,7 +450,6 @@ def run_training(cfg: DictConfig):
         id_string=cfg.id_string,
     )
     torch.cuda.empty_cache()
-    wandb.finish()
 
 
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
