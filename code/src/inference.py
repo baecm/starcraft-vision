@@ -26,7 +26,6 @@ from src.utils.logger import Logger
 def set_global_seed(seed: int | None):
     """
     Inference 단계에서의 샘플링/순서를 고정하기 위한 seed 설정.
-    (train과 동일한 정책을 쓰고 싶으면 그대로 복붙)
     """
     if seed is None:
         Logger.info("[Seed] No seed provided; running inference with default randomness.")
@@ -99,8 +98,6 @@ def save_predictions_as_coco(
 
     Output path (GT mirror):
         <run_dir>/<replay_id>.rep/<label_method>.json
-    e.g.:
-        predictions/vanilla/all_correct_win4_b16_20250812_062928/36.rep/all_correct.json
     """
     out_dir = os.path.join(output_dir, f"{replay_id}.rep")
     os.makedirs(out_dir, exist_ok=True)
@@ -189,7 +186,6 @@ def run_inference(args):
         raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
     # Decide output run dir
-    # run_name이 없어도 / None이어도 안전하게 처리
     default_run_name = os.path.join(args.model_name, f"model_{model_number:03d}")
     run_name = getattr(args, "run_name", None) or default_run_name
 

@@ -34,6 +34,8 @@ cuda: true
 num_workers: 16
 data_root: /data
 log_root: /results/models
+model_root: /results/models
+prediction_root: /results/predictions
 id_string: ""
 
 use_kbrs:      ${model.use_kbrs}

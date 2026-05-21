@@ -22,8 +22,8 @@ def _build_inference_argv_from_cfg(cfg: DictConfig) -> list[str]:
     # 경로 / 모델 정보
     argv += [
         "--data-root", cfg.data_root,
-        "--output-dir", os.path.join(cfg.log_root, "predictions"),
-        "--model-root", cfg.log_root,
+        "--output-dir", cfg.prediction_root,
+        "--model-root", cfg.model_root,
         "--model-name", cfg.id_string,
         "--model-number", str(cfg.max_epoch),
         "--label-method", cfg.label_method,
