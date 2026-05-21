@@ -1,7 +1,7 @@
 # src/cli.py
 import argparse
 import os
-import code.src.config as config
+import src.config as config
 import yaml
 
 from collections.abc import Iterable

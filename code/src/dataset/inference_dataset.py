@@ -6,8 +6,8 @@ from typing import Iterable, Sequence, Optional
 import torch
 from torch.utils.data import Dataset
 
-import code.src.config as config
-from code.src.utils.logger import Logger
+import src.config as config
+from src.utils.logger import Logger
 
 class InferenceDataset(Dataset):
     """

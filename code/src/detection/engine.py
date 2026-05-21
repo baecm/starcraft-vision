@@ -5,7 +5,7 @@ import time
 import torch
 from torch.amp import autocast
 import torchvision.models.detection.mask_rcnn
-import code.src.detection.utils as utils
+import src.detection.utils as utils
 
 from .coco_eval import CocoEvaluator
 from .coco_utils import get_coco_api_from_dataset
@@ -78,7 +78,7 @@ def _get_iou_types(model):
 @torch.inference_mode()
 def evaluate(model, data_loader, device):
     import time
-    from code.src.utils.logger import Logger
+    from src.utils.logger import Logger
 
     n_threads = torch.get_num_threads()
     torch.set_num_threads(1)

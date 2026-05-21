@@ -6,7 +6,7 @@ from multiprocessing import Pool, cpu_count
 from concurrent.futures import ThreadPoolExecutor
 import traceback
 import json
-import code.src.config as config
+import src.config as config
 
 
 def compute_kernel_sum(channel, kernel_shape):

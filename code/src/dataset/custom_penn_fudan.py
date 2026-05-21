@@ -5,8 +5,8 @@ import pickle
 import numpy as np
 import torch
 from .penn_fudan import PennFudanDataset as BasePennFudanDataset
-from code.src.utils.logger import Logger
-import code.src.config as config
+from src.utils.logger import Logger
+import src.config as config
 
 
 class CustomPennFudanDataset(BasePennFudanDataset):

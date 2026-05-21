@@ -13,8 +13,8 @@ import numpy as np
 from pycocotools.coco import COCO
 import pycocotools.mask as mask_util
 
-from code.src.custom_evaluator import eval_intersection_run, ImageIR
-from code.src.utils.logger import Logger
+from src.custom_evaluator import eval_intersection_run, ImageIR
+from src.utils.logger import Logger
 
 
 # ----------------------------------------------------------------------
@@ -410,7 +410,7 @@ def evaluate(model, data_loader, device, epoch: int = 0):
     # ---- kernel/grid/maxcoord 설정 ----
     # KBRS_PARAMS.region_size를 우선 사용하고, 없으면 디폴트 (20,12)
     try:
-        import code.src.config as _cfg
+        import src.config as _cfg
         if hasattr(_cfg, "KBRS_PARAMS") and "region_size" in _cfg.KBRS_PARAMS:
             kernel = tuple(_cfg.KBRS_PARAMS["region_size"])
         else:

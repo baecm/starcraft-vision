@@ -18,19 +18,19 @@ from typing import Optional
 import torch
 from torch.utils.data import Subset
 
-import code.src.config as config
+import src.config as config
 
-import code.src.detection.transforms as T
-from code.src.detection.engine_safe import train_one_epoch_safe as train_one_epoch
-from code.src.evaluate import evaluate
+import src.detection.transforms as T
+from src.detection.engine_safe import train_one_epoch_safe as train_one_epoch
+from src.evaluate import evaluate
 
-from code.src.dataset.label_cache import ensure_label_pickles
-from code.src.dataset.loader import load_data, make_loader
-from code.src.dataset.custom_penn_fudan import CustomPennFudanDataset
+from src.dataset.label_cache import ensure_label_pickles
+from src.dataset.loader import load_data, make_loader
+from src.dataset.custom_penn_fudan import CustomPennFudanDataset
 
-from code.src.model.maskrcnn_builder import get_model_instance_segmentation
+from src.model.maskrcnn_builder import get_model_instance_segmentation
 
-from code.src.utils.logger import Logger
+from src.utils.logger import Logger
 
 
 def set_global_seed(seed: int | None):

@@ -15,7 +15,7 @@ from .viewport_parallel_utils import (
     read_single_csv
 )
 import traceback
-import code.src.config as config
+import src.config as config
 
 
 class Viewport:

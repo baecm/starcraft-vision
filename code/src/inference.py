@@ -14,13 +14,13 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from code.src.cli import parse_inference_args
+from src.cli import parse_inference_args
 
-from code.src.dataset.inference_dataset import InferenceDataset
-from code.src.model.maskrcnn_builder import get_model_instance_segmentation
+from src.dataset.inference_dataset import InferenceDataset
+from src.model.maskrcnn_builder import get_model_instance_segmentation
 
-import code.src.config as config
-from code.src.utils.logger import Logger
+import src.config as config
+from src.utils.logger import Logger
 
 
 def set_global_seed(seed: int | None):

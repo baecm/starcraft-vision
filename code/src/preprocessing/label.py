@@ -1,8 +1,8 @@
 from argparse import ArgumentParser
 
-from code.src.preprocessing.utils import Viewport
+from src.preprocessing.utils import Viewport
 
-import code.src.config as config
+import src.config as config
 
 def parse_arguments():
     parser = ArgumentParser(description="Generate viewport-based point labels for replays")

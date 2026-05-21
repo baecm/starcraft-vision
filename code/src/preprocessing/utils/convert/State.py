@@ -5,7 +5,7 @@ import pandas as pd
 import tqdm
 from multiprocessing import Process, Queue, cpu_count, Manager
 
-from code.src.preprocessing.utils.starcraft import Category
+from src.preprocessing.utils.starcraft import Category
 from ..starcraft import UnitType
 
 

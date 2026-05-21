@@ -5,9 +5,9 @@ import os
 import hydra
 from omegaconf import DictConfig
 
-from code.src.train import run_training
-from code.src.inference import run_inference
-from code.src.cli import parse_inference_args
+from src.train import run_training
+from src.inference import run_inference
+from src.cli import parse_inference_args
 
 
 def _build_inference_argv_from_cfg(cfg: DictConfig) -> list[str]:

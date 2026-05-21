@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import tqdm
 from multiprocessing import Process, Queue, cpu_count, Manager
-import code.src.config as config
+import src.config as config
 
 
 def worker(queue, result_queue, temp_dir, progress_queue):

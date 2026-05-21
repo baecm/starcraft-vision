@@ -6,7 +6,7 @@ from argparse import ArgumentParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple, Generator
 
-import code.src.config as config
+import src.config as config
 
 def parse_arguments():
     parser = ArgumentParser()

@@ -6,10 +6,10 @@ from typing import Optional, Tuple, Iterable, List
 import torch
 from torch.utils.data import DataLoader, Subset
 
-import code.src.utils as utils
-from code.src.dataset.custom_penn_fudan import CustomPennFudanDataset
-from code.src.dataset.splits import train_val_split_indices, subsample_indices
-from code.src.utils.logger import Logger
+import src.utils as utils
+from src.dataset.custom_penn_fudan import CustomPennFudanDataset
+from src.dataset.splits import train_val_split_indices, subsample_indices
+from src.utils.logger import Logger
 
 
 def make_loader(

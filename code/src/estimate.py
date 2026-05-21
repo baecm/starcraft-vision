@@ -11,7 +11,7 @@ from pycocotools.coco import COCO
 from multiprocessing import Pool, cpu_count
 
 # IC metric(기존 evaluator) 재사용
-from code.src.evaluate import eval_kernel_from_coco
+from src.evaluate import eval_kernel_from_coco
 
 
 def _debug_listdir(path: str, label: str = "") -> None:

@@ -11,7 +11,7 @@ from typing import Iterable, List
 
 import tqdm
 
-from code.src.utils.logger import Logger
+from src.utils.logger import Logger
 
 
 def _process_json_worker(args: tuple[str, str, str]) -> str:

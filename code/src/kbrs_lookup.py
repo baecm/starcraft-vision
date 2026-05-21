@@ -8,7 +8,7 @@ import multiprocessing as mp
 from tqdm import tqdm
 import sys
 
-from code.src.utils.logger import Logger  
+from src.utils.logger import Logger  
 
 def build_ann_index(label_coco: dict) -> dict[int, list[dict]]:
     ann_by_image_id = defaultdict(list)

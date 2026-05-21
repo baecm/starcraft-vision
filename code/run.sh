@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -ex  # 에러 발생 시 즉시 중단하고, 실행되는 명령어를 로그에 출력
 
+export PYTHONPATH=/code
+
 # 1. 결과물을 저장할 디렉토리 생성
 echo "Setting up results directories..."
 mkdir -p /results/models /results/logs /results/predictions
@@ -17,8 +19,8 @@ bash ./entrypoint.sh run \
   mode=train_and_inference \
   seed=123 \
   kbrs_loss=kbrs025 \
-  +kbrs_score/density=030 \
-  +kbrs_score/mixture=300 \
-  +kbrs_score/centeredness=030
+  +kbrs_score/density="'030'" \
+  +kbrs_score/mixture="'300'" \
+  +kbrs_score/centeredness="'030'"
 
 echo "Run completed successfully. Results are saved in /results."

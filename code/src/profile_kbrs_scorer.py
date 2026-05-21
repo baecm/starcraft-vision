@@ -14,10 +14,10 @@ from collections import OrderedDict
 import numpy as np
 import torch
 
-from code.src.model.maskrcnn_builder import get_model_instance_segmentation
-from code.src.model.kbrs import KBRSConvScorer
-from code.src.model.utils import pick_feature_map, normalize_projections, auto_expand_indices, compute_gate_from_raw_inputs
-from code.src.utils.time_measure import measure_time
+from src.model.maskrcnn_builder import get_model_instance_segmentation
+from src.model.kbrs import KBRSConvScorer
+from src.model.utils import pick_feature_map, normalize_projections, auto_expand_indices, compute_gate_from_raw_inputs
+from src.utils.time_measure import measure_time
 
 
 def bench_call_ms(fn, iters=200, warmup=30, sync_cuda=True):

@@ -13,7 +13,7 @@ from tqdm import tqdm
 from pycocotools.coco import COCO
 from multiprocessing import Pool, cpu_count
 
-from code.src.utils.logger import Logger
+from src.utils.logger import Logger
 
 # ============================================================
 # 채널/컴포넌트 정의 (config.py 기반)
@@ -53,7 +53,7 @@ def _import_kbrs_scorer():
     - 목적: 캐시 계산을 학습/추론에서 쓰는 scorer 정의와 1:1로 맞추기.
     - 실패 시: ImportError를 발생시켜서 사용자가 PYTHONPATH/경로를 맞추도록 유도.
     """
-    from code.src.model.kbrs import KBRSConvScorer  # 프로젝트 경로에 맞게 조정 가능
+    from src.model.kbrs import KBRSConvScorer  # 프로젝트 경로에 맞게 조정 가능
     return KBRSConvScorer
 
 

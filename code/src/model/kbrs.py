@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from code.src.utils.logger import Logger
+from src.utils.logger import Logger
 from .kbrs_kernel import make_ones_kernel, make_center_kernel
 
 
