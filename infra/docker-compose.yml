@@ -26,4 +26,26 @@ services:
     stdin_open: true
     runtime: nvidia
     entrypoint: ["bash", "entrypoint.sh"]
-  
+
+  zeppelin:
+    image: apache/zeppelin:0.12.0
+    container_name: zeppelin
+    user: "root"
+    ports:
+      - "8080:8080"
+    environment:
+      - ZEPPELIN_ADDR=0.0.0.0
+      - ZEPPELIN_NOTEBOOK_DIR=/workspace/zeppelin/notebook
+      - ZEPPELIN_LOG_DIR=/workspace/zeppelin/logs
+      - ZEPPELIN_CONF_DIR=/workspace/zeppelin/conf
+      - PYSPARK_PYTHON=python3
+      - ZEPPELIN_PYTHON=python3
+    volumes:
+      # infra/ 외부의 프로젝트 루트 zeppelin 폴더를 바인드
+      - ../zeppelin/notebook:/workspace/zeppelin/notebook
+      - ../zeppelin/logs:/workspace/zeppelin/logs
+      - ../zeppelin/conf:/workspace/zeppelin/conf
+      
+      # 데이터 경로는 절대 경로이므로 그대로 유지
+      - /mnt/nas/baecm/starcraft-vision/data:/workspace/data
+      - /mnt/nas/baecm/starcraft-vision/models:/workspace/models

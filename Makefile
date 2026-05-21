@@ -7,7 +7,8 @@ PYDEBUG_SERVICE  ?= pydebug
 
 
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
-        debugger tunnel-debug stop-tunnel-debug
+        debugger tunnel-debug stop-tunnel-debug \
+		zeppelin
 
 # 디렉토리 생성
 $(shell mkdir -p $(PID_DIR))
@@ -106,3 +107,6 @@ stop:
 		[ -f $$cidfile ] && docker stop $$(cat $$cidfile) 2>/dev/null || true; \
 		rm -f $$cidfile; \
 	done
+
+zeppelin:
+	docker compose -f $(COMPOSE_FILE) up zeppelin
