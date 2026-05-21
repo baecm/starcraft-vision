@@ -21,7 +21,6 @@ from model.maskrcnn_builder import get_model_instance_segmentation
 
 import config
 from utils.logger import Logger
-from utils.synology_chat import send_message
 
 
 def set_global_seed(seed: int | None):
@@ -316,12 +315,6 @@ def run_inference(args):
         gc.collect()
         if device.type == "cuda":
             torch.cuda.empty_cache()
-
-        # Notify (best-effort)
-        try:
-            send_message(f"@work [Inference] Completed {replay_id}. Predictions saved at {run_dir}")
-        except Exception as e:
-            Logger.error(f"[Inference] Error sending message: {e}")
 
     # Final cleanup
     del model

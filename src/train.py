@@ -24,7 +24,6 @@ from ultralytics import settings
 import config
 
 import detection.transforms as T
-# NaN/Inf batch를 만나도 학습을 최대한 계속하기 위한 safe train loop
 from detection.engine_safe import train_one_epoch_safe as train_one_epoch
 from evaluate import evaluate
 
@@ -35,7 +34,6 @@ from dataset.custom_penn_fudan import CustomPennFudanDataset
 from model.maskrcnn_builder import get_model_instance_segmentation
 
 from utils.logger import Logger
-from utils.synology_chat import send_message
 
 
 def set_global_seed(seed: int | None):
@@ -281,14 +279,6 @@ def train_model(
                 f"[Info] Saved model checkpoint: {save_path} "
                 f"(time: {t_ckpt:.2f}s)"
             )
-
-        # ---- 슬랙/시놀로지 알림 ----
-        t_msg = time.time()
-        try:
-            send_message(f"[{id_string}] Epoch {epoch+1} completed.")
-        except Exception as e:
-            Logger.error(f"Failed to send message: {e}")
-        t_msg = time.time() - t_msg
 
         # # ---- epoch 전체 시간 요약 ----
         # epoch_time = time.time() - epoch_t0
@@ -536,7 +526,6 @@ def run_training(cfg: DictConfig):
         id_string=cfg.id_string,
     )
     torch.cuda.empty_cache()
-    send_message(f"@work Training run '{cfg.id_string}' completed successfully.")
     wandb.finish()
 
 
@@ -561,10 +550,6 @@ def main(cfg: DictConfig):
 
         error_message = f"Training run '{cfg.id_string}' failed with an error: {e}"
         Logger.error(error_message)
-        try:
-            send_message(f"@work " + error_message)
-        except Exception as send_error:
-            Logger.error(f"Failed to send error message: {send_error}")
         raise
 
 
