@@ -19,8 +19,9 @@ bash ./entrypoint.sh run \
   mode=train_and_inference \
   seed=123 \
   kbrs_loss=kbrs025 \
-  +kbrs_score/density="'030'" \
-  +kbrs_score/mixture="'300'" \
-  +kbrs_score/centeredness="'030'"
+  kbrs_score=base \
+  kbrs_score.density=0.3 \
+  kbrs_score.mixture=3.0 \
+  kbrs_score.centeredness=0.3
 
 echo "Run completed successfully. Results are saved in /results."
