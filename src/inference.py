@@ -17,7 +17,8 @@ from torch.utils.data import DataLoader, Subset
 from cli import parse_inference_args
 
 from dataset.inference_dataset import InferenceDataset
-from model.maskrcnn_builder import get_model_instance_segmentation
+from model.RTDETR import CustomRTDETR
+from model.KBRS_RTDETR import KBRS_RTDETR
 
 import config
 from utils.logger import Logger
@@ -77,17 +78,34 @@ def _auto_num_workers(device: torch.device) -> int:
 
 
 def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int, num_classes: int = 2, use_kbrs: bool = False, kbrs_params: dict = None):
-    model = get_model_instance_segmentation(num_classes, in_channels=in_channels, window_size=window_size, use_kbrs=use_kbrs, kbrs_params=kbrs_params)
+    # 1. 학습 때 사용했던 베이스 가중치의 절대 경로를 지정합니다.
+    base_weights_path = "/workspace/.torch_cache/ultralytics/rtdetr-l.pt"
+
+    # 2. RT-DETR 아키텍처로 껍데기 생성 (정확한 경로 전달!)
+    if use_kbrs:
+        model = KBRS_RTDETR(weights=base_weights_path, num_classes=num_classes, in_channels=in_channels, kbrs_params=kbrs_params)
+    else:
+        model = CustomRTDETR(weights=base_weights_path, num_classes=num_classes, in_channels=in_channels)
+        
+    # 3. 우리가 열심히 학습시킨 체크포인트 가중치 로드
     state = torch.load(model_path, map_location=device)
+    
+    # 딕셔너리 구조 안전장치
+    if 'model_state_dict' in state:
+        state = state['model_state_dict']
+    elif 'model' in state:
+        state = state['model']
+        
     missing, unexpected = model.load_state_dict(state, strict=False)
+    
     if len(missing) > 0:
-        Logger.warn(f"[Inference] Missing keys: {missing}")
+        Logger.warn(f"[Inference] Missing keys: {len(missing)} items")
     if len(unexpected) > 0:
-        Logger.warn(f"[Inference] Unexpected keys: {unexpected}")
+        Logger.warn(f"[Inference] Unexpected keys: {len(unexpected)} items")
+        
     model.to(device)
     model.eval()
     return model
-
 
 def save_predictions_as_coco(
     replay_id: str,
@@ -190,6 +208,9 @@ def run_inference(args):
         raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
     # Decide output run dir
+    if not getattr(args, "output_dir", None):   
+        args.output_dir = "predictions"
+        
     # run_name이 없어도 / None이어도 안전하게 처리
     default_run_name = os.path.join(args.model_name, f"model_{model_number:03d}")
     run_name = getattr(args, "run_name", None) or default_run_name
@@ -201,7 +222,7 @@ def run_inference(args):
         with open(os.path.join(run_dir, "seed.txt"), "w", encoding="utf-8") as f:
             f.write(str(args.seed) + "\n")
     except Exception as e:
-        Logger.warning(f"[Inference] Failed to write seed.txt: {e}")
+        Logger.warn(f"[Inference] Failed to write seed.txt: {e}")
 
     # Infer input channels once from a small temp dataset (first replay)
     temp_input_root = os.path.join(args.data_root, "input", "dst")

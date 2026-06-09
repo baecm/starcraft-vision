@@ -523,4 +523,26 @@ def build_inference_parser() -> argparse.ArgumentParser:
 
 
 def parse_inference_args(argv=None):
-    return build_inference_parser().parse_args(argv)
+    # 1. 파싱 전: pipeline.py나 터미널에서 넘어온 원본 인자 확인
+    print("\n" + "="*70)
+    print(f"[Debug] 1. Inference 파싱 전 (입력된 날것의 인자들):")
+    raw_args = argv if argv is not None else sys.argv
+    print(raw_args)
+    print("="*70 + "\n")
+
+    parser = build_inference_parser()
+    args = parser.parse_args(argv)
+
+    # 2. 파싱 후: default 값(os.getcwd)과 병합되어 최종 결정된 인자 확인
+    print("\n" + "="*70)
+    print(f"[Debug] 2. Inference 파싱 후 (최종 결정된 변수들):")
+    for key, value in vars(args).items():
+        if key == "output_dir":
+            print(f"  👉 {key}: {value}  <--- (핵심 타겟 경로!)")
+        elif key == "model_root":
+            print(f"  👉 {key}: {value}  <--- (모델 경로)")
+        else:
+            print(f"  - {key}: {value}")
+    print("="*70 + "\n")
+
+    return args

@@ -24,7 +24,6 @@ from ultralytics import settings
 import config
 
 import detection.transforms as T
-# NaN/Inf batch를 만나도 학습을 최대한 계속하기 위한 safe train loop
 from detection.engine_safe import train_one_epoch_safe as train_one_epoch
 from evaluate import evaluate
 
@@ -32,7 +31,8 @@ from dataset.label_cache import ensure_label_pickles
 from dataset.loader import load_data, make_loader
 from dataset.custom_penn_fudan import CustomPennFudanDataset
 
-from model.maskrcnn_builder import get_model_instance_segmentation
+# from model.maskrcnn_builder import get_model_instance_segmentation
+from model.factory import build_model
 
 from utils.logger import Logger
 from utils.synology_chat import send_message
@@ -130,38 +130,23 @@ def train_model(
 
         lr_scheduler.step()
 
+        # 로그
         log_dict = {
             "epoch": epoch,
             "Loss/train": train_stats.loss.global_avg,
-            "Loss/class": train_stats.loss_classifier.global_avg,
-            "Loss/box_reg": train_stats.loss_box_reg.global_avg,
-            "Loss/mask": train_stats.loss_mask.global_avg,
-            "Loss/objectness": train_stats.loss_objectness.global_avg,
-            "Loss/rpn_box_reg": train_stats.loss_rpn_box_reg.global_avg,
         }
-
-        # ---- NaN/스킵 통계 (engine_safe meters) ----
+        
         for k in ("skipped", "nan", "grad_nonfinite", "grad_norm"):
             m = getattr(train_stats, k, None)
             if m is not None and hasattr(m, "global_avg"):
                 log_dict[f"Train/{k}"] = float(m.global_avg)
 
-        # ---- KBRS loss 항목 로그 ----
-        if use_kbrs:
-            meters = getattr(train_stats, "meters", {})
-            skip = {
-                "loss_classifier",
-                "loss_box_reg",
-                "loss_mask",
-                "loss_objectness",
-                "loss_rpn_box_reg",
-                "loss",
-            }
-            for k, meter in meters.items():
-                if k.startswith("loss_") and k not in skip and hasattr(
-                    meter, "global_avg"
-                ):
-                    log_dict[f"Loss/{k[5:]}"] = float(meter.global_avg)
+        meters = getattr(train_stats, "meters", {})
+        for k, meter in meters.items():
+            # 'loss_xxx' 형태의 모든 지표를 자동으로 추출하여 기록
+            if k.startswith("loss_") and hasattr(meter, "global_avg"):
+                key_name = k[5:]  # 'loss_classifier' -> 'classifier'
+                log_dict[f"Loss/{key_name}"] = float(meter.global_avg)
 
         # # ---- validation (매 epoch) ----
         # eval_stats = None
@@ -491,21 +476,39 @@ def run_training(cfg: DictConfig):
         f"(window size: {inner_ds.window_size})"
     )
 
-    model = get_model_instance_segmentation(
-        num_classes=num_classes,
-        window_size=cfg.window_size,
-        in_channels=in_channels,
-        do_normalize=cfg.do_normalize,
-        normalize_mean=cfg.normalize_mean,
-        normalize_std=cfg.normalize_std,
-        resize_mode=cfg.resize_mode,
-        min_sizes=cfg.min_sizes,
-        max_size=cfg.max_size,
-        rpn_small_anchors=cfg.rpn_small_anchors if cfg.resize_mode == "keep" else False,
-        use_kbrs=cfg.use_kbrs,
-        kbrs_params=kbrs_params,
-        loss_weights=loss_weights,
-    )
+    # model = get_model_instance_segmentation(
+    #     num_classes=num_classes,
+    #     window_size=cfg.window_size,
+    #     in_channels=in_channels,
+    #     do_normalize=cfg.do_normalize,
+    #     normalize_mean=cfg.normalize_mean,
+    #     normalize_std=cfg.normalize_std,
+    #     resize_mode=cfg.resize_mode,
+    #     min_sizes=cfg.min_sizes,
+    #     max_size=cfg.max_size,
+    #     rpn_small_anchors=cfg.rpn_small_anchors if cfg.resize_mode == "keep" else False,
+    #     use_kbrs=cfg.use_kbrs,
+    #     kbrs_params=kbrs_params,
+    #     loss_weights=loss_weights,
+    # )
+    
+    # factory.py가 요구하는 인자들을 cfg에 병합(Fallback)해줍니다.
+    # Hydra 설정에 없을 경우를 대비한 안전 장치입니다.
+    OmegaConf.set_struct(cfg, False)
+
+    cfg.model_name = getattr(cfg, "model_name", "maskrcnn")
+    cfg.rtdetr_version = getattr(cfg, "rtdetr_version", "v2")
+    cfg.rtdetr_size = getattr(cfg, "rtdetr_size", "l")
+    cfg.in_channels = in_channels
+    cfg.num_classes = num_classes
+    cfg.kbrs_params = kbrs_params
+    cfg.loss_weights = loss_weights
+    
+    # RPN 스몰 앵커 옵션 (Mask R-CNN 전용)
+    cfg.rpn_small_anchors = getattr(cfg, "rpn_small_anchors", False) if getattr(cfg, "resize_mode", "resize") == "keep" else False
+
+    model = build_model(cfg)
+    
     Logger.info(
         f"[Info] Model initialized with {num_classes} classes and "
         f"{in_channels} input channels.]"

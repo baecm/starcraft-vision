@@ -12,7 +12,7 @@ test_replays: ${dataset.test_replays}
 include_components: [worker, ground, air, building, vision]
 label_method: all_correct
 seed: 123
-max_epoch: 30
+max_epoch: 1
 window_size: 4
 interval: 8
 batch_size: 16
@@ -31,10 +31,18 @@ min_sizes: [800]
 max_size: 1333
 rpn_small_anchors: false
 cuda: true
-num_workers: 16
-data_root: /workspace/data
+num_workers: 1
 log_root: /workspace/models
+data_root: /workspace/data
+prediction_root: /workspace/predictions
+model_root: /workspace/models
 id_string: ""
+
+# ===== Factory 패턴을 위한 모델 아키텍처 설정 =====
+model_name: maskrcnn   # "maskrcnn" 또는 "rtdetr"
+rtdetr_version: v2     # "v1" 또는 "v2"
+rtdetr_size: l         # "s", "m", "l", "x" 등 모델 크기
+# =================================================
 
 use_kbrs:      ${model.use_kbrs}
 loss_weights:  ${model.loss_weights}

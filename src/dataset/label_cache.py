@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import pickle
+from collections import defaultdict
+
 from multiprocessing import Pool
 from multiprocessing.dummy import Pool as ThreadPool
 
@@ -13,16 +15,9 @@ import tqdm
 
 from utils.logger import Logger
 
-
 def _process_json_worker(args: tuple[str, str, str]) -> str:
     """
     Worker for COCO JSON → pickle 변환.
-
-    Args:
-        args: (replay_id, label_root, label_method)
-
-    Returns:
-        상태 메시지 문자열
     """
     rid, label_root, label_method = args
     json_path = os.path.join(label_root, f"{rid}.rep", f"{label_method}.json")
@@ -37,19 +32,40 @@ def _process_json_worker(args: tuple[str, str, str]) -> str:
         with open(json_path, "r", encoding="utf-8") as f:
             coco = json.load(f)
 
+        # ========================================================
+        # [수정 추가] image_id 별로 묶어서 annotator_id(0~4) 부여
+        # ========================================================
+        raw_annotations = coco.get("annotations", [])
+        grouped_by_image = defaultdict(list)
+        
+        for ann in raw_annotations:
+            grouped_by_image[ann["image_id"]].append(ann)
+            
+        processed_annotations = []
+        for image_id, anns in grouped_by_image.items():
+            # JSON에 기록된 순서가 뒤죽박죽일 수 있으므로 id 기준으로 한 번 정렬
+            anns = sorted(anns, key=lambda x: x.get("id", 0))
+            
+            for idx, ann in enumerate(anns):
+                ann["annotator_id"] = idx  # 0, 1, 2, 3, 4 부여
+                processed_annotations.append(ann)
+                
+        # 처리된 라벨로 교체
+        coco["annotations"] = processed_annotations
+        # ========================================================
+
         # 최소 필드 보정
         coco.setdefault("info", {"description": "auto-generated", "version": "1.0"})
         coco.setdefault("licenses", [])
         coco.setdefault("categories", [{"id": 1, "name": "viewport"}])
         coco.setdefault("images", [])
-        coco.setdefault("annotations", [])
-
+        
         payload = {
             "info": coco["info"],
             "licenses": coco["licenses"],
             "categories": coco["categories"],
             "images": coco["images"],
-            "annotations": coco["annotations"],
+            "annotations": coco["annotations"],  # annotator_id가 포함된 데이터가 저장됨
         }
 
         with open(pkl_path, "wb") as f:
