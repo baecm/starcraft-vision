@@ -1,4 +1,4 @@
-# src/model/kbrs.py
+# src/model/KBRSConvScorer.py
 from __future__ import annotations
 
 from typing import Dict, List, Tuple, Optional
@@ -59,6 +59,8 @@ class KBRSConvScorer(nn.Module):
             weights or {"density": 1.0, "mixture": 1.0, "centeredness": 1.0}
         )
         self.projections: Dict[str, List[int]] = projections or {}
+        print(f"[DEBUG KBRS] Received projections: {self.projections}")
+        print(f"[DEBUG KBRS] Type: {type(self.projections)}")
         self.mixture_tau = float(mixture_tau)
         self.mixture_mode = str(mixture_mode)
         self.mixture_power = float(mixture_power)
@@ -191,17 +193,26 @@ class KBRSConvScorer(nn.Module):
 
                 return conf.squeeze(1), comp_extra
 
-        # ------------------------
-        # 2) projections가 없을 때의 fallback mixture
-        #    - 각 채널에 ones-kernel conv 후 채널 평균
-        # ------------------------
-        N, C, H, W = x.shape
-        k1 = self._cast_buf(self.k_ones_f32, x)
-        act = F.conv2d(x, k1, stride=self.score_stride)  # (N,C,oh,ow)
-        act = act.mean(dim=1)  # (N,oh,ow)
+        # # ------------------------
+        # # 2) projections가 없을 때의 fallback mixture
+        # #    - 각 채널에 ones-kernel conv 후 채널 평균
+        # # ------------------------
+        # N, C, H, W = x.shape
+        
+        # k1 = self._cast_buf(self.k_ones_f32, x)
+        # act = F.conv2d(x, k1, stride=self.score_stride)  # (N,C,oh,ow)
+        # act = act.mean(dim=1)  # (N,oh,ow)
 
-        comp_extra["proj_mixture"] = act
-        return act, comp_extra
+        # comp_extra["proj_mixture"] = act
+        # return act, comp_extra
+    
+        # 36채널을 먼저 1채널 평균으로 만든 뒤 1채널 전용 커널(k1)을 통과시킵니다.
+        x_mean = x.mean(dim=1, keepdim=True) 
+        k1 = self._cast_buf(self.k_ones_f32, x_mean)
+        act = F.conv2d(x_mean, k1, stride=self.score_stride)  # (N,1,oh,ow)
+        
+        comp_extra["proj_mixture"] = act.squeeze(1) # (N,oh,ow)로 차원 축소
+        return act.squeeze(1), comp_extra
 
     # ------------------------------------------------------------------
     # forward

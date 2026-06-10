@@ -1,6 +1,6 @@
 import torch
-from .RTDETR import BaseRTDETR
-from .kbrs import KBRSConvScorer
+from .CustomRTDETR import BaseRTDETR
+from .KBRSConvScorer import KBRSConvScorer
 from .utils import normalize_projections, auto_expand_indices, compute_gate_from_raw_inputs, aux_boost_loss
 
 # ==========================================
@@ -8,13 +8,12 @@ from .utils import normalize_projections, auto_expand_indices, compute_gate_from
 # ==========================================
 class KBRS_RTDETR(BaseRTDETR):
     def __init__(self, weights="rtdetrv2-l.pt", num_classes=2, in_channels=3, kbrs_params=None, loss_weights=None):
-        # 1. 부모 클래스 초기화 (모델 로드, 개조, 손실함수 세팅)
         super().__init__(weights=weights, num_classes=num_classes, in_channels=in_channels)
         
         self.kbrs_params = kbrs_params or {}
         self.loss_weights = dict(loss_weights or {})
         
-        # 2. KBRS Scorer 변수 세팅 (Hook 기능 완벽 삭제!)
+        # KBRS Scorer 변수 세팅
         self._window_size = int(self.kbrs_params.get("window_size", 1))
         self._per_window  = int(self.kbrs_params.get("per_window", 9))
         self._weights = {
@@ -27,9 +26,10 @@ class KBRS_RTDETR(BaseRTDETR):
         self._gate_gain = float(self.kbrs_params.get("gate_gain", 1.0))
         self._detach_scorer_input = bool(self.kbrs_params.get("detach_scorer_input", True))
         
-        # 3. KBRS 모듈 생성
         in_channels_total = self._per_window * self._window_size
         proj_norm = normalize_projections(self.kbrs_params.get("projections", None), self._window_size, self._per_window, in_channels_total)
+        print(f"[KBRS_RTDETR] Initialized with KBRS parameters: {self.kbrs_params}")
+        print(f"[KBRS_RTDETR] Normalized Projections: {proj_norm}")
         
         self.kbrs_scorer = KBRSConvScorer(
             region_size=self._scorer_region_size,
@@ -61,24 +61,12 @@ class KBRS_RTDETR(BaseRTDETR):
             elif isinstance(criterion_out, tuple): losses["loss_rtdetr"] = criterion_out[0]
             else: losses["loss_rtdetr"] = criterion_out
             
-            # =========================================================
-            # [핵심 수정] 백본 피처맵이 아닌 원본 'batched_images'를 KBRS에 직행하되,
-            # KBRS 내부의 필터가 1채널을 기대하므로 채널을 합쳐서(mean) 넘겨줍니다.
-            # (이 방식은 밀도(Density) 계산을 위한 가장 범용적인 우회로입니다.)
-            # =========================================================
-            fmap = batched_images.detach() if self._detach_scorer_input else batched_images
+            fmap_for_kbrs = batched_images.detach() if self._detach_scorer_input else batched_images            
             
-            # [추가된 부분] 36채널을 1채널로 압축하여 k1 필터(1채널)와 호환되게 만듭니다.
-            # 만약 kbrs.py 내부에서 36채널을 직접 슬라이싱하는 로직이 완벽히 구현되어 있다면 
-            # 이 줄을 빼야 하지만, 현재 에러가 나므로 이 방법으로 강제 호환시킵니다.
-            fmap_for_kbrs = fmap.mean(dim=1, keepdim=True) 
-
             self.kbrs_scorer = self.kbrs_scorer.to(fmap_for_kbrs.device, dtype=fmap_for_kbrs.dtype)
             
-            # 압축된 1채널 맵을 넘깁니다.
             score_map, _ = self.kbrs_scorer(fmap_for_kbrs)
             
-            # Gate 연산 (여기서는 원본 36채널 raw_images를 그대로 사용)
             in_channels_total = self._per_window * self._window_size
             gate_channels = auto_expand_indices(self._gate_channels_cfg, self._window_size, self._per_window, in_channels_total)
             
@@ -89,7 +77,6 @@ class KBRS_RTDETR(BaseRTDETR):
                 )
                 score_map = score_map * gain
                 
-            # 3) KBRS 손실 계산 및 최종 취합
             tau = float(self.kbrs_params.get("tau", 2.0))
             losses["loss_kbrs"] = aux_boost_loss(score_map, tau=tau)
             

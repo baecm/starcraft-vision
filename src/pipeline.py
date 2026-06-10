@@ -1,4 +1,3 @@
-# src/pipeline.py
 from __future__ import annotations
 
 import os
@@ -13,68 +12,78 @@ from cli import parse_inference_args
 def _build_inference_argv_from_cfg(cfg: DictConfig) -> list[str]:
     argv: list[str] = []
 
-    # --replays
+    # 1. Dataset & Paths (데이터 및 경로)
     test_replays = cfg.get("test_replays")
     if not test_replays:
-        raise ValueError("cfg.test_replays 가 비어 있어서 inference를 할 replays를 알 수 없습니다.")
-    argv += ["--replays", *[str(r) for r in test_replays]]
+        raise ValueError("[Error] cfg.test_replays가 비어 있습니다. Inference를 수행할 리플레이가 필요합니다.")
+    
+    argv.extend(["--replays"] + [str(r) for r in test_replays])
+    argv.extend([
+        "--data-root", str(cfg.data_root),
+        "--output-dir", str(cfg.prediction_root),
+    ])
 
-    # 경로 / 모델 정보
-    argv += [
-        "--data-root", cfg.data_root,
-        "--output-dir", cfg.prediction_root,
-        "--model-root", cfg.model_root,
-        "--model-name", cfg.id_string,
+    # 2. Model & Checkpoint Info (모델 및 체크포인트 정보)
+    argv.extend([
+        "--model-root", str(cfg.model_root),
+        "--model-name", str(cfg.id_string),
         "--model-number", str(cfg.max_epoch),
-        "--label-method", cfg.label_method,
+    ])
+
+    # RT-DETR 전용 설정
+    arch_cfg = cfg.get("architecture", {})
+    argv.extend([
+        "--rtdetr-version", str(arch_cfg.get("rtdetr_version", "v1")),
+        "--rtdetr-size", str(arch_cfg.get("rtdetr_size", "l")),
+    ])
+
+    # 3. KBRS & Preprocessing Settings (전처리 및 공통 설정)
+    argv.extend([
+        "--label-method", str(cfg.label_method),
         "--window-size", str(cfg.window_size),
         "--sample-ratio", str(cfg.sample_ratio),
-    ]
+    ])
 
-    # run-name (없으면 기본값 사용)
-    run_name = getattr(cfg, "inference_run_name", None)
-    if run_name is None:
-        run_name = os.path.join(cfg.id_string, f"model_{cfg.max_epoch:03d}")
-    argv += ["--run-name", run_name]
-
-    # include-components
     if cfg.get("include_components"):
-        argv += ["--include-components", *cfg.include_components]
+        argv.extend(["--include-components"] + list(cfg.include_components))
 
-    # 하이퍼파라미터
-    batch_size = getattr(cfg, "inference_batch_size", cfg.batch_size)
-    workers = cfg.num_workers
-    score_threshold = getattr(cfg, "score_threshold", 0.5)
+    # 4. Hyperparameters (추론 하이퍼파라미터)
+    argv.extend([
+        "--batch-size", str(cfg.get("inference_batch_size", cfg.batch_size)),
+        "--workers", str(cfg.num_workers),
+        "--score-threshold", str(cfg.get("score_threshold", 0.5)),
+    ])
 
-    argv += [
-        "--batch-size", str(batch_size),
-        "--workers", str(workers),
-        "--score-threshold", str(score_threshold),
-    ]
+    # 5. Run Name (저장될 폴더명)
+    # inference_run_name이 없으면 기본값으로 "id_string/model_00X" 형태 생성
+    run_name = cfg.get("inference_run_name") or os.path.join(cfg.id_string, f"model_{cfg.max_epoch:03d}")
+    argv.extend(["--run-name", str(run_name)])
 
-    # 플래그
-    if cfg.cuda:
+    # 6. Flags (CUDA, KBRS, Seed)
+    if cfg.get("cuda", True):
         argv.append("--cuda")
-    if getattr(cfg, "use_kbrs", False):
+        
+    use_kbrs_flag = cfg.get("kbrs", {}).get("use_kbrs", cfg.get("use_kbrs", False))
+    if use_kbrs_flag:
         argv.append("--use-kbrs")
-
+        
     if cfg.get("seed") is not None:
-        argv += ["--seed", str(cfg.seed)]
+        argv.extend(["--seed", str(cfg.seed)])
 
     return argv
 
 
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
 def main(cfg: DictConfig) -> None:
-    print("[2025-12-01T..] Runninng train/inference squentially...")
+    print("[Pipeline] Running train/inference sequentially...")
 
-    mode = getattr(cfg, "mode", "train_only")
+    mode = cfg.get("mode", "train_only")
 
-    # 1) train
+    # 1) Train
     if mode in ("train_only", "train_and_inference"):
         run_training(cfg)
 
-    # 2) inference
+    # 2) Inference
     if mode in ("inference_only", "train_and_inference"):
         inf_argv = _build_inference_argv_from_cfg(cfg)
         inf_args = parse_inference_args(inf_argv)

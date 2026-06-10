@@ -1,16 +1,19 @@
 # src/model/rtdetr_builder.py
 import os
 import argparse
-from .RTDETR import CustomRTDETR
+from .CustomRTDETR import CustomRTDETR
+from .KBRS_RTDETR import KBRS_RTDETR
 
 def get_model_instance_rtdetr(num_classes: int,
                               version: str = "v2", 
                               model_size: str = "l", 
-                              in_channels: int = 3):
+                              in_channels: int = 3,
+                              use_kbrs: bool = False,         # 추가됨
+                              kbrs_params: dict = None,       # 추가됨
+                              loss_weights: dict = None):     # 추가됨
     
     # ---------------------------------------------------------
     # 1. 환경변수에서 캐시 디렉토리를 읽어옵니다.
-    # (안전장치로 값이 없을 경우를 대비해 기본값 제공)
     # ---------------------------------------------------------
     base_cache_dir = os.environ.get("TORCH_CACHE_DIR", "/workspace/.torch_cache")
     weight_dir = os.path.join(base_cache_dir, "ultralytics")
@@ -28,18 +31,31 @@ def get_model_instance_rtdetr(num_classes: int,
     if not os.path.exists(weights):
         print(f"Weights not found at {weights}. Downloading...")
         import urllib.request
-        # Ultralytics 공식 릴리즈 URL에서 가중치 파일 다운로드
-        url = f"https://github.com/ultralytics/assets/releases/download/v8.2.0/{os.path.basename(weights)}"
-        urllib.request.urlretrieve(url, weights)
-        print("Download complete.")
+        # v8.3.0 또는 작동하는 릴리즈 URL 사용
+        url = f"https://github.com/ultralytics/assets/releases/download/v8.3.0/{os.path.basename(weights)}"
+        try:
+            urllib.request.urlretrieve(url, weights)
+            print("Download complete.")
+        except Exception as e:
+            raise RuntimeError(f"Failed to download {os.path.basename(weights)} from {url}. Error: {e}")
 
-    # 3. 모델 초기화
-    model = CustomRTDETR(
-        weights=weights, 
-        num_classes=num_classes,
-        in_channels=in_channels
-    )    
-    # 다중 채널 적용 등의 나머지 로직...
+    # 3. KBRS 사용 여부에 따른 모델 분기
+    if use_kbrs:
+        print("Mode         : KBRS integrated RT-DETR (Forward Hooking)")
+        model = KBRS_RTDETR(
+            weights=weights, 
+            num_classes=num_classes,
+            in_channels=in_channels,
+            kbrs_params=kbrs_params,
+            loss_weights=loss_weights
+        )
+    else:
+        print("Mode         : Vanilla RT-DETR")
+        model = CustomRTDETR(
+            weights=weights, 
+            num_classes=num_classes,
+            in_channels=in_channels
+        )    
     
     return model
 

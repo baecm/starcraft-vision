@@ -50,8 +50,6 @@ def get_model_instance_segmentation(num_classes: int,
         kbrs_params.setdefault("per_window", 9)
 
         backbone = resnet_fpn_backbone("resnet50", weights="DEFAULT")
-        # backbone = resnet_fpn_backbone("resnet50", weights=ResNet50_Weights.IMAGENET1K_V1)
-        # backbone = resnet_fpn_backbone("resnet50", weights=None) # weights를 주지 않음
         backbone.body.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         _kaiming_init_conv(backbone.body.conv1)
 
@@ -61,11 +59,9 @@ def get_model_instance_segmentation(num_classes: int,
             loss_weights=loss_weights
         )
     else:
-        # model = torchvision.models.detection.maskrcnn_resnet50_fpn(weights="DEFAULT")
-        backbone = resnet_fpn_backbone("resnet50", weights=ResNet50_Weights.IMAGENET1K_V1)
-        # backbone = resnet_fpn_backbone("resnet50", weights=None) # weights를 주지 않음
-        backbone.body.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        _kaiming_init_conv(backbone.body.conv1)
+        model = torchvision.models.detection.maskrcnn_resnet50_fpn(weights="DEFAULT")
+        model.backbone.body.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        _kaiming_init_conv(model.backbone.body.conv1)
 
     # heads
     in_features = model.roi_heads.box_predictor.cls_score.in_features

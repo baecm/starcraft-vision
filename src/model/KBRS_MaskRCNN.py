@@ -7,7 +7,7 @@ from torchvision.models.detection import MaskRCNN
 from collections import OrderedDict
 from typing import Dict, List
 
-from .kbrs import KBRSConvScorer
+from .KBRSConvScorer import KBRSConvScorer
 from .utils import pick_feature_map, normalize_projections, auto_expand_indices, compute_gate_from_raw_inputs, reduce_map_stats, aux_boost_loss, aux_entropy_sharp
 
 
@@ -17,12 +17,10 @@ class KBRS_MaskRCNN(MaskRCNN):
         super().__init__(backbone, num_classes)
         self.kbrs_params = kbrs_params or {}
 
-        # ===== Loss weights (최종 합산 비중) =====
         self.loss_weights = dict(loss_weights or {})        # e.g., {'loss_kbrs':0.25, 'loss_objectness':1.0, ...}
         self.learnable_loss_weights = self.kbrs_params.get("learnable", None)  # 'static'이면 비활성
         self._loss_weight_head = None
 
-        # runtime logging
         self.log_into_losses = bool(self.kbrs_params.get("log_into_losses", False))
         self.kbrs_last_logs = {}
         self.kbrs_cache = None
@@ -42,8 +40,6 @@ class KBRS_MaskRCNN(MaskRCNN):
 
         self._projections_cfg = self.kbrs_params.get("projections", None)
         
-        # Log.warning(f"KBRS_Parameters: {self.kbrs_params}")
-        # Log.warning(f"Loss Weights: {self.loss_weights}, Learnable: {self.learnable_loss_weights}")
         # # score_weights: 내부 합성 비율 (구식 'weights'도 허용)
         # _ws = self.kbrs_params.get("score_weights", None)
         # if _ws is None:
@@ -122,7 +118,7 @@ class KBRS_MaskRCNN(MaskRCNN):
         fmap_key, fmap = pick_feature_map(features, fmap_key_pref)
 
         # # projections normalize & scorer init (once)
-        # in_channels_total = self._per_window * self._window_size
+        in_channels_total = self._per_window * self._window_size
         # proj_norm = normalize_projections(
         #     self._projections_cfg, self._window_size, self._per_window, in_channels_total
         # )

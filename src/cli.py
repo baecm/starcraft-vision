@@ -483,6 +483,18 @@ def build_inference_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use KBRS if available in the model.",
     )
+    group_model.add_argument(
+        "--rtdetr-version",
+        type=str,
+        default="v1",
+        help="RT-DETR version (v1 or v2)",
+    )
+    group_model.add_argument(
+        "--rtdetr-size",
+        type=str,
+        default="l",
+        help="RT-DETR model size (s, m, l, x)",
+    )
 
     group_hyper = parser.add_argument_group("Inference Hyperparameters")
     group_hyper.add_argument(

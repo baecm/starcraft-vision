@@ -36,10 +36,9 @@ kbrs_params:
   gate_gain: 0.8
 
   projections:
-    - name: 'A'
-      channels: [0, 1, 2, 3]
-    - name: 'B'
-      channels: [4, 5, 6, 7]
+    A: [0, 1, 2, 3]
+    B: [4, 5, 6, 7]
+    
   mixture_mode: 'confusion'
   mixture_power: 1.0
   mixture_tau: 2.0

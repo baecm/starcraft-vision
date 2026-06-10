@@ -185,7 +185,32 @@ NVIDIA_VISIBLE_DEVICES=0 make lookup ARGS=" \
   --log-level log \
   "
 
-  NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  architecture=maskrcnn \
+  kbrs=disabled \
+  dataset=fold1_sample \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  architecture=maskrcnn \
+  kbrs=enabled \
+  dataset=fold1_sample \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+"  
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  architecture=rtdetr \
+  kbrs=disabled \
+  dataset=fold1_sample \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
   architecture=rtdetr \
   kbrs=enabled \
   dataset=fold1_sample \
