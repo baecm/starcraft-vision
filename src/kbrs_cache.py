@@ -614,7 +614,6 @@ def parse_args() -> argparse.Namespace:
         help="11채널에서 사용할 컴포넌트 목록 (예: worker ground air building vision).",
     )
 
-    # KBRS params (config.py KBRS_PARAMS 기반)
     pc.add_argument("--region-size", default="20,12", help="(kW,kH). 예: 20,12 (w,h)")
     pc.add_argument("--score-stride", type=int, default=1)
     pc.add_argument("--downsample-before", default=None, help='예: {"type":"avg","stride":2} (JSON 문자열)')

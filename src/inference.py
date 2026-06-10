@@ -77,18 +77,23 @@ def _auto_num_workers(device: torch.device) -> int:
     return max(0, avail - 1)
 
 
-def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int, num_classes: int = 2, use_kbrs: bool = False, kbrs_params: dict = None):
-    # 1. 학습 때 사용했던 베이스 가중치의 절대 경로를 지정합니다.
-    base_weights_path = "/workspace/.torch_cache/ultralytics/rtdetr-l.pt"
-
-    # 2. RT-DETR 아키텍처로 껍데기 생성 (정확한 경로 전달!)
+def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int, architecture: str, num_classes: int = 2, use_kbrs: bool = False, kbrs_params: dict = None):
+    arch_name_lower = architecture.lower()
+    rtdetr_base_weight_path = "/workspace/.torch_cache/ultralytics/rtdetr-l.pt"
+    
     if use_kbrs:
-        model = KBRS_RTDETR(weights=base_weights_path, num_classes=num_classes, in_channels=in_channels, kbrs_params=kbrs_params)
+        if "rtdetr" in arch_name_lower:
+            model = KBRS_RTDETR(weights=rtdetr_base_weight_path, num_classes=num_classes, in_channels=in_channels, kbrs_params=kbrs_params)
+        else: # maskrcnn
+            model = get_model_instance_segmentation(num_classes=num_classes, in_channels=in_channels, window_size=window_size, use_kbrs=True, kbrs_params=kbrs_params)
     else:
-        model = CustomRTDETR(weights=base_weights_path, num_classes=num_classes, in_channels=in_channels)
+        if "rtdetr" in arch_name_lower:
+            model = CustomRTDETR(weights=rtdetr_base_weight_path, num_classes=num_classes, in_channels=in_channels)
+        else:
+            model = get_model_instance_segmentation(num_classes=num_classes, in_channels=in_channels, window_size=window_size, use_kbrs=False)
         
-    # 3. 우리가 열심히 학습시킨 체크포인트 가중치 로드
-    state = torch.load(model_path, map_location=device)
+    # 체크포인트 가중치 로드
+    state = torch.load(model_path, map_location=device)    
     
     # 딕셔너리 구조 안전장치
     if 'model_state_dict' in state:
@@ -199,8 +204,6 @@ def run_inference(args):
 
     # Checkpoint path
     model_folder = os.path.join(args.model_root, args.model_name)
-
-    # model_number는 어떤 경우든 int로 강제 변환
     model_number = int(getattr(args, "model_number"))
     model_path = os.path.join(model_folder, f"model_{model_number:03d}.pth")
     Logger.info(f"[Inference] Checkpoint path: {model_path}")
@@ -214,8 +217,8 @@ def run_inference(args):
     # run_name이 없어도 / None이어도 안전하게 처리
     default_run_name = os.path.join(args.model_name, f"model_{model_number:03d}")
     run_name = getattr(args, "run_name", None) or default_run_name
-
     run_dir = os.path.join(args.output_dir, run_name)
+    
     Logger.info(f"[Inference] Output run dir: {run_dir}")
     try:
         os.makedirs(run_dir, exist_ok=True)
@@ -235,15 +238,43 @@ def run_inference(args):
     in_channels = len(temp_dataset.channel_indices) * temp_dataset.window_size
     del temp_dataset
 
+    use_kbrs_flag = getattr(args, "use_kbrs", False)
+    kbrs_params = None
+    
+    if use_kbrs_flag:
+        try:
+            # 1. conf/model/kbrs.yaml 파일에서 기본 설정 로드
+            yaml_path = os.path.join(os.path.dirname(__file__), "../conf/model/kbrs.yaml")
+            if os.path.exists(yaml_path):
+                kbrs_cfg = OmegaConf.load(yaml_path)
+                if hasattr(kbrs_cfg, 'kbrs_params'):
+                    kbrs_params = OmegaConf.to_container(kbrs_cfg.kbrs_params, resolve=True)
+                else:
+                    kbrs_params = OmegaConf.to_container(kbrs_cfg, resolve=True)
+            else:
+                kbrs_params = {}
+        except Exception as e:
+            Logger.warning(f"[Inference] KBRS YAML 로드 실패. 빈 설정으로 대체합니다: {e}")
+            kbrs_params = {}
+
+        # 2. 필수 동적 파라미터(window_size 등) 강제 주입
+        if kbrs_params is not None:
+            kbrs_params["window_size"] = args.window_size
+            kbrs_params.setdefault("per_window", 9)
+            
+    # args.architecture("rtdetr_kbrs_win4_...")에서 기본 아키텍처 이름을 추출
+    arch_name = "rtdetr" if "rtdetr" in args.model_name.lower() else "maskrcnn"
+     
     # Load model ONCE (reuse across replays)
     model = _load_model(
         model_path=model_path,
         device=device,
         in_channels=in_channels,
         window_size=args.window_size,
+        architecture=arch_name,           
         num_classes=2,
-        use_kbrs=args.use_kbrs,
-        kbrs_params=config.KBRS_PARAMS if args.use_kbrs else None
+        use_kbrs=use_kbrs_flag,         
+        kbrs_params=kbrs_params
     )
 
     input_root = os.path.join(args.data_root, "input", "dst")

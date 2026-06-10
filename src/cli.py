@@ -360,7 +360,7 @@ def parse_train_args(argv=None):
     group_data.add_argument(
         "--interval",
         type=int,
-        default=config.INTERVAL,
+        default=1,
         help="Sampling interval for frame windows (1 = use every index).",
     )
     group_data.add_argument(
@@ -375,22 +375,22 @@ def parse_train_args(argv=None):
     group_hyper.add_argument(
         "--window-size",
         type=int,
-        default=config.WINDOW_SIZE,
+        default=1,
     )
     group_hyper.add_argument(
         "--batch-size",
         type=int,
-        default=config.TRAIN_BATCH_SIZE,
+        default=8,
     )
     group_hyper.add_argument(
         "--learning-rate",
         type=float,
-        default=config.TRAIN_LEARNING_RATE,
+        default=0.005,
     )
     group_hyper.add_argument(
         "--max-epoch",
         type=int,
-        default=config.TRAIN_EPOCHS,
+        default=10,
     )
     group_hyper.add_argument(
         "--test-eval-every",
@@ -523,24 +523,16 @@ def build_inference_parser() -> argparse.ArgumentParser:
 
 
 def parse_inference_args(argv=None):
-    # 1. 파싱 전: pipeline.py나 터미널에서 넘어온 원본 인자 확인
-    print("\n" + "="*70)
-    print(f"[Debug] 1. Inference 파싱 전 (입력된 날것의 인자들):")
     raw_args = argv if argv is not None else sys.argv
-    print(raw_args)
-    print("="*70 + "\n")
-
     parser = build_inference_parser()
     args = parser.parse_args(argv)
 
-    # 2. 파싱 후: default 값(os.getcwd)과 병합되어 최종 결정된 인자 확인
     print("\n" + "="*70)
-    print(f"[Debug] 2. Inference 파싱 후 (최종 결정된 변수들):")
     for key, value in vars(args).items():
         if key == "output_dir":
-            print(f"  👉 {key}: {value}  <--- (핵심 타겟 경로!)")
+            print(f"  - {key}: {value}")
         elif key == "model_root":
-            print(f"  👉 {key}: {value}  <--- (모델 경로)")
+            print(f"  - {key}: {value}")
         else:
             print(f"  - {key}: {value}")
     print("="*70 + "\n")

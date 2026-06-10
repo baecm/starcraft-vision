@@ -1,4 +1,6 @@
-# @package kbrs_score
-defaults:
-  - /kbrs_score/only
-density: 0.3
+# @package _global_
+kbrs:
+  score_weights:
+    density: 0.3
+    centeredness: 0.0
+    mixture: 0.0

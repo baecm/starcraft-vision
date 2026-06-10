@@ -1,4 +1,4 @@
-# @package kbrs_score
-defaults:
-  - /kbrs_score/base_score
-centeredness: 0.6
+# @package _global_
+kbrs:
+  score_weights:
+    centeredness: 0.6

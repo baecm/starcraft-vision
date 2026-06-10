@@ -329,31 +329,31 @@ def run_training(cfg: DictConfig):
     run_tags = []
     # 3) id_string / tag_string
     if not cfg.id_string:
-        run_tags.append(cfg.label_method)         # all_correct
+        run_tags.append(cfg.architecture.model_name)         # maskrcnn or rtdetr
+        Logger.info(f"[Info] Architecture: {cfg.architecture.model_name}")
+        run_tags.append("kbrs" if cfg.kbrs.use_kbrs else "vanilla")   # kbrs enabled/disabled
+        Logger.info(f"[Info] Using KBRS: {cfg.kbrs.use_kbrs}")
         run_tags.append(f"win{cfg.window_size}")  # win4
+        Logger.info(f"[Info] Window size: {cfg.window_size}")
 
         # hydra runtime choices에서 현재 job의 선택값을 읽어온다.
         dataset_name    = _get_choice("dataset")     # fold1
-        model_name      = _get_choice("model")       # kbrs or vanilla
+        Logger.info(f"[Info] Dataset choice: {dataset_name}")
+        run_tags.append(f"{dataset_name}")
+        
         seed_choice     = _get_choice("seed")        # s123 같은 group 이름 (있으면)
-        kbrs_loss_name  = _get_choice("kbrs_loss")   # kbrs025 ...
-        kbrs_score_name = _get_choice("kbrs_score")  # base, density020 ...
-
-        if model_name:
-            run_tags.append(f"{model_name}")
-        if dataset_name:
-            run_tags.append(f"{dataset_name}")
-
-        # seed 그룹 이름을 쓸지, 실제 seed 값을 쓸지는 취향 차이
-        # 지금 cfg.seed=123 이니까 실제 값으로 찍고 싶으면:
-        if hasattr(cfg, "seed") and cfg.seed is not None:
-            run_tags.append(f"s{cfg.seed}")
-
+        Logger.info(f"[Info] Seed choice from Hydra: {seed_choice}")
+        run_tags.append(f"s{seed_choice}" if seed_choice else f"s{cfg.seed}")  # seed123 (실제 값)
+        
         # kbrs가 켜져 있을 때만 loss/score suffix 달기
-        if getattr(cfg, "use_kbrs", False):
-            if kbrs_loss_name:
-                run_tags.append(f"{kbrs_loss_name}")
+        if getattr(cfg.kbrs, "use_kbrs", False):
+            kbrs_weight  = _get_choice("kbrs_loss")   # kbrs025 ...
+            if kbrs_weight:
+                Logger.info(f"[Info] KBRS loss choice: {kbrs_weight}")
+                run_tags.append(f"{kbrs_weight}" if kbrs_weight else None)
+            kbrs_score_name = _get_choice("kbrs_score")  # base, density020 ...
             if kbrs_score_name:
+                Logger.info(f"[Info] KBRS score choice: {kbrs_score_name}")
                 run_tags.append(kbrs_score_name.replace("/", "_"))
 
         run_tags.append(f"{time.strftime('%Y%m%d_%H%M%S')}")
@@ -456,8 +456,8 @@ def run_training(cfg: DictConfig):
 
     # --- (2) kbrs_params merge: 기본 KBRS_PARAMS 위에 config 덮어쓰기 ---
     kbrs_params = None
-    if cfg.use_kbrs:
-        kbrs_params = config.KBRS_PARAMS.copy()
+    if cfg.kbrs.use_kbrs:
+        kbrs_params = OmegaConf.to_container(cfg.kbrs.kbrs_params, resolve=True)
         if "kbrs_params" in cfg and cfg.kbrs_params is not None:
             from omegaconf import DictConfig as DC
             if isinstance(cfg.kbrs_params, DC):
@@ -465,7 +465,6 @@ def run_training(cfg: DictConfig):
             else:
                 extra = dict(cfg.kbrs_params)
             kbrs_params.update(extra)
-        Logger.info(f"[Info] Using KBRS parameters: {kbrs_params}")
 
     # --- (3) 입력 채널 계산 ---
     train_ds = data_loader_train.dataset
@@ -487,7 +486,7 @@ def run_training(cfg: DictConfig):
     #     min_sizes=cfg.min_sizes,
     #     max_size=cfg.max_size,
     #     rpn_small_anchors=cfg.rpn_small_anchors if cfg.resize_mode == "keep" else False,
-    #     use_kbrs=cfg.use_kbrs,
+    #     use_kbrs=cfg.kbrs.use_kbrs,
     #     kbrs_params=kbrs_params,
     #     loss_weights=loss_weights,
     # )
@@ -496,9 +495,9 @@ def run_training(cfg: DictConfig):
     # Hydra 설정에 없을 경우를 대비한 안전 장치입니다.
     OmegaConf.set_struct(cfg, False)
 
-    cfg.model_name = getattr(cfg, "model_name", "maskrcnn")
-    cfg.rtdetr_version = getattr(cfg, "rtdetr_version", "v2")
-    cfg.rtdetr_size = getattr(cfg, "rtdetr_size", "l")
+    cfg.model_name = getattr(cfg.architecture, "model_name", "maskrcnn")
+    cfg.rtdetr_version = getattr(cfg.architecture, "rtdetr_version", "v2")
+    cfg.rtdetr_size = getattr(cfg.architecture, "rtdetr_size", "l")
     cfg.in_channels = in_channels
     cfg.num_classes = num_classes
     cfg.kbrs_params = kbrs_params
@@ -558,7 +557,7 @@ def main(cfg: DictConfig):
         # id_string이 아직 비어있을 수 있으므로 안전하게 재구성
         if not cfg.id_string:
             id_str = f"{cfg.label_method}_win{cfg.window_size}_b{cfg.batch_size}"
-            if cfg.use_kbrs:
+            if cfg.kbrs.use_kbrs:
                 id_str += "_kbrs"
             cfg.id_string = id_str
 

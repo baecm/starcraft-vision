@@ -121,11 +121,19 @@ class KBRS_MaskRCNN(MaskRCNN):
         fmap_key_pref = self.kbrs_params.get("feature_map_name", "smallest")
         fmap_key, fmap = pick_feature_map(features, fmap_key_pref)
 
-        # projections normalize & scorer init (once)
-        in_channels_total = self._per_window * self._window_size
+        # # projections normalize & scorer init (once)
+        # in_channels_total = self._per_window * self._window_size
+        # proj_norm = normalize_projections(
+        #     self._projections_cfg, self._window_size, self._per_window, in_channels_total
+        # )
+        # [수정] 실제 fmap의 채널을 사용하여 동적으로 정규화 및 초기화
+        actual_channels = fmap.shape[1] 
+        # 만약 과거에 36채널을 고정적으로 썼다면, 여기서 projections를 그에 맞게 매핑해줍니다.
         proj_norm = normalize_projections(
-            self._projections_cfg, self._window_size, self._per_window, in_channels_total
+            self._projections_cfg, self._window_size, self._per_window, actual_channels 
         )
+        if actual_channels != 36: # 과거 환경의 36채널과 다를 경우 어댑터 삽입
+            self.kbrs_adapter = nn.Conv2d(actual_channels, 36, kernel_size=1).to(fmap.device)
 
         if self.kbrs_scorer is None:
             self.kbrs_scorer = KBRSConvScorer(
@@ -144,7 +152,8 @@ class KBRS_MaskRCNN(MaskRCNN):
 
         # scorer 입력 detach 옵션
         fmap_for_kbrs = fmap.detach() if self._detach_scorer_input else fmap
-
+        fmap_for_kbrs = self.kbrs_adapter(fmap_for_kbrs) # <--- 이 라인 추가
+        
         # KBRS score map
         score_map, comp_maps = self.kbrs_scorer(fmap_for_kbrs)
 
