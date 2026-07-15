@@ -257,7 +257,7 @@ def train_model(
 
         # ---- 체크포인트 저장 ----
         t_ckpt = 0.0
-        if (epoch + 1) % 5 == 0 or (epoch + 1) == num_epochs:
+        if (epoch + 1) % 1 == 0 or (epoch + 1) == num_epochs:
             tc0 = time.time()
             save_path = os.path.join(save_dir, f"model_{epoch+1:03d}.pth")
             torch.save(model.state_dict(), save_path)
