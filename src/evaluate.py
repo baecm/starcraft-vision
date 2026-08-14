@@ -10,6 +10,7 @@ from dataclasses import asdict
 from typing import Any, Dict, List, Sequence, Tuple, Optional
 
 import numpy as np
+import torch
 from pycocotools.coco import COCO
 import pycocotools.mask as mask_util
 
@@ -396,7 +397,6 @@ class KernelEvalResult:
 
 
 def evaluate(model, data_loader, device, epoch: int = 0):
-    import torch
     """
     Train 중에 호출되는 evaluate 함수.
 
