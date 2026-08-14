@@ -256,7 +256,16 @@ def run_inference(args):
             kbrs_params = {}
 
     # 2. 아키텍처, 버전, 사이즈 결정 (pipeline.py -> cli.py 를 통해 넘어온 인자 사용)
-    arch_name = "rtdetr" if "rtdetr" in args.model_name.lower() else "maskrcnn"
+    model_name_lower = args.model_name.lower()
+    if "centernet" in model_name_lower:
+        arch_name = "centernet"
+    elif "deformable" in model_name_lower or ("detr" in model_name_lower and "rtdetr" not in model_name_lower):
+        arch_name = "deformable_video_detr"
+    elif "rtdetr" in model_name_lower:
+        arch_name = "rtdetr"
+    else:
+        arch_name = "maskrcnn"
+
     rtdetr_version = getattr(args, "rtdetr_version", "v1")
     rtdetr_size = getattr(args, "rtdetr_size", "l")
      
