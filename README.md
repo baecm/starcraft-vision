@@ -96,12 +96,3 @@ NVIDIA_VISIBLE_DEVICES=0 make lookup ARGS="--replays 275 1725 --label-source pre
 ```
 
 ---
-
-## 🔔 Optional Environment Flags
-
-### Synology Chat Notifications
-Synology Chat notifications are disabled by default. Enable explicitly via `ENABLE_SYNOLOGY_CHAT=true`:
-
-```bash
-make train ARGS="architecture=centernet" ENABLE_SYNOLOGY_CHAT=true
-```
