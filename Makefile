@@ -2,6 +2,8 @@ COMPOSE_FILE=infra/docker-compose.yml
 PID_DIR=pids
 JUPYTER_PORT ?= 8888
 DEBUG_PORT   ?= 5678
+ENABLE_SYNOLOGY_CHAT ?= false
+export ENABLE_SYNOLOGY_CHAT
 
 PYDEBUG_SERVICE  ?= pydebug
 

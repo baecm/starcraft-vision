@@ -3,7 +3,23 @@ import json
 import requests
 from .logger import Logger
 
-def send_message(message: str):
+
+def is_synology_chat_enabled() -> bool:
+    """
+    Check if Synology Chat notification is explicitly enabled via environment variable.
+    Returns True if ENABLE_SYNOLOGY_CHAT or USE_SYNOLOGY_CHAT is set to 'true', '1', 'yes', 'on'.
+    """
+    enabled_val = os.getenv("ENABLE_SYNOLOGY_CHAT", os.getenv("USE_SYNOLOGY_CHAT", "false")).strip().lower()
+    return enabled_val in ("1", "true", "yes", "on")
+
+
+def send_message(message: str, force: bool = False):
+    """
+    Send Synology Chat notification message if enabled by external parameter.
+    """
+    if not force and not is_synology_chat_enabled():
+        return
+
     webhook_url = os.getenv("SYNOLOGY_CHAT_WEBHOOK_URL")
 
     if not webhook_url:
@@ -23,14 +39,7 @@ def send_message(message: str):
     except requests.exceptions.RequestException as e:
         Logger.error(f"[SynologyChat] Failed to send notification: {e}")
 
-if __name__ == '__main__':
-    # Example usage:
-    # Ensure the environment variable is set before running this test script:
-    # export SYNOLOGY_CHAT_WEBHOOK_URL="your_webhook_url_here"
-    
-    test_message = "This is a test message from the synology_chat module."
-    send_message(test_message)
 
-    # Test case for when the webhook URL is not set
-    # os.environ.pop("SYNOLOGY_CHAT_WEBHOOK_URL", None)
-    # send_message("This message should not be sent.")
+if __name__ == '__main__':
+    test_message = "This is a test message from the synology_chat module."
+    send_message(test_message, force=True)

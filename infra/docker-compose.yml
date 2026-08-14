@@ -8,6 +8,7 @@ x-base-service: &base-service
     - PYTHONPATH=/workspace/src
     - TORCH_HOME=/workspace/.torch_cache
     - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
+    - ENABLE_SYNOLOGY_CHAT=${ENABLE_SYNOLOGY_CHAT:-false}
   volumes:
     - ${WANDB_API_KEY}:/run/secrets/wandb_api_key:ro
     - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
