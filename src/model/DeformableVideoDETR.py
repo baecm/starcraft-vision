@@ -164,6 +164,7 @@ class DeformableVideoDETR(nn.Module):
         d_model: int = 256,
         n_heads: int = 8,
         num_decoder_layers: int = 4,
+        use_probabilistic_query: bool = False,
         loss_weights: Optional[Dict[str, float]] = None
     ):
         super().__init__()
@@ -172,6 +173,7 @@ class DeformableVideoDETR(nn.Module):
         self.window_size = window_size
         self.num_queries = num_queries
         self.d_model = d_model
+        self.use_probabilistic_query = use_probabilistic_query
 
         default_weights = {
             "loss_ce": 1.0,
@@ -199,8 +201,11 @@ class DeformableVideoDETR(nn.Module):
             nn.ReLU(inplace=True)
         )
 
-        # Latent Query Module
-        self.latent_query_gen = ProbabilisticLatentQuery(num_queries=num_queries, d_model=d_model, latent_dim=64)
+        # Latent / Deterministic Query Module
+        if self.use_probabilistic_query:
+            self.latent_query_gen = ProbabilisticLatentQuery(num_queries=num_queries, d_model=d_model, latent_dim=64)
+        else:
+            self.query_embed = nn.Embedding(num_queries, d_model)
 
         # Decoder Blocks
         self.decoder_layers = nn.ModuleList([
@@ -311,7 +316,11 @@ class DeformableVideoDETR(nn.Module):
         B, _, H, W = batched_images.shape
 
         memory = self._extract_spatiotemporal_features(batched_images)
-        queries, kl_loss = self.latent_query_gen(batch_size=B, is_training=self.training)
+        if self.use_probabilistic_query:
+            queries, kl_loss = self.latent_query_gen(batch_size=B, is_training=self.training)
+        else:
+            queries = self.query_embed.weight.unsqueeze(0).repeat(B, 1, 1)
+            kl_loss = torch.tensor(0.0, device=batched_images.device)
 
         ref_points = torch.sigmoid(self.ref_point_head(queries)) # (B, N_q, 3)
 

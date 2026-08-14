@@ -91,23 +91,36 @@ NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
   kbrs_loss=kbrs025 \
 "
 
-# CenterNet (Density Peak Head)
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=centernet"
+# CenterNet Pure Base Model (Density Peak Disabled)
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=centernet use_density_peak=false"
 
+# CenterNet + Density Peak Head (Custom Extension Enabled)
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=centernet use_density_peak=true"
 NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
   architecture=centernet \
+  use_density_peak=true \
   dataset=fold1 \
   seed=123 \
 "
 
-# Deformable Video DETR (Probabilistic Latent Query)
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=deformable_video_detr"
+# Deformable Video DETR Pure Base Model (Probabilistic Query Disabled)
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=deformable_video_detr use_probabilistic_query=false"
 
+# Deformable Video DETR + Probabilistic Latent Query (Custom Extension Enabled)
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=deformable_video_detr use_probabilistic_query=true"
 NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
   architecture=deformable_video_detr \
+  use_probabilistic_query=true \
   dataset=fold1 \
   seed=123 \
 "
+
+# Short Parameter Key Aliases Examples (arch, ds, win, lr, batch, loss, score)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="arch=centernet ds=fold1 win=4 lr=0.005 batch=16 seed=123"
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="arch=deformable_video_detr ds=fold1 win=4 lr=0.001 batch=8 seed=123"
+
+# Explicit Synology Chat Notification Enable Flag
+ENABLE_SYNOLOGY_CHAT=true NVIDIA_VISIBLE_DEVICES=0 make train ARGS="arch=centernet ds=fold1"
 
 # =====================================================================
 # 4. Fold & Seed Sweeps

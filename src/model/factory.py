@@ -39,23 +39,27 @@ def build_model(args):
         return model
 
     elif model_name in ["centernet", "centernet_density_peak"]:
+        use_dp = getattr(args, "use_density_peak", model_name == "centernet_density_peak")
         model = get_model_instance_centernet(
             num_classes=args.num_classes,
             in_channels=args.in_channels,
             down_ratio=getattr(args, "centernet_down_ratio", 4),
             max_objs=getattr(args, "max_objs", 100),
+            use_density_peak=use_dp,
             use_kbrs=use_kbrs,
             kbrs_params=args.kbrs_params if use_kbrs else None,
             loss_weights=args.loss_weights
         )
         return model
 
-    elif model_name in ["deformable_video_detr", "deformable_detr"]:
+    elif model_name in ["deformable_video_detr", "deformable_detr", "deformable_video_detr_probabilistic"]:
+        use_pq = getattr(args, "use_probabilistic_query", "probabilistic" in model_name)
         model = get_model_instance_deformable_video_detr(
             num_classes=args.num_classes,
             in_channels=args.in_channels,
             window_size=args.window_size,
             num_queries=getattr(args, "num_queries", 100),
+            use_probabilistic_query=use_pq,
             use_kbrs=use_kbrs,
             kbrs_params=args.kbrs_params if use_kbrs else None,
             loss_weights=args.loss_weights

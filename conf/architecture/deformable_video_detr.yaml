@@ -1,5 +1,6 @@
 model_name: deformable_video_detr
 num_queries: 100
+use_probabilistic_query: false
 
 resize_mode: fixed_square
 image_size: 640

@@ -1,6 +1,7 @@
 model_name: centernet
 centernet_down_ratio: 4
 max_objs: 100
+use_density_peak: false
 
 resize_mode: fixed_square
 image_size: 640

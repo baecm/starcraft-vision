@@ -7,20 +7,22 @@ def get_model_instance_deformable_video_detr(
     in_channels: int = 3,
     window_size: int = 4,
     num_queries: int = 100,
+    use_probabilistic_query: bool = False,
     use_kbrs: bool = False,
     kbrs_params: dict = None,
     loss_weights: dict = None
 ):
     """
-    Factory function for Deformable Video DETR with Probabilistic Latent Query.
+    Factory function for Deformable Video DETR (with optional Probabilistic Latent Query & KBRS).
     """
-    print(f"Building Deformable Video DETR (Probabilistic Latent Query) - Classes: {num_classes}, Window: {window_size}")
+    print(f"Building Deformable Video DETR (Probabilistic Latent Query: {use_probabilistic_query}) - Classes: {num_classes}, Window: {window_size}")
 
     model = DeformableVideoDETR(
         num_classes=num_classes,
         in_channels=in_channels,
         window_size=window_size,
         num_queries=num_queries,
+        use_probabilistic_query=use_probabilistic_query,
         loss_weights=loss_weights
     )
 

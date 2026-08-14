@@ -149,6 +149,7 @@ class CenterNetDensityPeak(nn.Module):
         in_channels: int = 3,
         down_ratio: int = 4,
         max_objs: int = 100,
+        use_density_peak: bool = True,
         loss_weights: Optional[Dict[str, float]] = None
     ):
         super().__init__()
@@ -156,6 +157,7 @@ class CenterNetDensityPeak(nn.Module):
         self.in_channels = in_channels
         self.down_ratio = down_ratio
         self.max_objs = max_objs
+        self.use_density_peak = use_density_peak
 
         default_weights = {
             "loss_hm": 1.0,
@@ -301,8 +303,13 @@ class CenterNetDensityPeak(nn.Module):
         pred_hm = torch.sigmoid(self.hm_head(feat))
         pred_wh = self.wh_head(feat)
         pred_off = self.off_head(feat)
-        pred_density = self.density_head(feat)
-        pred_delta = self.delta_head(feat)
+
+        if self.use_density_peak:
+            pred_density = self.density_head(feat)
+            pred_delta = self.delta_head(feat)
+        else:
+            pred_density = None
+            pred_delta = None
 
         if self.training:
             if targets is None:
@@ -320,15 +327,19 @@ class CenterNetDensityPeak(nn.Module):
             loss_wh = (F.l1_loss(pred_wh_gathered * mask, gt_dict["wh"] * mask, reduction="sum")) / num_pos
             loss_off = (F.l1_loss(pred_off_gathered * mask, gt_dict["off"] * mask, reduction="sum")) / num_pos
 
-            loss_density = F.smooth_l1_loss(pred_density, gt_dict["density"])
-            loss_delta = F.smooth_l1_loss(pred_delta, gt_dict["delta"])
+            if self.use_density_peak:
+                loss_density = F.smooth_l1_loss(pred_density, gt_dict["density"])
+                loss_delta = F.smooth_l1_loss(pred_delta, gt_dict["delta"])
+            else:
+                loss_density = torch.tensor(0.0, device=device)
+                loss_delta = torch.tensor(0.0, device=device)
 
             total_loss = (
                 self.loss_weights["loss_hm"] * loss_hm +
                 self.loss_weights["loss_wh"] * loss_wh +
                 self.loss_weights["loss_off"] * loss_off +
-                self.loss_weights["loss_density"] * loss_density +
-                self.loss_weights["loss_delta"] * loss_delta
+                (self.loss_weights.get("loss_density", 0.5) * loss_density if self.use_density_peak else 0.0) +
+                (self.loss_weights.get("loss_delta", 0.5) * loss_delta if self.use_density_peak else 0.0)
             )
 
             return {
