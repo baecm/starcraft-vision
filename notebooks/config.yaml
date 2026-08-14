@@ -1,0 +1,35 @@
+# config.yaml
+
+# 1. 데이터 및 파일 저장 경로 설정
+data:
+  root_dir: "/mnt/nas/baecm/starcraft-vision/data"
+  input_dst_dir: "/mnt/nas/baecm/starcraft-vision/data/input/dst"
+  label_dst_dir: "/mnt/nas/baecm/starcraft-vision/data/label/dst"
+  predictions_dir: "/mnt/nas/baecm/starcraft-vision/predictions"
+  figures_dir: "./figures"
+
+# 2. 실험 결과 파일 탐색 패턴 (Glob용)
+experiments:
+  maskrcnn:
+    win4:
+      vanilla: "*maskrcnn*win4*vanilla*fold1*s123*"
+      kbrs: "*maskrcnn*win4*kbrs*fold1*s123*base_score*"
+  rtdetr:
+    win1:
+      kbrs: "*rtdetr*kbrs*win1*fold1*s123*"
+    win4:
+      kbrs: "*rtdetr*kbrs*win4*fold1*s123*"
+  # 필요시 fold1, fold2 등 세부 패턴 추가 가능
+
+# 3. KBRS 스코어 가중치 설정 (기본값)
+kbrs:
+  weights:
+    density: 0.3
+    centeredness: 0.3
+    mixture: 3.0
+
+# 4. 애니메이션 렌더링 설정
+animation:
+  fps: 24
+  prefetch: 8
+  use_processes: true
