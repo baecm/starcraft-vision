@@ -39,7 +39,7 @@ for REPLAY_ID in "${REPLAY_IDS[@]}"; do
   LOG_FILE="logs/${COMMAND}_${REPLAY_ID}.log"
   echo "[START] Replay $REPLAY_ID → $LOG_FILE"
 
-  docker compose -f infra/docker-compose.yml run --rm trainer \
+  docker compose -f infra/docker-compose.yml run --rm preprocessor \
     "$COMMAND" --replays "$REPLAY_ID" "${ARGS[@]}" > "$LOG_FILE" 2>&1 &
 
   CURRENT_PARALLEL=$((CURRENT_PARALLEL + 1))
