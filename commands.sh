@@ -1,15 +1,18 @@
 #!/bin/bash
-# Example commands for running experiments
+# =====================================================================
+# StarCraft Vision Project: Consolidated Experiment & Execution Commands
+# =====================================================================
 
-# replays
-# 36 212 438 522 1660
-# 1559 1628 2351 6219 11251
-# 275 1725 3613 4520 4664
-# 6254
-# 3529 3972 7191 7950 7970 9105 9301 9795
+# Replay IDs Reference:
+# fold1: 275 1725 3613 4520 4664
+# fold2: 1559 1628 2351 6219 11251
+# fold3: 36 212 438 522 1660
+# extra: 6254, 3529 3972 7191 7950 7970 9105 9301 9795
 
-# Preprocess input
-# make preprocess_input ARGS="--replays 36 212 438 522 1660 --include-components worker ground air building vision"
+# =====================================================================
+# 1. Data Preprocessing
+# =====================================================================
+# Preprocess input frames
 make preprocess_input ARGS="--replays 36 212 438 522 1660 --include-components worker ground air building vision neutral resource terrain"
 make preprocess_input ARGS="--replays 1559 1628 2351 6219 11251 --include-components worker ground air building vision neutral resource terrain"
 make preprocess_input ARGS="--replays 275 1725 3613 4520 4664 --include-components worker ground air building vision neutral resource terrain"
@@ -17,7 +20,7 @@ make preprocess_input ARGS="--replays 6254 3529 3972 7191 7950 --include-compone
 make preprocess_input ARGS="--replays 7970 9105 9301 9795 --include-components worker ground air building vision neutral resource terrain"
 make preprocess_input ARGS="--replays 6254 2351 275 1725 3613 4520 4664 3529 3972 7191 7950 7970 9105 9301 9795 --include-components worker ground air building vision neutral resource terrain"
 
-# Preprocess label
+# Preprocess target labels
 make preprocess_label ARGS="--replays 36 212 438 522 1660 --method all_correct"
 make preprocess_label ARGS="--replays 1559 1628 2351 6219 11251 --method all_correct"
 make preprocess_label ARGS="--replays 275 1725 3613 4520 4664 --method all_correct"
@@ -25,135 +28,25 @@ make preprocess_label ARGS="--replays 6254 3529 3972 7191 7950 --method all_corr
 make preprocess_label ARGS="--replays 7970 9105 9301 9795 --method all_correct"
 make preprocess_label ARGS="--replays 36 212 438 522 1660 1559 1628 2351 6219 11251 275 1725 3613 4520 4664 6254 3529 3972 7191 7950 7970 9105 9301 9795 --method all_correct"
 
-# 단일 run 예시
-NVIDIA_VISIBLE_DEVICES=$GPU make run ARGS=" \
-  model_name=maskrcnn \
-  model=vanilla \
-  dataset=fold1 \
-  seed=123 \
-"
-
-NVIDIA_VISIBLE_DEVICES=$GPU make run ARGS=" \
-  model_name=maskrcnn \
-  model=kbrs \
-  dataset=fold1 \
-  seed=123 \
-  kbrs_loss=kbrs025 \
-  kbrs_score=base_score \
-"
-
-NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
-  model_name=rtdetr \
-  rtdetr_version=v1 \
-  model=kbrs \
-  dataset=fold1_sample \
-  seed=123 \
-  kbrs_loss=kbrs025 \
-  kbrs_score=base_score \
-"
-
-# seed sweep
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m dataset=fold1 model=kbrs seed=123,456,789 kbrs_loss=kbrs025 kbrs_score=base"
-
-# fold1, kbrs, seed=123, kbrs_score=base 고정하고 loss weight 스윕
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m \
-  dataset=fold1 \
-  model=kbrs \
-  seed=123 \
-  kbrs_loss=kbrs025,kbrs050,kbrs075,kbrs100 \
-  kbrs_score=base"
-
-# density ablation
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m \
-  dataset=fold1 \
-  model=kbrs \
-  seed=123 \
-  kbrs_loss=kbrs025 \
-  kbrs_score=base,density010,density020,density040,density050,density060,density070,density080,density090"
-
-# mixture ablation
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m \
-  dataset=fold1 \
-  model=kbrs \
-  seed=123 \
-  kbrs_loss=kbrs025 \
-  kbrs_score=mixture100,mixture150,mixture200,mixture250,mixture350,mixture400,mixture450,mixture500,mixture150,mixture200,mixture250,mixture350"
-
-# centeredness ablation
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m \
-  dataset=fold1 \
-  model=kbrs \
-  seed=123 \
-  kbrs_loss=kbrs025 \
-  kbrs_score=centeredness010,centeredness020,centeredness040,centeredness050,centeredness060,centeredness070,centeredness080,centeredness090"
-
-NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
-  dataset=fold1 \
-  model=kbrs \
-  mode=train_and_inference \
-  seed=123 \
-  kbrs_loss=kbrs025 \
-  kbrs_score=centeredness050 \
-"
-
-make estimate ARGS=" \
-  --replays 36 212 438 522 1660 1559 1628 2351 6219 11251 275 1725 3613 4520 4664 6254 3529 3972 7191 7950 7970 9105 9301 9795 \
-  --mode=gt \
-"
-
-make estimate ARGS=" \
-  --replays 36 \
-  --mode=gt \
-  --skip-kbrs \
-"
-
-# fold1
-NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
-  --mode model \
-  --model-name all_correct_win4_vanilla_fold1_s123_20251201_072032 \
-  --epoch 30 \
-  --replays 275 1725 3613 4520 4664 \
-  --skip-kbrs \
-  "
-
-# fold2
-NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
-  --mode model \
-  --model-name all_correct_win4_kbrs_fold2_s789_kbrs025_base_score_20251231_215319 \
-  --epoch 30 \
-  --replays 1559 1628 2351 6219 11251 \
-  --skip-kbrs \
-  "
-
-# fold3
-NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="
-  --mode model \
-  --model-name all_correct_win4_kbrs_fold3_s456_kbrs025_base_score_20251231_151012 \
-  --epoch 30 \
-  --replays 36 212 438 522 1660 \
-  --skip-kbrs \
-  "
-
-make precheck ARGS="
+# =====================================================================
+# 2. Data Prechecking & KBRS Caching
+# =====================================================================
+make precheck ARGS=" \
   --root_dir /workspace/data/label/dst \
   --label_method all_correct \
   --replays 36,212,438,522,1660,1559,1628,2351,6219,11251,275,1725,3613,4520,4664 \
   --verbose \
-  "
+"
 
-make precheck ARGS="
+make precheck ARGS=" \
   --root_dir /workspace/data/input/dst \
   --replays 36,212,438,522,1660,1559,1628,2351,6219,11251,275,1725,3613,4520,4664 \
   --mmap \
   --max_abs_warn 1000000 \
   --workers 32 \
   --chunksize 64 \
-  "
+"
 
-# python kbrs_cli.py cache --replays 275 3613 --num-workers 16
-# fold1: 275 1725 3613 4520 4664
-# fold2: 1559 1628 2351 6219 11251
-# fold3: 36 212 438 522 1660
 NVIDIA_VISIBLE_DEVICES=0 make cache ARGS=" \
   cache \
   --replays 275 1725 3613 4520 4664 1559 1628 2351 6219 11251 36 212 438 522 1660 \
@@ -162,6 +55,169 @@ NVIDIA_VISIBLE_DEVICES=0 make cache ARGS=" \
   --log-level none \
 "
 
+# =====================================================================
+# 3. Model Training & Pipeline Runs (Single Executions)
+# =====================================================================
+# Mask R-CNN Vanilla & KBRS
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
+  architecture=maskrcnn \
+  kbrs=disabled \
+  dataset=fold1_sample \
+  seed=123 \
+"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
+  architecture=maskrcnn \
+  kbrs=enabled \
+  dataset=fold1_sample \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+"
+
+# RT-DETR Vanilla & KBRS
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
+  architecture=rtdetr \
+  kbrs=disabled \
+  dataset=fold1_sample \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
+  architecture=rtdetr \
+  kbrs=enabled \
+  dataset=fold1_sample \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+"
+
+# CenterNet (Density Peak Head)
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=centernet"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
+  architecture=centernet \
+  dataset=fold1 \
+  seed=123 \
+"
+
+# Deformable Video DETR (Probabilistic Latent Query)
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=deformable_video_detr"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
+  architecture=deformable_video_detr \
+  dataset=fold1 \
+  seed=123 \
+"
+
+# =====================================================================
+# 4. Fold & Seed Sweeps
+# =====================================================================
+# Vanilla 3-fold seed sweep (3-fold x 3 seed = 9 runs)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  dataset=fold1,fold2,fold3 \
+  model=vanilla \
+  seed=123,456,789 \
+"
+
+# KBRS 3-fold seed sweep (3-fold x 3 seed = 9 runs)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  dataset=fold1,fold2,fold3 \
+  model=kbrs \
+  seed=123,456,789 \
+  kbrs_loss=kbrs025 \
+  kbrs_score=base_score \
+"
+
+# =====================================================================
+# 5. KBRS Ablation Sweeps
+# =====================================================================
+# KBRS Loss Weight Ablation
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m \
+  dataset=fold1 \
+  model=kbrs \
+  seed=123 \
+  kbrs_loss=kbrs050,kbrs075,kbrs100 \
+  kbrs_score=base_score \
+"
+
+# KBRS Density Score Ablation
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m \
+  dataset=fold1 \
+  model=kbrs \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+  kbrs_score=density/000,density/010,density/020,density/040,density/050,density/060,density/070,density/080,density/090 \
+"
+
+# KBRS Centeredness Score Ablation
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m \
+  dataset=fold1 \
+  model=kbrs \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+  kbrs_score=centeredness/000,centeredness/010,centeredness/020,centeredness/040,centeredness/050,centeredness/060,centeredness/070,centeredness/080,centeredness/090 \
+"
+
+# KBRS Mixture Score Ablation
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  dataset=fold1 \
+  model=kbrs \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+  kbrs_score=mixture/050,mixture/100,mixture/150,mixture/450,mixture/500 \
+"
+
+# Comprehensive Full Ablation Sweep (Loss weights & score variants)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  dataset=fold1 \
+  model=kbrs \
+  seed=123 \
+  kbrs_loss=kbrs050,kbrs075,kbrs100 \
+  kbrs_score=base_score \
+"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  dataset=fold2,fold3 \
+  model=kbrs \
+  seed=123,456,789 \
+  kbrs_loss=kbrs025,kbrs050,kbrs075,kbrs100 \
+  kbrs_score=base_score \
+"
+
+# =====================================================================
+# 6. Label Estimation Runs
+# =====================================================================
+# Ground Truth Estimation across folds
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode gt --replays 275 1725 3613 4520 4664 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode gt --replays 1559 1628 2351 6219 11251 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode gt --replays 36 212 438 522 1660 --skip-kbrs"
+
+# Vanilla Model Estimation (Folds 1, 2, 3)
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_vanilla_fold1_s123_20251201_072032 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_vanilla_fold1_s456_20251202_003952 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_vanilla_fold1_s789_20251202_163217 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_vanilla_fold2_s123_20251203_081925 --epoch 30 --replays 1559 1628 2351 6219 11251 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_vanilla_fold2_s456_20251204_002252 --epoch 30 --replays 1559 1628 2351 6219 11251 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_vanilla_fold2_s789_20251204_163313 --epoch 30 --replays 1559 1628 2351 6219 11251 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_vanilla_fold3_s123_20251205_081306 --epoch 30 --replays 36 212 438 522 1660 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_vanilla_fold3_s456_20251205_235535 --epoch 30 --replays 36 212 438 522 1660 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_vanilla_fold3_s789_20251206_161212 --epoch 30 --replays 36 212 438 522 1660 --skip-kbrs"
+
+# KBRS Model Estimation (Folds 1, 2, 3)
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_kbrs_fold1_s123_kbrs025_base_score_20251219_080334 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_kbrs_fold1_s456_kbrs025_base_score_20260101_175816 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_kbrs_fold1_s789_kbrs025_base_score_20251230_004200 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_kbrs_fold2_s123_kbrs025_base_score_20251222_080550 --epoch 30 --replays 1559 1628 2351 6219 11251 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_kbrs_fold2_s456_kbrs025_base_score_20251231_031613 --epoch 30 --replays 1559 1628 2351 6219 11251 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_kbrs_fold2_s789_kbrs025_base_score_20251231_215319 --epoch 30 --replays 1559 1628 2351 6219 11251 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_kbrs_fold3_s123_kbrs025_base_score_20251230_083127 --epoch 30 --replays 36 212 438 522 1660 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_kbrs_fold3_s456_kbrs025_base_score_20251231_151012 --epoch 30 --replays 36 212 438 522 1660 --skip-kbrs"
+NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name all_correct_win4_kbrs_fold3_s789_kbrs025_base_score_20260102_163643 --epoch 30 --replays 36 212 438 522 1660 --skip-kbrs"
+
+# =====================================================================
+# 7. Replay Lookup Operations
+# =====================================================================
+# GT Label Lookup
 NVIDIA_VISIBLE_DEVICES=0 make lookup ARGS=" \
   --replays 275 1725 3613 4520 4664 1559 1628 2351 6219 11251 36 212 438 522 1660 \
   --label-source gt \
@@ -170,9 +226,9 @@ NVIDIA_VISIBLE_DEVICES=0 make lookup ARGS=" \
   --force-row-on-error \
   --num-workers 16 \
   --log-level log \
-  "
+"
 
-#fold 1
+# Predicted Label Lookup
 NVIDIA_VISIBLE_DEVICES=0 make lookup ARGS=" \
   --replays 275 1725 3613 4520 4664 \
   --label-source pred \
@@ -183,55 +239,4 @@ NVIDIA_VISIBLE_DEVICES=0 make lookup ARGS=" \
   --force-row-on-error \
   --num-workers 16 \
   --log-level log \
-  "
-
-
-NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
-  architecture=maskrcnn \
-  kbrs=disabled \
-  dataset=fold1_sample \
-  seed=123 \
-  kbrs_loss=kbrs025 \
-"
-
-NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
-  architecture=maskrcnn \
-  kbrs=enabled \
-  dataset=fold1_sample \
-  seed=123 \
-  kbrs_loss=kbrs025 \
-"  
-
-NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
-  architecture=rtdetr \
-  kbrs=disabled \
-  dataset=fold1_sample \
-  seed=123 \
-  kbrs_loss=kbrs025 \
-"
-
-NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
-  architecture=rtdetr \
-  kbrs=enabled \
-  dataset=fold1_sample \
-  seed=123 \
-  kbrs_loss=kbrs025 \
-"  
-
-# CenterNet (Density Peak Head) 학습 실행
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=centernet"
-
-NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
-  architecture=centernet \
-  dataset=fold1 \
-  seed=123 \
-"
-
-# Deformable Video DETR (Probabilistic Latent Query) 학습 실행
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=deformable_video_detr"
-
-NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
-  architecture=deformable_video_detr \
-  dataset=fold1 \
-  seed=123 \
 "
