@@ -1,0 +1,12 @@
+model_name: deformable_video_detr
+num_queries: 100
+
+resize_mode: fixed_square
+image_size: 640
+do_normalize: false
+
+loss_weights:
+  loss_ce: 1.0
+  loss_bbox: 5.0
+  loss_giou: 2.0
+  loss_kl: 0.1

@@ -4,9 +4,11 @@ import urllib.request
 
 from .maskrcnn_builder import get_model_instance_segmentation
 from .rtdetr_builder import get_model_instance_rtdetr
+from .centernet_builder import get_model_instance_centernet
+from .deformable_video_detr_builder import get_model_instance_deformable_video_detr
 
 def build_model(args):
-    model_name = args.model_name.lower() # "maskrcnn" or "rtdetr"
+    model_name = args.model_name.lower() # "maskrcnn", "rtdetr", "centernet", "deformable_video_detr"
     use_kbrs = args.use_kbrs
 
     print(f"========== Building Model ==========")
@@ -36,5 +38,29 @@ def build_model(args):
         )
         return model
 
+    elif model_name in ["centernet", "centernet_density_peak"]:
+        model = get_model_instance_centernet(
+            num_classes=args.num_classes,
+            in_channels=args.in_channels,
+            down_ratio=getattr(args, "centernet_down_ratio", 4),
+            max_objs=getattr(args, "max_objs", 100),
+            use_kbrs=use_kbrs,
+            kbrs_params=args.kbrs_params if use_kbrs else None,
+            loss_weights=args.loss_weights
+        )
+        return model
+
+    elif model_name in ["deformable_video_detr", "deformable_detr"]:
+        model = get_model_instance_deformable_video_detr(
+            num_classes=args.num_classes,
+            in_channels=args.in_channels,
+            window_size=args.window_size,
+            num_queries=getattr(args, "num_queries", 100),
+            use_kbrs=use_kbrs,
+            kbrs_params=args.kbrs_params if use_kbrs else None,
+            loss_weights=args.loss_weights
+        )
+        return model
+
     else:
-        raise ValueError(f"Unknown model_name: {model_name}. Use 'maskrcnn' or 'rtdetr'.")
+        raise ValueError(f"Unknown model_name: {model_name}. Use 'maskrcnn', 'rtdetr', 'centernet', or 'deformable_video_detr'.")

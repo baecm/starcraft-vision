@@ -1,0 +1,14 @@
+model_name: centernet
+centernet_down_ratio: 4
+max_objs: 100
+
+resize_mode: fixed_square
+image_size: 640
+do_normalize: false
+
+loss_weights:
+  loss_hm: 1.0
+  loss_wh: 0.1
+  loss_off: 1.0
+  loss_density: 0.5
+  loss_delta: 0.5
