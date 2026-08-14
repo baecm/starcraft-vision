@@ -176,6 +176,11 @@ def parse_inference_args(argv=None):
     """
     Parse CLI arguments for inference execution.
     """
+    if argv is not None:
+        argv = config.resolve_cli_aliases(argv)
+    else:
+        sys.argv[1:] = config.resolve_cli_aliases(sys.argv[1:])
+
     parser = build_inference_parser()
     args = parser.parse_args(argv)
 

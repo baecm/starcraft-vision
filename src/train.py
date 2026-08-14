@@ -572,4 +572,7 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    import sys
+    from config import resolve_cli_aliases
+    sys.argv[1:] = resolve_cli_aliases(sys.argv[1:])
     main()

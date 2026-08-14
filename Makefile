@@ -7,7 +7,6 @@ export ENABLE_SYNOLOGY_CHAT
 
 PYDEBUG_SERVICE  ?= pydebug
 
-
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
 		zeppelin
@@ -109,14 +108,13 @@ run:
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer run $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/run.cid
-	
+
 debug:
 	CONTAINER_NAME=debug_$(shell date +%Y%m%d_%H%M%S); \
 	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm debugger debug $(ARGS);
 
 # Entry points
 preprocess_input:
-# 	docker compose -f $(COMPOSE_FILE) run --rm preprocessor preprocess_input $(ARGS)
 	$(call run_or_parallel,preprocess_input)
 preprocess_label:
 	docker compose -f $(COMPOSE_FILE) run --rm preprocessor preprocess_label $(ARGS)

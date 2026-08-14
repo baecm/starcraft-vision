@@ -1,4 +1,5 @@
 # src/config.py
+import sys
 from enum import Enum
 
 GRAD_CLIP_NORM = 2.0
@@ -41,3 +42,50 @@ COMPONENT_CHANNEL_MAP = {
     'vision': [Channel.Vision.value],
     'terrain': [Channel.Terrain.value],
 }
+
+PARAM_ALIAS_MAP = {
+    "arch=": "architecture=",
+    "arch.": "architecture.",
+    "win=": "window_size=",
+    "win_size=": "window_size=",
+    "lr=": "learning_rate=",
+    "batch=": "batch_size=",
+    "ds=": "dataset=",
+    "loss=": "kbrs_loss=",
+    "score=": "kbrs_score=",
+    "epoch=": "max_epoch=",
+    "epochs=": "max_epoch=",
+}
+
+
+def resolve_cli_aliases(argv: list[str] = None) -> list[str]:
+    """
+    Preprocess command-line arguments to resolve short parameter key aliases.
+    e.g., 'arch=centernet' -> 'architecture=centernet'
+          'win=4' -> 'window_size=4'
+          '--arch' -> '--model-name'
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+
+    processed = []
+    for arg in argv:
+        new_arg = arg
+
+        # 1. Hydra key=value overrides
+        for short_k, full_k in PARAM_ALIAS_MAP.items():
+            if new_arg.startswith(short_k):
+                new_arg = full_k + new_arg[len(short_k):]
+                break
+
+        # 2. CLI dash flags
+        if new_arg.startswith("--arch"):
+            new_arg = new_arg.replace("--arch", "--model-name", 1)
+        elif new_arg.startswith("--win"):
+            new_arg = new_arg.replace("--win", "--window-size", 1)
+        elif new_arg.startswith("--ds"):
+            new_arg = new_arg.replace("--ds", "--replays", 1)
+
+        processed.append(new_arg)
+
+    return processed
