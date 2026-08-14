@@ -1,52 +1,48 @@
+# config.yaml
 defaults:
   - dataset: fold1
-  - model: vanilla
+  - architecture: rtdetr
+  - kbrs: enabled
+  - kbrs_loss: "kbrs025"
+  - _self_ 
 
-  - kbrs_loss: kbrs025
-  - kbrs_score: base_score
-  - _self_          
-
+use_kbrs: ${kbrs.use_kbrs}
+# ===== Data & Replays =====
 train_replays: ${dataset.train_replays}
 test_replays: ${dataset.test_replays}
-
 include_components: [worker, ground, air, building, vision]
 label_method: all_correct
+data_root: /workspace/data
+
+# ===== Hyperparameters =====
 seed: 123
 max_epoch: 30
 window_size: 4
 interval: 8
-batch_size: 16
-sample_ratio: 1.0
-log_level: log
-do_inference_after_train: true
-
+batch_size: 32
 learning_rate: 0.005
+sample_ratio: 1.0
+
+# ===== Validation & Testing =====
 val_count: 100
 test_eval_every: 0
-do_normalize: false
-normalize_mean: null
-normalize_std: null
-resize_mode: resize
-min_sizes: [800]
-max_size: 1333
-rpn_small_anchors: false
+
+# ===== Environment & Execution =====
+mode: "train_and_inference"
+log_level: log
+do_inference_after_train: true
 cuda: true
-num_workers: 16
-data_root: /workspace/data
+num_workers: 1
+
+# ===== Paths =====
+prediction_root: /workspace/predictions
+model_root: /workspace/models
 log_root: /workspace/models
 id_string: ""
 
-use_kbrs:      ${model.use_kbrs}
-loss_weights:  ${model.loss_weights}
-kbrs_params:   ${model.kbrs_params}
-
-mode: "train_and_inference" # ["train_only", "inference_only", "train_and_inference"]
-
 hydra:
   run:
-    # 단일 실행 결과
     dir: /workspace/results/hydra/run/${now:%Y%m%d_%H%M%S}
   sweep:
-    # 멀티런 결과
     dir: /workspace/results/hydra/multirun
     subdir: ${now:%Y%m%d_%H%M%S}_${hydra.job.num}

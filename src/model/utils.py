@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from collections import OrderedDict
 from typing import Dict, List, Tuple
+from omegaconf import OmegaConf, DictConfig, ListConfig
 
 def aux_boost_loss(x, tau=1.0, norm="zscore", margin=None):
     # NaN/Inf 정리 + 엄청 큰 값 클램프
@@ -60,6 +61,10 @@ def normalize_projections(
 ) -> Dict[str, List[int]]:
     if projections_cfg is None:
         return {}
+    
+    if isinstance(projections_cfg, (DictConfig, ListConfig)):
+        projections_cfg = OmegaConf.to_container(projections_cfg, resolve=True)
+    
     proj_dict: Dict[str, List[int]] = {}
 
     if isinstance(projections_cfg, dict):

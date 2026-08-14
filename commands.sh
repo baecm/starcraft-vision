@@ -26,10 +26,31 @@ make preprocess_label ARGS="--replays 7970 9105 9301 9795 --method all_correct"
 make preprocess_label ARGS="--replays 36 212 438 522 1660 1559 1628 2351 6219 11251 275 1725 3613 4520 4664 6254 3529 3972 7191 7950 7970 9105 9301 9795 --method all_correct"
 
 # 단일 run 예시
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="dataset=fold1 model=kbrs seed=123 kbrs_loss=kbrs025 kbrs_score=base"
+NVIDIA_VISIBLE_DEVICES=$GPU make run ARGS=" \
+  model_name=maskrcnn \
+  model=vanilla \
+  dataset=fold1 \
+  seed=123 \
+"
 
-# 멀티런 예시
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m dataset=fold1,fold2,fold3 model=kbrs seed=123,456,789 kbrs_loss=kbrs025 kbrs_score=base"
+NVIDIA_VISIBLE_DEVICES=$GPU make run ARGS=" \
+  model_name=maskrcnn \
+  model=kbrs \
+  dataset=fold1 \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+  kbrs_score=base_score \
+"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  model_name=rtdetr \
+  rtdetr_version=v1 \
+  model=kbrs \
+  dataset=fold1_sample \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+  kbrs_score=base_score \
+"
 
 # seed sweep
 NVIDIA_VISIBLE_DEVICES=0 make train ARGS="-m dataset=fold1 model=kbrs seed=123,456,789 kbrs_loss=kbrs025 kbrs_score=base"
@@ -163,3 +184,36 @@ NVIDIA_VISIBLE_DEVICES=0 make lookup ARGS=" \
   --num-workers 16 \
   --log-level log \
   "
+
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  architecture=maskrcnn \
+  kbrs=disabled \
+  dataset=fold1_sample \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  architecture=maskrcnn \
+  kbrs=enabled \
+  dataset=fold1_sample \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+"  
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  architecture=rtdetr \
+  kbrs=disabled \
+  dataset=fold1_sample \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
+  architecture=rtdetr \
+  kbrs=enabled \
+  dataset=fold1_sample \
+  seed=123 \
+  kbrs_loss=kbrs025 \
+"  

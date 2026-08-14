@@ -1,0 +1,9 @@
+model_name: maskrcnn
+
+resize_mode: resize
+do_normalize: false
+min_sizes: [800]
+max_size: 1333
+rpn_small_anchors: false
+normalize_mean: null
+normalize_std: null

@@ -4,7 +4,7 @@ import torch
 
 import torch.nn as nn
 import torchvision
-
+from torchvision.models import ResNet50_Weights
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor

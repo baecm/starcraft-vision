@@ -1,4 +1,4 @@
-# @package kbrs_score
-defaults:
-  - /kbrs_score/base_score
-mixture: 3.0
+# @package _global_
+kbrs:
+  score_weights:
+    mixture: 3.0

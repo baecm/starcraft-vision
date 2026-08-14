@@ -360,7 +360,7 @@ def parse_train_args(argv=None):
     group_data.add_argument(
         "--interval",
         type=int,
-        default=config.INTERVAL,
+        default=1,
         help="Sampling interval for frame windows (1 = use every index).",
     )
     group_data.add_argument(
@@ -375,22 +375,22 @@ def parse_train_args(argv=None):
     group_hyper.add_argument(
         "--window-size",
         type=int,
-        default=config.WINDOW_SIZE,
+        default=1,
     )
     group_hyper.add_argument(
         "--batch-size",
         type=int,
-        default=config.TRAIN_BATCH_SIZE,
+        default=8,
     )
     group_hyper.add_argument(
         "--learning-rate",
         type=float,
-        default=config.TRAIN_LEARNING_RATE,
+        default=0.005,
     )
     group_hyper.add_argument(
         "--max-epoch",
         type=int,
-        default=config.TRAIN_EPOCHS,
+        default=10,
     )
     group_hyper.add_argument(
         "--test-eval-every",
@@ -483,6 +483,18 @@ def build_inference_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use KBRS if available in the model.",
     )
+    group_model.add_argument(
+        "--rtdetr-version",
+        type=str,
+        default="v1",
+        help="RT-DETR version (v1 or v2)",
+    )
+    group_model.add_argument(
+        "--rtdetr-size",
+        type=str,
+        default="l",
+        help="RT-DETR model size (s, m, l, x)",
+    )
 
     group_hyper = parser.add_argument_group("Inference Hyperparameters")
     group_hyper.add_argument(
@@ -523,4 +535,18 @@ def build_inference_parser() -> argparse.ArgumentParser:
 
 
 def parse_inference_args(argv=None):
-    return build_inference_parser().parse_args(argv)
+    raw_args = argv if argv is not None else sys.argv
+    parser = build_inference_parser()
+    args = parser.parse_args(argv)
+
+    print("\n" + "="*70)
+    for key, value in vars(args).items():
+        if key == "output_dir":
+            print(f"  - {key}: {value}")
+        elif key == "model_root":
+            print(f"  - {key}: {value}")
+        else:
+            print(f"  - {key}: {value}")
+    print("="*70 + "\n")
+
+    return args
