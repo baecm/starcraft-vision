@@ -1,12 +1,13 @@
 # src/cli.py
 import argparse
 import os
-import config
+from collections.abc import Iterable
 import yaml
 
-from collections.abc import Iterable
+import config
 
 DEFAULT_COMPONENTS = ["worker", "ground", "air", "building", "vision"]
+
 
 def _flatten_list(x):
     """train_replays: [*set1, *set2] 처럼 list 안에 list 가 있을 때 평탄화."""

@@ -1,4 +1,6 @@
 # src/config.py
+from enum import Enum
+
 GRAD_CLIP_NORM = 2.0
 
 LABEL_METHODS = [
@@ -14,7 +16,6 @@ KERNEL_SHAPE = (20, 12)
 ORIGIN_SHAPE = (128, 128)
 TILE_SIZE = 32
 
-from enum import Enum
 
 class Channel(Enum):
     Player_1_Worker = 0
@@ -28,6 +29,7 @@ class Channel(Enum):
     Resource = 8
     Vision = 9
     Terrain = 10
+
 
 # Mapping from component names to channel indices
 COMPONENT_CHANNEL_MAP = {

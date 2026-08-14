@@ -31,8 +31,8 @@ from dataset.label_cache import ensure_label_pickles
 from dataset.loader import load_data, make_loader
 from dataset.custom_penn_fudan import CustomPennFudanDataset
 
-# from model.maskrcnn_builder import get_model_instance_segmentation
 from model.factory import build_model
+
 
 from utils.logger import Logger
 from utils.synology_chat import send_message
