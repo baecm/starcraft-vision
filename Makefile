@@ -19,7 +19,7 @@ define run_or_parallel
 	CONTAINER_NAME=$(1)_$$(date +%Y%m%d_%H%M%S); \
 	if [ "$$REPLAY_COUNT" -le 1 ]; then \
 		echo "[Makefile] Running $(1) as single task"; \
-		nohup docker compose -f infra/docker-compose.yml run --name $$CONTAINER_NAME --rm dispatcher $(1) $(ARGS) \
+		nohup docker compose -f infra/docker-compose.yml run --name $$CONTAINER_NAME --rm trainer $(1) $(ARGS) \
 			> logs/$$CONTAINER_NAME.log 2>&1 & \
 		echo $$CONTAINER_NAME > $(PID_DIR)/$(1).cid; \
 	else \
@@ -38,68 +38,68 @@ rebuild:
 
 train:
 	CONTAINER_NAME=train_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher train $(ARGS) \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer train $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/train.cid
 
 inference:
 	CONTAINER_NAME=inference_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher inference $(ARGS) \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer inference $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/inference.cid
 
 evaluate:
 	CONTAINER_NAME=evaluate_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher evaluate $(ARGS) \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer evaluate $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/evaluate.cid
 
 estimate:
 	CONTAINER_NAME=estimate_$$(date +%Y%m%d_%H%M%S); \
-	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher estimate $(ARGS) \
+	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer estimate $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1; \
 	echo $$CONTAINER_NAME > $(PID_DIR)/estimate.cid
 
 cache:
 	CONTAINER_NAME=cache_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher cache $(ARGS) \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer cache $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/cache.cid
 
 lookup:
 	CONTAINER_NAME=lookup_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher lookup $(ARGS) \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer lookup $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/lookup.cid
 
 precheck:
 	CONTAINER_NAME=precheck_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher precheck $(ARGS) \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer precheck $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/precheck.cid
 
 profile_kbrs:
 	CONTAINER_NAME=profile_kbrs_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher profile_kbrs $(ARGS) \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer profile_kbrs $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/profile_kbrs.cid
 
 run:
 	CONTAINER_NAME=run_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher run $(ARGS) \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer run $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/run.cid
 	
 debug:
 	CONTAINER_NAME=debug_$(shell date +%Y%m%d_%H%M%S); \
-	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm dispatcher debug $(ARGS);
+	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer debug $(ARGS);
 
 # Entry points
 preprocess_input:
-# 	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_input $(ARGS)
+# 	docker compose -f $(COMPOSE_FILE) run --rm trainer preprocess_input $(ARGS)
 	$(call run_or_parallel,preprocess_input)
 preprocess_label:
-	docker compose -f $(COMPOSE_FILE) run --rm dispatcher preprocess_label $(ARGS)
+	docker compose -f $(COMPOSE_FILE) run --rm trainer preprocess_label $(ARGS)
 
 stop:
 	@echo "Stopping all tracked containers..."

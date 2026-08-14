@@ -217,3 +217,21 @@ NVIDIA_VISIBLE_DEVICES=0 make run ARGS="-m \
   seed=123 \
   kbrs_loss=kbrs025 \
 "  
+
+# CenterNet (Density Peak Head) 학습 실행
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=centernet"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
+  architecture=centernet \
+  dataset=fold1 \
+  seed=123 \
+"
+
+# Deformable Video DETR (Probabilistic Latent Query) 학습 실행
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=deformable_video_detr"
+
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
+  architecture=deformable_video_detr \
+  dataset=fold1 \
+  seed=123 \
+"

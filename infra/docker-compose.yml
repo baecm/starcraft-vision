@@ -1,6 +1,6 @@
 # infra/docker-compose.yml
 services:
-  dispatcher:
+  trainer:
     build:
       context: ../
       dockerfile: infra/docker/Dockerfile
