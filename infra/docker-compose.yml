@@ -1,5 +1,5 @@
 # infra/docker-compose.yml
-x-base-service: &base-service
+x-common-config: &common-config
   build:
     context: ../
     dockerfile: infra/docker/Dockerfile
@@ -9,17 +9,6 @@ x-base-service: &base-service
     - TORCH_HOME=/workspace/.torch_cache
     - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
     - ENABLE_SYNOLOGY_CHAT=${ENABLE_SYNOLOGY_CHAT:-false}
-  volumes:
-    - ${WANDB_API_KEY}:/run/secrets/wandb_api_key:ro
-    - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
-    - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
-    - ${DATA_DIR}:/workspace/data
-    - ${SRC_DIR}:/workspace/src
-    - ${MODELS_DIR}:/workspace/models
-    - ${PREDICTIONS_DIR}:/workspace/predictions
-    - ${RESULTS_DIR}:/workspace/results
-    - ${CONF_DIR}:/workspace/conf
-    - ./entrypoint.sh:/workspace/entrypoint.sh
   user: "${UID}:${GID}"
   shm_size: '${SHARED_MEMORY}'
   working_dir: /workspace
@@ -29,16 +18,59 @@ x-base-service: &base-service
 
 services:
   preprocessor:
-    <<: *base-service
+    <<: *common-config
+    volumes:
+      - ${SRC_DIR}:/workspace/src:ro
+      - ${DATA_DIR}:/workspace/data
+      - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
+      - ./entrypoint.sh:/workspace/entrypoint.sh:ro
 
   trainer:
-    <<: *base-service
-
-  evaluator:
-    <<: *base-service
+    <<: *common-config
+    volumes:
+      - ${WANDB_API_KEY}:/run/secrets/wandb_api_key:ro
+      - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
+      - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
+      - ${DATA_DIR}:/workspace/data:ro
+      - ${SRC_DIR}:/workspace/src:ro
+      - ${MODELS_DIR}:/workspace/models
+      - ${PREDICTIONS_DIR}:/workspace/predictions
+      - ${RESULTS_DIR}:/workspace/results
+      - ${CONF_DIR}:/workspace/conf:ro
+      - ./entrypoint.sh:/workspace/entrypoint.sh:ro
 
   inferencer:
-    <<: *base-service
+    <<: *common-config
+    volumes:
+      - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
+      - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
+      - ${DATA_DIR}:/workspace/data:ro
+      - ${SRC_DIR}:/workspace/src:ro
+      - ${MODELS_DIR}:/workspace/models:ro
+      - ${PREDICTIONS_DIR}:/workspace/predictions
+      - ./entrypoint.sh:/workspace/entrypoint.sh:ro
+
+  evaluator:
+    <<: *common-config
+    volumes:
+      - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
+      - ${DATA_DIR}:/workspace/data
+      - ${SRC_DIR}:/workspace/src:ro
+      - ${MODELS_DIR}:/workspace/models:ro
+      - ${PREDICTIONS_DIR}:/workspace/predictions:ro
+      - ${RESULTS_DIR}:/workspace/results
+      - ./entrypoint.sh:/workspace/entrypoint.sh:ro
 
   debugger:
-    <<: *base-service
+    <<: *common-config
+    volumes:
+      - ${WANDB_API_KEY}:/run/secrets/wandb_api_key:ro
+      - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
+      - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
+      - ${DATA_DIR}:/workspace/data
+      - ${SRC_DIR}:/workspace/src
+      - ${MODELS_DIR}:/workspace/models
+      - ${PREDICTIONS_DIR}:/workspace/predictions
+      - ${RESULTS_DIR}:/workspace/results
+      - ${CONF_DIR}:/workspace/conf
+      - ./entrypoint.sh:/workspace/entrypoint.sh
