@@ -24,8 +24,26 @@ define run_or_parallel
 		echo $$CONTAINER_NAME > $(PID_DIR)/$(1).cid; \
 	else \
 		echo "[Makefile] Running $(1) in parallel"; \
-		nohup bash scripts/preprocess_batch.sh $(1) $(ARGS) \
-			> logs/$$CONTAINER_NAME.log 2>&1 & \
+		nohup bash -c '\
+			COMMAND="$$1"; shift; \
+			REPLAY_IDS=(); ARGS=(); \
+			while [[ $$# -gt 0 ]]; do \
+				if [[ "$$1" == "--replays" ]]; then \
+					shift; \
+					while [[ $$# -gt 0 && "$$1" != --* ]]; do REPLAY_IDS+=("$$1"); shift; done; \
+				else \
+					ARGS+=("$$1"); shift; \
+				fi; \
+			done; \
+			MAX_PARALLEL=2; CURRENT_PARALLEL=0; \
+			for REPLAY_ID in "$${REPLAY_IDS[@]}"; do \
+				LOG_FILE="logs/$${COMMAND}_$${REPLAY_ID}.log"; \
+				docker compose -f infra/docker-compose.yml run --rm preprocessor "$$COMMAND" --replays "$$REPLAY_ID" "$${ARGS[@]}" > "$$LOG_FILE" 2>&1 & \
+				CURRENT_PARALLEL=$$((CURRENT_PARALLEL + 1)); \
+				if [ "$$CURRENT_PARALLEL" -ge "$$MAX_PARALLEL" ]; then wait -n; CURRENT_PARALLEL=$$((CURRENT_PARALLEL - 1)); fi; \
+			done; \
+			wait; \
+		' dummy $(1) $(ARGS) > logs/$$CONTAINER_NAME.log 2>&1 & \
 		echo $$CONTAINER_NAME > $(PID_DIR)/$(1).cid; \
 	fi
 endef
