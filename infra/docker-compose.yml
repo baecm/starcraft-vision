@@ -9,6 +9,7 @@ x-common-config: &common-config
     - TORCH_HOME=/workspace/.torch_cache
     - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
     - ENABLE_SYNOLOGY_CHAT=${ENABLE_SYNOLOGY_CHAT:-false}
+    - WANDB_DISABLE_TELEMETRY=${WANDB_DISABLE_TELEMETRY:-true}
   user: "${UID}:${GID}"
   shm_size: '${SHARED_MEMORY}'
   working_dir: /workspace

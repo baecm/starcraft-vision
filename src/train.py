@@ -498,6 +498,8 @@ def run_training(cfg: DictConfig):
     cfg.model_name = getattr(cfg.architecture, "model_name", "maskrcnn")
     cfg.rtdetr_version = getattr(cfg.architecture, "rtdetr_version", "v2")
     cfg.rtdetr_size = getattr(cfg.architecture, "rtdetr_size", "l")
+    cfg.use_density_peak = getattr(cfg.architecture, "use_density_peak", getattr(cfg, "use_density_peak", False))
+    cfg.use_probabilistic_query = getattr(cfg.architecture, "use_probabilistic_query", getattr(cfg, "use_probabilistic_query", False))
     cfg.in_channels = in_channels
     cfg.num_classes = num_classes
     cfg.kbrs_params = kbrs_params

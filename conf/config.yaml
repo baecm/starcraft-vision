@@ -7,6 +7,8 @@ defaults:
   - _self_ 
 
 use_kbrs: ${kbrs.use_kbrs}
+use_density_peak: false
+use_probabilistic_query: false
 # ===== Data & Replays =====
 train_replays: ${dataset.train_replays}
 test_replays: ${dataset.test_replays}
