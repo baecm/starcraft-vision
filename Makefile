@@ -5,6 +5,11 @@ DEBUG_PORT   ?= 5678
 ENABLE_SYNOLOGY_CHAT ?= false
 export ENABLE_SYNOLOGY_CHAT
 
+USER_UID ?= $(shell id -u)
+USER_GID ?= $(shell id -g)
+export UID := $(USER_UID)
+export GID := $(USER_GID)
+
 PYDEBUG_SERVICE  ?= pydebug
 
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
