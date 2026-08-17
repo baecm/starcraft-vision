@@ -12,8 +12,7 @@ PYDEBUG_SERVICE  ?= pydebug
 		zeppelin
 
 # 디렉토리 생성
-$(shell mkdir -p $(PID_DIR))
-$(shell mkdir -p logs)
+$(shell mkdir -p $(PID_DIR) logs results models predictions .torch_cache)
 
 define run_or_parallel
 	@REPLAY_COUNT=$(shell echo $(ARGS) | sed -n 's/.*--replays\([^"]*\).*/\1/p' | wc -w); \
