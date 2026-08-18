@@ -1,0 +1,4 @@
+# conf/plugins/probabilistic_query/disabled.yaml
+use_probabilistic_query: false
+probabilistic_query_params: {}
+loss_weights: {}

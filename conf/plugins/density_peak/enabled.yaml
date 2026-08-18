@@ -1,0 +1,9 @@
+# conf/plugins/density_peak/enabled.yaml
+use_density_peak: true
+density_peak_params:
+  head_conv: 64
+  sigma: 2.0
+  delta_cutoff: 3.0
+loss_weights:
+  loss_density: 0.5
+  loss_delta: 0.5

@@ -17,9 +17,9 @@ kbrs_params:
   per_window: 9
 
   # score_weights 참조
-  density:      ${kbrs.score_weights.density}
-  mixture:      ${kbrs.score_weights.mixture}
-  centeredness: ${kbrs.score_weights.centeredness}
+  density:      ${plugins/kbrs.score_weights.density}
+  mixture:      ${plugins/kbrs.score_weights.mixture}
+  centeredness: ${plugins/kbrs.score_weights.centeredness}
 
   feature_map_name: smallest
   scorer_impl: conv

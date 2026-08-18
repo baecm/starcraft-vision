@@ -2,14 +2,20 @@
 defaults:
   - dataset: fold1
   - architecture: maskrcnn
-  - kbrs: disabled
-  - kbrs/loss: kbrs025
-  - optional kbrs/score: null
+  - plugins/kbrs: disabled
+  - plugins/density_peak: disabled
+  - plugins/probabilistic_query: disabled
+  - plugins/kbrs/loss: kbrs025
+  - optional plugins/kbrs/score: null
   - _self_ 
 
-use_kbrs: ${kbrs.use_kbrs}
-use_density_peak: ${oc.select:architecture.use_density_peak,false}
-use_probabilistic_query: ${oc.select:architecture.use_probabilistic_query,false}
+use_kbrs: ${plugins.kbrs.use_kbrs}
+use_density_peak: ${plugins.density_peak.use_density_peak}
+use_probabilistic_query: ${plugins.probabilistic_query.use_probabilistic_query}
+
+kbrs: ${plugins.kbrs}
+density_peak: ${plugins.density_peak}
+probabilistic_query: ${plugins.probabilistic_query}
 # ===== Data & Replays =====
 train_replays: ${dataset.train_replays}
 test_replays: ${dataset.test_replays}

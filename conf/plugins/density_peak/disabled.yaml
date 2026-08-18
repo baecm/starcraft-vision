@@ -1,0 +1,4 @@
+# conf/plugins/density_peak/disabled.yaml
+use_density_peak: false
+density_peak_params: {}
+loss_weights: {}

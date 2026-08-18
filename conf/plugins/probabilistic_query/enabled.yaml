@@ -1,0 +1,7 @@
+# conf/plugins/probabilistic_query/enabled.yaml
+use_probabilistic_query: true
+probabilistic_query_params:
+  latent_dim: 64
+  prior_std: 1.0
+loss_weights:
+  loss_kl: 0.1
