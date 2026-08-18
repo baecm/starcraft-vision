@@ -192,6 +192,21 @@ def eval_kernel_from_coco(
         per_image=per_image,
         agg=agg,
     )
+
+    try:
+        from utils.multi_region_eval import compute_multi_region_metrics
+        multi_metrics = compute_multi_region_metrics(
+            coco_gt=coco_gt,
+            preds_list=preds_list,
+            grid_w=width,
+            grid_h=height,
+            win_w=x_len,
+            win_h=y_len,
+        )
+        row.update(multi_metrics)
+    except Exception as e:
+        Logger.warn(f"[MultiRegion] Metric calculation skipped due to: {e}")
+
     return row, per_image, agg
 
 
