@@ -2,7 +2,7 @@
 defaults:
   - dataset: fold1
   - architecture: rtdetr
-  - kbrs: enabled
+  - kbrs: disabled
   - kbrs_loss: "kbrs025"
   - _self_ 
 
