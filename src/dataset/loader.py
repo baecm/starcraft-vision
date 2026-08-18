@@ -12,26 +12,26 @@ from dataset.splits import train_val_split_indices, subsample_indices
 from utils.logger import Logger
 
 
+from utils.seed import seed_worker
+
+
 def make_loader(
     ds,
     batch_size: int,
     shuffle: bool,
     num_workers: int,
+    seed: Optional[int] = None,
 ) -> Optional[DataLoader]:
     """
-    공통 DataLoader 생성 유틸.
-
-    Args:
-        ds: torch Dataset (또는 Subset)
-        batch_size: 배치 크기
-        shuffle: 셔플 여부
-        num_workers: DataLoader worker 수
-
-    Returns:
-        DataLoader 또는 ds가 None이면 None
+    공통 DataLoader 생성 유틸 (시드 기반 결정론적 워커 초기화 적용).
     """
     if ds is None:
         return None
+
+    g = None
+    if seed is not None:
+        g = torch.Generator()
+        g.manual_seed(int(seed))
 
     return DataLoader(
         ds,
@@ -39,6 +39,8 @@ def make_loader(
         shuffle=shuffle,
         num_workers=num_workers,
         collate_fn=utils.collate_fn,
+        worker_init_fn=seed_worker if seed is not None else None,
+        generator=g,
     )
 
 
@@ -213,6 +215,7 @@ def load_data(
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
+        seed=seed,
     )
     val_loader = (
         make_loader(
@@ -220,6 +223,7 @@ def load_data(
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
+            seed=seed,
         )
         if val_dataset is not None
         else None

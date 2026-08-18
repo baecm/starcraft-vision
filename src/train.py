@@ -36,30 +36,7 @@ from model.factory import build_model
 
 from utils.logger import Logger
 from utils.synology_chat import send_message
-
-
-def set_global_seed(seed: int | None):
-    """
-    Python / NumPy / PyTorch (CPU/CUDA) 시드를 한 번에 설정.
-    deterministic 옵션까지 켜서 최대한 재현성이 유지되게 함.
-    """
-    if seed is None:
-        Logger.info("[Seed] No seed provided; running with default randomness.")
-        return
-
-    Logger.info(f"[Seed] Setting global seed = {seed}")
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-    # 선택: 완전 deterministic 모드 (속도 약간 손해)
-    try:
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-    except Exception as e:
-        Logger.warning(f"[Seed] Could not set cuDNN deterministic flags: {e}")
+from utils.seed import set_global_seed
 
 
 def _get_choice(group: str) -> Optional[str]:

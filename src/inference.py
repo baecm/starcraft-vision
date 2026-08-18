@@ -27,26 +27,7 @@ from utils.logger import Logger
 from utils.synology_chat import send_message
 
 
-def set_global_seed(seed: int | None):
-    """
-    Inference 단계에서의 샘플링/순서를 고정하기 위한 seed 설정.
-    """
-    if seed is None:
-        Logger.info("[Seed] No seed provided; running inference with default randomness.")
-        return
-
-    Logger.info(f"[Seed] Setting global seed for inference = {seed}")
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-    try:
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-    except Exception as e:
-        Logger.warning(f"[Seed] Could not set cuDNN deterministic flags: {e}")
+from utils.seed import set_global_seed
 
 
 def collate_fn(batch):
