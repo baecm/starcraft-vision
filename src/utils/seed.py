@@ -22,6 +22,7 @@ def set_global_seed(seed: Optional[int], deterministic: bool = True) -> Optional
     Logger.info(f"[Seed] Setting strict global seed = {seed} (deterministic={deterministic})")
 
     os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
