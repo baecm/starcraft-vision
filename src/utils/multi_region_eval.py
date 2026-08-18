@@ -138,6 +138,31 @@ def compute_multi_region_metrics(
             triu_idx = np.triu_indices(len(top3_preds), k=1)
             inter_region_dists.append(float(pair_dists[triu_idx].mean()))
 
+    # Compute temporal sequence metrics across consecutive frames
+    jitters = []
+    persistences = []
+    images = coco_gt.dataset.get("images", [])
+    if len(images) > 1:
+        prev_top1 = None
+        prev_clus_idx = None
+        for img in images:
+            img_preds = sorted(preds_by_img.get(int(img["id"]), []), key=lambda q: float(q.get("score", 0.0)), reverse=True)
+            if not img_preds or "bbox" not in img_preds[0]:
+                prev_top1 = None
+                prev_clus_idx = None
+                continue
+
+            x, y, w, h = img_preds[0]["bbox"]
+            curr_top1 = np.array([x + w / 2.0, y + h / 2.0], dtype=np.float32)
+
+            if prev_top1 is not None:
+                jdist = float(np.linalg.norm(curr_top1 - prev_top1))
+                jitters.append(jdist)
+                persist = 1.0 if jdist <= (win_w * (grid_w / max(1, img.get("width", grid_w)))) else 0.0
+                persistences.append(persist)
+
+            prev_top1 = curr_top1
+
     res = {}
     for k in top_ks:
         res[f"top{k}_ic@050"] = float(np.mean(topk_coverages[k])) if topk_coverages[k] else 0.0
@@ -150,4 +175,6 @@ def compute_multi_region_metrics(
         res[f"recall_r{r_int}"] = float(np.mean(recall_r[r])) if recall_r[r] else 0.0
 
     res["inter_region_dist"] = float(np.mean(inter_region_dists)) if inter_region_dists else 0.0
+    res["center_jitter"] = float(np.mean(jitters)) if jitters else 0.0
+    res["target_persistence"] = float(np.mean(persistences)) if persistences else 0.0
     return res
