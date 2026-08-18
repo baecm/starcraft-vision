@@ -12,13 +12,23 @@
 # =====================================================================
 # 0. Quick Lightweight Test Commands (Low-Spec Client Workstation)
 # =====================================================================
-# Lightweight 1-Epoch Training Test (Batch size=2, Low VRAM)
+# --- 1) CenterNet ---
 NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=centernet batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample"
-
-# Lightweight Full Pipeline Run (Train + Inference + Estimate)
 NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=centernet batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample seed=123"
 
-# Lightweight Single-Replay Inference Test
+# --- 2) Deformable Video DETR ---
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=deformable_video_detr batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample"
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=deformable_video_detr batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample seed=123"
+
+# --- 3) Mask R-CNN ---
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=maskrcnn batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample"
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=maskrcnn batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample seed=123"
+
+# --- 4) RT-DETR ---
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=rtdetr batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample"
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=rtdetr batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample seed=123"
+
+# --- Single-Replay Inference Test Example ---
 NVIDIA_VISIBLE_DEVICES=0 make inference ARGS="--model-name centernet --model-number 1 --replays 36 --batch-size 2 --cuda"
 
 # =====================================================================
