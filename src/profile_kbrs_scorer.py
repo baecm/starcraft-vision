@@ -15,7 +15,7 @@ import numpy as np
 import torch
 
 from model.maskrcnn_builder import get_model_instance_segmentation
-from model.kbrs import KBRSConvScorer
+from model.plugins.kbrs import KBRSConvScorer
 from model.utils import pick_feature_map, normalize_projections, auto_expand_indices, compute_gate_from_raw_inputs
 from utils.time_measure import measure_time
 
