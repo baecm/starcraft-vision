@@ -41,6 +41,9 @@ def make_loader(
         collate_fn=utils.collate_fn,
         worker_init_fn=seed_worker if seed is not None else None,
         generator=g,
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None,
+        pin_memory=torch.cuda.is_available(),
     )
 
 

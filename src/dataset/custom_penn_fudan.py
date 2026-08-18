@@ -62,9 +62,10 @@ class CustomPennFudanDataset(BasePennFudanDataset):
 
             # 윈도우 생성
             windows = self._generate_windows(sorted_image_ids, self.window_size, self.interval)
-            # 유효 윈도우만 필터(모든 .npy 존재)
+            # 유효 윈도우만 필터(1회 NAS listdir로 RPC 네트워크 병목 제거)
+            existing_files = set(os.listdir(input_dir))
             for win in windows:
-                if self._check_window_files_exist(input_dir, win):
+                if all(f"{img_id}.npy" in existing_files for img_id in win):
                     self.files.append((rid, win, image_dict, ann_dict))
 
         if not self.files:
@@ -261,7 +262,7 @@ class CustomPennFudanDataset(BasePennFudanDataset):
             if not os.path.isfile(npy_path):
                 raise FileNotFoundError(f"[CustomDataset] Missing input file: {npy_path}")
 
-            arr = np.load(npy_path)
+            arr = np.load(npy_path, mmap_mode="r")
             arr = arr[channel_indices]
             if arr.ndim != 3:
                 raise ValueError(f"[CustomDataset] Unexpected input shape: {arr.shape} at {npy_path}")
