@@ -1,8 +1,8 @@
 # conf/kbrs/enabled.yaml
 use_kbrs: true
 loss_weights:
-  loss_rpn_box_reg: ${kbrs_loss.loss_rpn_box_reg}
-  loss_kbrs:        ${kbrs_loss.loss_kbrs}
+  loss_rpn_box_reg: ${oc.select:kbrs_loss.loss_rpn_box_reg,1.0}
+  loss_kbrs:        ${oc.select:kbrs_loss.loss_kbrs,0.25}
 
 score_weights:
   density: 0.3

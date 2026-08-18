@@ -3,7 +3,6 @@ defaults:
   - dataset: fold1
   - architecture: maskrcnn
   - kbrs: disabled
-  - kbrs_loss: "kbrs025"
   - _self_ 
 
 use_kbrs: ${kbrs.use_kbrs}
