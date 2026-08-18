@@ -128,6 +128,11 @@ class DeformableDETRBackbone(nn.Module):
             nn.Linear(d_model, 4)
         )
 
+        # Official Deformable-DETR Focal Loss prior probability bias initialization
+        prior_prob = 0.01
+        bias_value = -math.log((1 - prior_prob) / prior_prob)
+        nn.init.constant_(self.class_head.bias, bias_value)
+
     def _extract_spatiotemporal_features(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         T = self.window_size
