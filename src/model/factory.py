@@ -8,7 +8,7 @@ from typing import Any
 from utils.logger import Logger
 from .backbones import (
     CenterNetBackbone,
-    DeformableVideoDETRBackbone,
+    DeformableDETRBackbone,
     build_maskrcnn_backbone,
     build_rtdetr_backbone
 )
@@ -87,8 +87,8 @@ def build_model(args: Any) -> nn.Module:
             loss_weights=loss_weights
         )
 
-    elif model_name in ["deformable_video_detr", "deformable_detr", "deformable_video_detr_probabilistic"]:
-        model = DeformableVideoDETRBackbone(
+    elif model_name in ["deformable_detr", "deformable_video_detr", "deformable_video_detr_probabilistic"]:
+        model = DeformableDETRBackbone(
             num_classes=num_classes,
             in_channels=in_channels,
             window_size=window_size,
@@ -98,7 +98,7 @@ def build_model(args: Any) -> nn.Module:
         )
 
     else:
-        raise ValueError(f"Unknown model_name: {model_name}. Supported: 'maskrcnn', 'rtdetr', 'centernet', 'deformable_video_detr'")
+        raise ValueError(f"Unknown model_name: {model_name}. Supported: 'maskrcnn', 'rtdetr', 'centernet', 'deformable_detr'")
 
     if use_kbrs:
         kbrs_params = dict(kbrs_params or {})

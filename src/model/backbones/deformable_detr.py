@@ -49,9 +49,9 @@ class SpatiotemporalDeformableAttention(nn.Module):
         out = torch.cat(sampled_features, dim=-1)
         return self.output_proj(out)
 
-class DeformableVideoDETRBackbone(nn.Module):
+class DeformableDETRBackbone(nn.Module):
     """
-    Pure Deformable Video DETR Backbone architecture with Spatiotemporal Deformable Attention.
+    Pure Deformable DETR Backbone architecture with Spatiotemporal Deformable Attention.
     """
     def __init__(
         self,

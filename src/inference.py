@@ -242,7 +242,7 @@ def run_inference(args):
     if "centernet" in model_name_lower:
         arch_name = "centernet"
     elif "deformable" in model_name_lower or ("detr" in model_name_lower and "rtdetr" not in model_name_lower):
-        arch_name = "deformable_video_detr"
+        arch_name = "deformable_detr"
     elif "rtdetr" in model_name_lower:
         arch_name = "rtdetr"
     else:

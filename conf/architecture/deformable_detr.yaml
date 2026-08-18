@@ -1,4 +1,4 @@
-model_name: deformable_video_detr
+model_name: deformable_detr
 num_queries: 100
 use_probabilistic_query: false
 

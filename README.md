@@ -21,7 +21,7 @@ This repository provides an end-to-end multi-frame object detection framework ta
 ```text
 starcraft-vision/
 ├── conf/                         # Hydra configuration files (architecture, dataset, kbrs, loss)
-│   └── architecture/             # Model & plugin configs (centernet, deformable_video_detr, maskrcnn, rtdetr)
+│   └── architecture/             # Model & plugin configs (centernet, deformable_detr, maskrcnn, rtdetr)
 ├── infra/                        # Docker infrastructure, entrypoint.sh & docker-compose services
 ├── Makefile                      # Build & execution automation (dynamic UID/GID export)
 ├── commands.sh                   # Exhaustive script containing all replay experiment commands
@@ -122,9 +122,9 @@ NVIDIA_VISIBLE_DEVICES=0 make cache ARGS="--replays 36 212 438 --num-workers 16"
 NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=centernet architecture.use_density_peak=true"
 NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=centernet dataset=fold1 seed=123"
 
-# Deformable Video DETR (with Probabilistic Latent Query)
-NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=deformable_video_detr architecture.use_probabilistic_query=true"
-NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=deformable_video_detr dataset=fold1 seed=123"
+# Deformable DETR (with Probabilistic Latent Query)
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=deformable_detr plugins/probabilistic_query=enabled"
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=deformable_detr dataset=fold1 seed=123"
 
 # Mask R-CNN & RT-DETR with KBRS
 NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=maskrcnn dataset=fold1_sample seed=123"
