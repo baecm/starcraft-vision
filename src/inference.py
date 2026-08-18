@@ -2,6 +2,7 @@
 # src/inference.py
 
 import os
+import sys
 import tqdm
 import multiprocessing
 import json
@@ -322,8 +323,10 @@ def run_inference(args):
         
         # Run inference
         replay_results = []
+        is_tty = sys.stderr.isatty() or sys.stdout.isatty()
+        min_interval = 0.1 if is_tty else 5.0
         with torch.inference_mode():
-            for images, metas in tqdm.tqdm(data_loader, desc="Running inference for replay", unit="batch"):
+            for images, metas in tqdm.tqdm(data_loader, desc="Running inference for replay", unit="batch", mininterval=min_interval):
                 images = [img.to(device, non_blocking=True) for img in images]
                 outputs = model(images)
 
