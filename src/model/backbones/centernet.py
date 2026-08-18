@@ -93,6 +93,12 @@ class CenterNetBackbone(nn.Module):
         gt_density = torch.zeros((batch_size, 1, feat_h, feat_w), device=device)
         gt_delta = torch.zeros((batch_size, 1, feat_h, feat_w), device=device)
 
+        y_grid, x_grid = torch.meshgrid(
+            torch.arange(feat_h, device=device),
+            torch.arange(feat_w, device=device),
+            indexing="ij"
+        )
+
         for b, target in enumerate(targets):
             boxes = target["boxes"]
             labels = target["labels"]
@@ -126,14 +132,14 @@ class CenterNetBackbone(nn.Module):
                 gt_ind[b, k] = ct_y * feat_w + ct_x
 
                 radius = max(1, int(min(w, h) / 2.0))
-                y_grid, x_grid = torch.meshgrid(
-                    torch.arange(feat_h, device=device),
-                    torch.arange(feat_w, device=device),
-                    indexing="ij"
-                )
-                dist_sq = (x_grid - ct_x) ** 2 + (y_grid - ct_y) ** 2
-                gauss = torch.exp(-dist_sq / (2 * (radius ** 2)))
-                density_accum += gauss
+                left = max(0, ct_x - 3 * radius)
+                right = min(feat_w, ct_x + 3 * radius + 1)
+                top = max(0, ct_y - 3 * radius)
+                bottom = min(feat_h, ct_y + 3 * radius + 1)
+
+                dist_sq = (x_grid[top:bottom, left:right] - ct_x) ** 2 + (y_grid[top:bottom, left:right] - ct_y) ** 2
+                gauss = torch.exp(-dist_sq / (2.0 * (radius ** 2)))
+                density_accum[top:bottom, left:right] += gauss
 
             gt_density[b, 0] = density_accum
 
