@@ -14,7 +14,8 @@ from collections import OrderedDict
 import numpy as np
 import torch
 
-from model.maskrcnn_builder import get_model_instance_segmentation
+from types import SimpleNamespace
+from model.factory import build_model
 from model.plugins.kbrs import KBRSConvScorer
 from model.utils import pick_feature_map, normalize_projections, auto_expand_indices, compute_gate_from_raw_inputs
 from utils.time_measure import measure_time
@@ -113,19 +114,21 @@ def main():
 
     loss_weights = {"loss_kbrs": 0.25}
 
-    # ===== 모델 생성 (실험 환경에 맞추기 위해 builder 사용) =====
-    model = get_model_instance_segmentation(
+    # ===== 모델 생성 (통합 factory 사용) =====
+    cfg = SimpleNamespace(
+        model_name="maskrcnn",
         num_classes=2,
         window_size=window_size,
         in_channels=C,
-        do_normalize=False,     # conf
-        resize_mode="resize",   # conf
-        min_sizes=[800],        # conf
-        max_size=1333,          # conf
+        do_normalize=False,
+        resize_mode="resize",
+        min_sizes=[800],
+        max_size=1333,
         use_kbrs=True,
         kbrs_params=kbrs_params,
         loss_weights=loss_weights,
-    ).to(device).eval()
+    )
+    model = build_model(cfg).to(device).eval()
 
     print(f"Using {C} input channels (window size: {window_size}, per_window: {per_window})", flush=True)
     print("MODEL CLASS =", model.__class__.__name__, flush=True)
