@@ -274,7 +274,11 @@ class DeformableVideoDETRBackbone(nn.Module):
             prob = pred_logits.softmax(dim=-1)
 
             for b in range(B):
-                scores, labels = torch.max(prob[b], dim=-1)
+                # Class 0: Foreground unit (Viewport), Class 1: Background
+                # Extract true foreground score (prob[:, 0]) instead of max over background
+                scores = prob[b, :, 0]
+                labels = torch.ones_like(scores, dtype=torch.long)
+
                 b_boxes = pred_boxes[b]
 
                 cx, cy, w, h = b_boxes.unbind(-1)
@@ -284,7 +288,6 @@ class DeformableVideoDETRBackbone(nn.Module):
                 y2 = (cy + h / 2.0) * H
 
                 boxes_xyxy = torch.stack([x1, y1, x2, y2], dim=-1)
-                labels = labels + 1
 
                 results.append({
                     "boxes": boxes_xyxy,
