@@ -10,6 +10,18 @@
 # extra: 6254, 3529 3972 7191 7950 7970 9105 9301 9795
 
 # =====================================================================
+# 0. Quick Lightweight Test Commands (Low-Spec Client Workstation)
+# =====================================================================
+# Lightweight 1-Epoch Training Test (Batch size=2, Low VRAM)
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=centernet batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample"
+
+# Lightweight Full Pipeline Run (Train + Inference + Estimate)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=centernet batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample seed=123"
+
+# Lightweight Single-Replay Inference Test
+NVIDIA_VISIBLE_DEVICES=0 make inference ARGS="--model-name centernet --model-number 1 --replays 36 --batch-size 2 --cuda"
+
+# =====================================================================
 # 1. Data Preprocessing
 # =====================================================================
 # Preprocess input frames
