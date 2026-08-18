@@ -120,7 +120,7 @@ def build_rtdetr_backbone(num_classes: int, version: str = "v2", model_size: str
     weight_dir = os.path.join(base_cache_dir, "ultralytics")
     os.makedirs(weight_dir, exist_ok=True)
 
-    weights_filename = f"rtdetrv2-{model_size}.pt" if version.lower() == "v2" else f"rtdetr-{model_size}.pt"
+    weights_filename = f"rtdetr-{model_size}.pt"
     weights = os.path.join(weight_dir, weights_filename)
 
     if not os.path.exists(weights):
