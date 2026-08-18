@@ -754,24 +754,18 @@ def main():
         )
 
         # 3) 최종 replay-level row 합치기
-        final_row = {
+        final_row = dict(ic_row)
+        final_row.update({
             "replay": replay_id,
             "kernel": ic_row.get("kernel"),
             "num_images": ic_row.get("num_images", len(images)),
-            "ic@000": ic_row.get("ic@000"),
-            "ic@030": ic_row.get("ic@030"),
-            "ic@050": ic_row.get("ic@050"),
-            "ic_multi": ic_row.get("ic_multi"),
-            "ic_ratio": ic_row.get("ic_ratio"),
             "mean_density": mean_density,
             "mean_centeredness": mean_centered,
             "mean_mixture": mean_mixture,
-            "median_ir": ic_row.get("median_ir"),
-            "p90_ir": ic_row.get("p90_ir"),
             "mode": args.mode,
             "model_name": args.model_name if args.mode == "model" else None,
             "epoch": args.epoch if args.mode == "model" else None,
-        }
+        })
         replay_rows.append(final_row)
 
     if not replay_rows:
