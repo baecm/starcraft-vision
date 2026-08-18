@@ -144,6 +144,7 @@ def load_data(
             window_size=window_size,
             interval=interval,
             include_components=include_components,
+            verbose=False,
         )
         n_val_full = len(val_full)
         Logger.info(f"[Info] Full val dataset size (from val_replays): {n_val_full}")
