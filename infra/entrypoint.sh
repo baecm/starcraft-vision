@@ -49,19 +49,19 @@ run)
   ;;
 cache)
   log "Caching replays..."
-  exec python src/kbrs_cache.py "$@"
+  exec python src/tools/kbrs/kbrs_cache.py "$@"
   ;;
 lookup)
   log "Looking up replays..."
-  exec python src/kbrs_lookup.py "$@"
+  exec python src/tools/kbrs/kbrs_lookup.py "$@"
   ;;
 precheck)
   log "Prechecking replays..."
-  exec python src/precheck.py "$@"
+  exec python src/tools/precheck/precheck.py "$@"
   ;;
 profile_kbrs)
   log "Profiling KBRS..."
-  exec python src/profile_kbrs_scorer.py "$@"
+  exec python src/tools/kbrs/profile_kbrs_scorer.py "$@"
   ;;
 debug)
   log "Debugging..."
