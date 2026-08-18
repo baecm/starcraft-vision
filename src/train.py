@@ -402,6 +402,7 @@ def run_training(cfg: DictConfig):
             window_size=cfg.window_size,
             interval=cfg.interval,
             include_components=list(cfg.include_components),
+            verbose=False,
         )
         test_loader = make_loader(
             test_dataset,
