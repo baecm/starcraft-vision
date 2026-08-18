@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from typing import Any
 
+from utils.logger import Logger
 from .backbones import (
     CenterNetBackbone,
     DeformableVideoDETRBackbone,
@@ -53,10 +54,12 @@ def build_model(args: Any) -> nn.Module:
     loss_weights = getattr(args, "loss_weights", {})
     kbrs_params = getattr(args, "kbrs_params", {}) or {}
 
-    print(f"========== Building Model ==========")
-    print(f"Architecture : {model_name.upper()}")
-    print(f"Use KBRS     : {use_kbrs}")
+    use_dp = getattr(args, "use_density_peak", False) or (model_name == "centernet_density_peak")
+    use_pq = getattr(args, "use_probabilistic_query", False) or ("probabilistic" in model_name)
 
+    # ------------------------------------------------------------------
+    # Model Construction
+    # ------------------------------------------------------------------
     if model_name == "maskrcnn":
         model = build_maskrcnn_backbone(
             num_classes=num_classes,
@@ -69,13 +72,12 @@ def build_model(args: Any) -> nn.Module:
     elif model_name == "rtdetr":
         model = build_rtdetr_backbone(
             num_classes=num_classes,
-            version=getattr(args, "rtdetr_version", "v2"),
+            version=getattr(args, "rtdetr_version", "v1"),
             model_size=getattr(args, "rtdetr_size", "l"),
             in_channels=in_channels
         )
 
     elif model_name in ["centernet", "centernet_density_peak"]:
-        use_dp = getattr(args, "use_density_peak", model_name == "centernet_density_peak")
         model = CenterNetBackbone(
             num_classes=num_classes,
             in_channels=in_channels,
@@ -86,7 +88,6 @@ def build_model(args: Any) -> nn.Module:
         )
 
     elif model_name in ["deformable_video_detr", "deformable_detr", "deformable_video_detr_probabilistic"]:
-        use_pq = getattr(args, "use_probabilistic_query", "probabilistic" in model_name)
         model = DeformableVideoDETRBackbone(
             num_classes=num_classes,
             in_channels=in_channels,
@@ -103,7 +104,26 @@ def build_model(args: Any) -> nn.Module:
         kbrs_params = dict(kbrs_params or {})
         kbrs_params.setdefault("window_size", window_size)
         kbrs_params.setdefault("per_window", max(1, in_channels // max(1, window_size)))
-        print(f"[Notice] KBRS Plugin Wrapper attached to {model_name.upper()}.")
         model = KBRSWrapper(base_model=model, kbrs_params=kbrs_params, loss_weights=loss_weights)
+
+    # ------------------------------------------------------------------
+    # Structured Model & Plugin Logging
+    # ------------------------------------------------------------------
+    log_lines = [
+        "======================================================================",
+        f"[MODEL BUILD] Architecture : {model_name.upper()}",
+        f"[MODEL BUILD] Input Chans  : {in_channels} (Window Size: {window_size})",
+        "----------------------------------------------------------------------",
+        "[PLUGINS ATTACHED SUMMARY]",
+        f"  - KBRS Plugin          : {'[ENABLED]' if use_kbrs else '[DISABLED]'}",
+        f"  - Density Peak Plugin  : {'[ENABLED]' if (model_name.startswith('centernet') and use_dp) else ('[DISABLED]' if model_name.startswith('centernet') else '[N/A]')}",
+        f"  - Probabilistic Query  : {'[ENABLED]' if ('detr' in model_name and use_pq) else ('[DISABLED]' if 'detr' in model_name else '[N/A]')}",
+        "======================================================================"
+    ]
+    for line in log_lines:
+        try:
+            Logger.info(line)
+        except Exception:
+            print(line)
 
     return model

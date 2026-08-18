@@ -2,7 +2,6 @@ model_name: rtdetr
 rtdetr_version: v1
 rtdetr_size: l
 
-# RT-DETR 전용 Transform & Resize 설정 (예시)
 resize_mode: fixed_square
-image_size: 640          # RT-DETR은 주로 고정 사이즈를 사용합니다.
-do_normalize: false      # 36채널 커스텀 입력이므로 정규화를 끄거나 별도 처리
+image_size: 640
+do_normalize: false
