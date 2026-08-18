@@ -15,23 +15,23 @@ class Logger:
     @classmethod
     def debug(cls, *args):
         if cls._level == "debug":
-            print("[DEBUG]", *args)
+            print("[DEBUG]", *args, flush=True)
 
     @classmethod
     def log(cls, *args):
         if cls._level in ("log", "debug"):
-            print("[LOG]", *args)
+            print("[LOG]", *args, flush=True)
 
     @classmethod
     def info(cls, *args):
         if cls._level in ("log", "debug"):
-            print("[INFO]", *args)
+            print("[INFO]", *args, flush=True)
 
     @classmethod
     def warn(cls, *args):
         if cls._level in ("log", "debug"):
-            print("[WARN]", *args)
+            print("[WARN]", *args, flush=True)
 
     @classmethod
     def error(cls, *args):
-        print("[ERROR]", *args)
+        print("[ERROR]", *args, flush=True)

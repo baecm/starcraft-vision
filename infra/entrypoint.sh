@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+export PYTHONUNBUFFERED=1
+
 if [ -f /run/secrets/wandb_api_key ]; then
   export WANDB_API_KEY=$(cat /run/secrets/wandb_api_key 2>/dev/null || echo "")
 fi
