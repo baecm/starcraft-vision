@@ -1,2 +1,3 @@
+# @package kbrs_loss
 loss_kbrs: 0.25
 loss_rpn_box_reg: 1.0

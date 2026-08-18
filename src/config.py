@@ -51,8 +51,10 @@ PARAM_ALIAS_MAP = {
     "lr=": "learning_rate=",
     "batch=": "batch_size=",
     "ds=": "dataset=",
-    "loss=": "kbrs_loss=",
-    "score=": "kbrs_score=",
+    "loss=": "kbrs/loss=",
+    "kbrs_loss=": "kbrs/loss=",
+    "score=": "kbrs/score=",
+    "kbrs_score=": "kbrs/score=",
     "epoch=": "max_epoch=",
     "epochs=": "max_epoch=",
 }
