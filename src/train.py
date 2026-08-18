@@ -38,6 +38,12 @@ from utils.logger import Logger
 from utils.synology_chat import send_message
 from utils.seed import set_global_seed
 
+def _is_kbrs_enabled(cfg) -> bool:
+    kbrs = getattr(cfg, "kbrs", None)
+    if isinstance(kbrs, str):
+        return kbrs.lower() == "enabled"
+    return bool(getattr(cfg, "use_kbrs", False))
+
 
 def _get_choice(group: str) -> Optional[str]:
     """
@@ -308,8 +314,9 @@ def run_training(cfg: DictConfig):
     if not cfg.id_string:
         run_tags.append(cfg.architecture.model_name)         # maskrcnn or rtdetr
         Logger.info(f"[Info] Architecture: {cfg.architecture.model_name}")
-        run_tags.append("kbrs" if cfg.kbrs.use_kbrs else "vanilla")   # kbrs enabled/disabled
-        Logger.info(f"[Info] Using KBRS: {cfg.kbrs.use_kbrs}")
+        use_kbrs = _is_kbrs_enabled(cfg)
+        run_tags.append("kbrs" if use_kbrs else "vanilla")   # kbrs enabled/disabled
+        Logger.info(f"[Info] Using KBRS: {use_kbrs}")
         run_tags.append(f"win{cfg.window_size}")  # win4
         Logger.info(f"[Info] Window size: {cfg.window_size}")
 
@@ -323,7 +330,7 @@ def run_training(cfg: DictConfig):
         run_tags.append(f"s{seed_choice}" if seed_choice else f"s{cfg.seed}")  # seed123 (실제 값)
         
         # kbrs가 켜져 있을 때만 loss/score suffix 달기
-        if getattr(cfg.kbrs, "use_kbrs", False):
+        if use_kbrs:
             kbrs_weight  = _get_choice("kbrs_loss")   # kbrs025 ...
             if kbrs_weight:
                 Logger.info(f"[Info] KBRS loss choice: {kbrs_weight}")
@@ -434,7 +441,7 @@ def run_training(cfg: DictConfig):
 
     # --- (2) kbrs_params merge: 기본 KBRS_PARAMS 위에 config 덮어쓰기 ---
     kbrs_params = None
-    if cfg.kbrs.use_kbrs:
+    if _is_kbrs_enabled(cfg):
         kbrs_params = OmegaConf.to_container(cfg.kbrs.kbrs_params, resolve=True)
         if "kbrs_params" in cfg and cfg.kbrs_params is not None:
             from omegaconf import DictConfig as DC
@@ -537,7 +544,7 @@ def main(cfg: DictConfig):
         # id_string이 아직 비어있을 수 있으므로 안전하게 재구성
         if not cfg.id_string:
             id_str = f"{cfg.label_method}_win{cfg.window_size}_b{cfg.batch_size}"
-            if cfg.kbrs.use_kbrs:
+            if _is_kbrs_enabled(cfg):
                 id_str += "_kbrs"
             cfg.id_string = id_str
 
