@@ -14,6 +14,7 @@ x-common-config: &common-config
     - OTEL_LOGS_EXPORTER=${OTEL_LOGS_EXPORTER:-none}
     - OTEL_METRICS_EXPORTER=${OTEL_METRICS_EXPORTER:-none}
     - WANDB_SILENT=${WANDB_SILENT:-true}
+    - WANDB_CORE=${WANDB_CORE:-false}
   user: "${UID}:${GID}"
   shm_size: '${SHARED_MEMORY}'
   working_dir: /workspace
