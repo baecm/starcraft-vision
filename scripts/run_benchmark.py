@@ -274,8 +274,10 @@ def run_benchmark():
     prop_metrics_list = []
     base_metrics_list = []
 
+    from tqdm import tqdm
+
     with torch.no_grad():
-        for i in range(samples_to_eval):
+        for i in tqdm(range(samples_to_eval), desc=f"[*] Benchmarking [{args.model_name}]"):
             img_tensor, target = ds[i]
             H, W = img_tensor.shape[1], img_tensor.shape[2]
 
