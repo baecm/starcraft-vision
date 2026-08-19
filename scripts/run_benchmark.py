@@ -162,9 +162,13 @@ def parse_args():
 def run_benchmark():
     args = parse_args()
 
+    if args.output_json == "/workspace/results/benchmark_results.json":
+        args.output_json = f"/workspace/results/benchmark_{args.model_name}_e{args.epoch}.json"
+
     print("=" * 85)
     print(f"🚀 Running Evaluation Benchmark (Task Mode: {args.task.upper()})")
     print(f"[*] Target Model    : {args.model_name} (Epoch {args.epoch})")
+    print(f"[*] Output Path     : {args.output_json}")
     print(f"[*] Target Task     : {args.task} (single: Single-Region, multi: Multi-Region, all: Both)")
     print(f"[*] Target Replays  : {args.replays}")
     print(f"[*] Input Data Root : {args.input_root}")
