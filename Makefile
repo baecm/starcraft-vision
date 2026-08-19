@@ -119,8 +119,8 @@ debug:
 
 benchmark:
 	CONTAINER_NAME=benchmark_$$(date +%Y%m%d_%H%M%S); \
-	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm -v $$(pwd)/scripts:/workspace/scripts debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/run_benchmark.py $(ARGS)" \
-		> logs/$$CONTAINER_NAME.log 2>&1; \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm -v $$(pwd)/scripts:/workspace/scripts debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/run_benchmark.py $(ARGS)" \
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/benchmark.cid
 
 # Entry points
