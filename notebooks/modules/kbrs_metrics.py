@@ -165,9 +165,9 @@ if src_dir not in sys.path:
     sys.path.append(src_dir)
 
 try:
-    from custom_evaluator import eval_intersection_run
+    from metrics.custom_evaluator import eval_intersection_run
 except ImportError:
-    raise ImportError(f"custom_evaluator 모듈을 찾을 수 없습니다. 탐색 경로: {src_dir}")
+    from metrics import eval_intersection_run
 
 
 def build_agent_traces_from_df(gt_df, pred_df, width=128, height=128, max_x=3456.0, max_y=3720.0):

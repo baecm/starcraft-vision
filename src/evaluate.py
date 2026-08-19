@@ -14,7 +14,7 @@ import torch
 from pycocotools.coco import COCO
 import pycocotools.mask as mask_util
 
-from custom_evaluator import eval_intersection_run, ImageIR
+from metrics import eval_intersection_run, ImageIR
 from utils.logger import Logger
 
 
@@ -194,7 +194,7 @@ def eval_kernel_from_coco(
     )
 
     try:
-        from utils.multi_region_eval import compute_multi_region_metrics
+        from metrics import compute_multi_region_metrics
         multi_metrics = compute_multi_region_metrics(
             coco_gt=coco_gt,
             preds_list=preds_list,

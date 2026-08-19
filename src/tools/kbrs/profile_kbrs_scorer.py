@@ -15,9 +15,9 @@ import numpy as np
 import torch
 
 from types import SimpleNamespace
-from model.factory import build_model
-from model.plugins.kbrs import KBRSConvScorer
-from model.utils import pick_feature_map, normalize_projections, auto_expand_indices, compute_gate_from_raw_inputs
+from models.factory import build_model
+from models.plugins.kbrs import KBRSConvScorer
+from models.utils import pick_feature_map, normalize_projections, auto_expand_indices, compute_gate_from_raw_inputs
 from utils.time_measure import measure_time
 
 

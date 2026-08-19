@@ -31,7 +31,7 @@ from dataset.label_cache import ensure_label_pickles
 from dataset.loader import load_data, make_loader
 from dataset.custom_penn_fudan import CustomPennFudanDataset
 
-from model.factory import build_model
+from models.factory import build_model
 
 
 from utils.logger import Logger

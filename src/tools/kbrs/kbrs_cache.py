@@ -55,9 +55,9 @@ def _import_kbrs_scorer():
     - 실패 시: ImportError를 발생시켜서 사용자가 PYTHONPATH/경로를 맞추도록 유도.
     """
     try:
-        from model.plugins.kbrs import KBRSConvScorer
+        from models.plugins.kbrs import KBRSConvScorer
     except ImportError:
-        from model import KBRSConvScorer
+        from models import KBRSConvScorer
     return KBRSConvScorer
 
 

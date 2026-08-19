@@ -1,4 +1,4 @@
-# src/custom_evaluator.py
+# src/metrics/custom_evaluator.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -316,4 +316,3 @@ def eval_intersection_run(
 # alias for compatibility
 def eval_run(*args, **kwargs):
     return eval_intersection_run(*args, **kwargs)
-

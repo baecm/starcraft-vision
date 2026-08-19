@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, Subset
 from cli import parse_inference_args
 from dataset.inference_dataset import InferenceDataset
 
-from model.factory import build_model
+from models.factory import build_model
 from types import SimpleNamespace
 from omegaconf import OmegaConf  # KBRS YAML 로드를 위해 추가
 

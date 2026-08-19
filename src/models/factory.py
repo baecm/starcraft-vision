@@ -5,7 +5,10 @@ import torch
 import torch.nn as nn
 from typing import Any
 
-from utils.logger import Logger
+try:
+    from utils.logger import Logger
+except ModuleNotFoundError:
+    from src.utils.logger import Logger
 from .backbones import (
     CenterNetBackbone,
     DeformableDETRBackbone,
