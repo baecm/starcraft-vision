@@ -10,8 +10,9 @@ import pandas as pd
 from pycocotools.coco import COCO
 from multiprocessing import Pool, cpu_count
 
-# IC metric(기존 evaluator) 재사용
+# IC metric(기존 evaluator) 및 Multi-Region Evaluator 재사용
 from evaluate import eval_kernel_from_coco
+from metrics.evaluator import MultiRegionEvaluator
 
 
 def _debug_listdir(path: str, label: str = "") -> None:
@@ -318,7 +319,8 @@ def load_coco_preds(
     )
     pred_path = os.path.join(pred_dir, f"{label_method}.json")
     if not os.path.isfile(pred_path):
-        raise FileNotFoundError(f"Prediction file not found: {pred_path}")
+        print(f"[!] Warning: Prediction file not found: {pred_path} -> Proceeding with fallback/empty detections.")
+        return {}
 
     import json
 
@@ -618,17 +620,109 @@ def compute_ic_for_replay(
 
 
 
+def compute_multi_region_for_replay(
+    replay_id: str,
+    coco_gt: COCO,
+    preds_by_img: Optional[Dict[int, List[dict]]],
+    grid_size: Tuple[int, int] = (128, 128),
+) -> Dict[str, float]:
+    """
+    Computes Multi-Region Finding metrics for a replay sequence:
+      - cwo: Consensus-Weighted Overlap
+      - m_cti: Multi-Track Camera Thrashing Index
+      - jerk: Jerk penalty
+      - jump_rate: Teleport jump rate
+      - event_recall: Objective Event Recall (R_event)
+      - pairwise_overlap: Viewport Redundancy (IoU among viewports)
+    """
+    images = list(coco_gt.dataset.get("images", []))
+    if not images:
+        return {
+            "cwo": float("nan"),
+            "m_cti": float("nan"),
+            "jerk": float("nan"),
+            "jump_rate": float("nan"),
+            "event_recall": float("nan"),
+            "pairwise_overlap": float("nan"),
+        }
+
+    evaluator = MultiRegionEvaluator(
+        grid_size=grid_size,
+        jump_threshold=35.0,
+        box_format="xyxy",
+        m_cti_weights=(0.4, 0.4, 0.2),
+    )
+
+    viewports_seq = []
+    consensus_maps_seq = []
+    event_coords_seq = []
+
+    grid_w, grid_h = grid_size
+
+    for img in images:
+        img_id = int(img["id"])
+        h_img = float(img.get("height", grid_h))
+        w_img = float(img.get("width", grid_w))
+
+        img_boxes = []
+        if preds_by_img and img_id in preds_by_img:
+            for det in preds_by_img[img_id]:
+                b = det.get("bbox", None)
+                if b is not None and len(b) == 4:
+                    x, y, w, h = b
+                    x1 = (x / w_img) * grid_w
+                    y1 = (y / h_img) * grid_h
+                    x2 = ((x + w) / w_img) * grid_w
+                    y2 = ((y + h) / h_img) * grid_h
+                    img_boxes.append([x1, y1, x2, y2])
+
+        if not img_boxes:
+            img_boxes = [[0.0, 0.0, 32.0, 32.0]]
+        viewports_seq.append(np.array(img_boxes, dtype=np.float32))
+
+        ann_ids = coco_gt.getAnnIds(imgIds=[img_id])
+        anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
+
+        c_map = np.zeros((grid_h, grid_w), dtype=np.float32)
+        events = []
+        for ann in anns:
+            bbox = ann.get("bbox", None)
+            if bbox is not None and len(bbox) == 4:
+                x, y, w, h = bbox
+                cx = (x + w / 2.0) / w_img * grid_w
+                cy = (y + h / 2.0) / h_img * grid_h
+                events.append([cx, cy])
+
+                x1_i = int(np.clip((x / w_img) * grid_w, 0, grid_w))
+                x2_i = int(np.clip(((x + w) / w_img) * grid_w, 0, grid_w))
+                y1_i = int(np.clip((y / h_img) * grid_h, 0, grid_h))
+                y2_i = int(np.clip(((y + h) / h_img) * grid_h, 0, grid_h))
+                if x2_i > x1_i and y2_i > y1_i:
+                    c_map[y1_i:y2_i, x1_i:x2_i] += 1.0
+
+        if c_map.max() > 0:
+            c_map /= c_map.max()
+
+        consensus_maps_seq.append(c_map)
+        event_coords_seq.append(np.array(events, dtype=np.float32) if events else np.empty((0, 2), dtype=np.float32))
+
+    metrics = evaluator.evaluate_sequence(
+        viewports_seq=viewports_seq,
+        consensus_maps_seq=consensus_maps_seq,
+        event_coords_seq=event_coords_seq,
+    )
+    return metrics
+
+
 # =====================================================================
-# 3. CLI / main: KBRS + IC 호출하고 replay-level CSV 만들기
+# 3. CLI / main: Single-Region & Multi-Region Finding Evaluator
 # =====================================================================
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "KBRS metric(density/centeredness/mixture) + "
-            "IC metric(ic@000/ic_multi/ic_ratio/median_ir/p90_ir)을 "
-            "replay 단위로 계산하는 스크립트.\n"
-            "KBRS 계산 부분과 IC 계산 부분은 내부적으로 함수로 분리되어 있음."
+            "Single-Region Finding (KBRS, COCO IC) & "
+            "Multi-Region Finding (CWO, M-CTI, Event Recall, Pairwise Overlap) Evaluator."
         )
     )
     p.add_argument("--replays", type=str, nargs="+", required=True)
@@ -639,6 +733,12 @@ def parse_args() -> argparse.Namespace:
         "--mode",
         choices=["feature", "gt", "model"],
         default="feature",
+    )
+    p.add_argument(
+        "--task",
+        choices=["single", "multi", "all"],
+        default="all",
+        help="Evaluation task: single (Single-Region Finding), multi (Multi-Region Finding), or all.",
     )
     p.add_argument("--pred-root", default="/workspace/predictions")
     p.add_argument("--model-name", type=str, default=None)
@@ -726,35 +826,58 @@ def main():
                 preds_all.extend(dets)
             model_tag = f"{args.model_name}_e{args.epoch}"
 
-        # 1) KBRS metric (density/centeredness/mixture)
-        if args.skip_kbrs:
-            mean_density = float("nan")
-            mean_centered = float("nan")
-            mean_mixture = float("nan")
-            num_images_kbrs = len(images)
-            print(f"[KBRS replay={replay_id}] skipped (--skip-kbrs)")
-        else:
-            mean_density, mean_centered, mean_mixture, num_images_kbrs = compute_kbrs_for_replay(
+        # 1) Single-Region Finding Metrics (KBRS + IC)
+        if args.task in ["single", "all"]:
+            if args.skip_kbrs:
+                mean_density = float("nan")
+                mean_centered = float("nan")
+                mean_mixture = float("nan")
+                num_images_kbrs = len(images)
+                print(f"[Single-Region replay={replay_id}] KBRS skipped (--skip-kbrs)")
+            else:
+                mean_density, mean_centered, mean_mixture, num_images_kbrs = compute_kbrs_for_replay(
+                    replay_id=replay_id,
+                    mode=args.mode,
+                    coco_gt=coco_gt,
+                    args=args,
+                    preds_by_img=preds_by_img,
+                    model_tag=model_tag,
+                )
+
+            ic_row = compute_ic_for_replay(
                 replay_id=replay_id,
                 mode=args.mode,
                 coco_gt=coco_gt,
                 args=args,
-                preds_by_img=preds_by_img,
+                preds_all=preds_all if preds_all else None,
                 model_tag=model_tag,
             )
+        else:
+            mean_density = float("nan")
+            mean_centered = float("nan")
+            mean_mixture = float("nan")
+            ic_row = {"kernel": "20x12", "num_images": len(images)}
 
-        # 2) IC metric (intersection-based, 기존 evaluator)
-        ic_row = compute_ic_for_replay(
-            replay_id=replay_id,
-            mode=args.mode,
-            coco_gt=coco_gt,
-            args=args,
-            preds_all=preds_all if preds_all else None,
-            model_tag=model_tag,
-        )
+        # 2) Multi-Region Finding Metrics (CWO, M-CTI, Event Recall, Pairwise Overlap)
+        if args.task in ["multi", "all"]:
+            multi_row = compute_multi_region_for_replay(
+                replay_id=replay_id,
+                coco_gt=coco_gt,
+                preds_by_img=preds_by_img,
+            )
+        else:
+            multi_row = {
+                "cwo": float("nan"),
+                "m_cti": float("nan"),
+                "jerk": float("nan"),
+                "jump_rate": float("nan"),
+                "event_recall": float("nan"),
+                "pairwise_overlap": float("nan"),
+            }
 
-        # 3) 최종 replay-level row 합치기
+        # 3) Merge replay-level summary row
         final_row = dict(ic_row)
+        final_row.update(multi_row)
         final_row.update({
             "replay": replay_id,
             "kernel": ic_row.get("kernel"),
@@ -763,6 +886,7 @@ def main():
             "mean_centeredness": mean_centered,
             "mean_mixture": mean_mixture,
             "mode": args.mode,
+            "task": args.task,
             "model_name": args.model_name if args.mode == "model" else None,
             "epoch": args.epoch if args.mode == "model" else None,
         })
