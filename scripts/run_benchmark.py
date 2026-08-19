@@ -156,6 +156,27 @@ def parse_args():
         default=None,
         help="Output JSON summary report path (default: /workspace/results/benchmark/{model_name}_e{epoch}.json)",
     )
+    parser.add_argument(
+        "--ic-kernel",
+        type=int,
+        nargs=2,
+        default=[16, 10],
+        help="IC kernel size [len_x, len_y]",
+    )
+    parser.add_argument(
+        "--ic-grid",
+        type=int,
+        nargs=2,
+        default=[128, 128],
+        help="IC grid size [grid_w, grid_h]",
+    )
+    parser.add_argument(
+        "--ic-maxcoord",
+        type=float,
+        nargs=2,
+        default=[128.0, 128.0],
+        help="IC max coordinate [max_x, max_y]",
+    )
     return parser.parse_args()
 
 
