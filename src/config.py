@@ -84,11 +84,11 @@ def resolve_cli_aliases(argv: list[str] = None) -> list[str]:
                 break
 
         # 2. CLI dash flags
-        if new_arg.startswith("--arch"):
+        if new_arg.startswith("--arch") and not new_arg.startswith("--architecture") and not new_arg.startswith("--arch-"):
             new_arg = new_arg.replace("--arch", "--model-name", 1)
-        elif new_arg.startswith("--win"):
+        elif new_arg.startswith("--win") and not new_arg.startswith("--window-size"):
             new_arg = new_arg.replace("--win", "--window-size", 1)
-        elif new_arg.startswith("--ds"):
+        elif new_arg.startswith("--ds") and not new_arg.startswith("--dataset"):
             new_arg = new_arg.replace("--ds", "--replays", 1)
 
         processed.append(new_arg)
