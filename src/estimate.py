@@ -353,12 +353,27 @@ def compute_kbrs_for_replay(
     KBRS metric score (mean_density / mean_centeredness / mean_mixture)를
     replay 단위로 계산해서 반환.
     """
-    win_w, win_h = map(int, args.window.split(","))
-    stride_x, stride_y = map(int, args.stride.split(","))
+    window_val = getattr(args, "window", "16,10")
+    if isinstance(window_val, str):
+        win_w, win_h = map(int, window_val.split(","))
+    else:
+        win_w, win_h = map(int, window_val)
+
+    stride_val = getattr(args, "stride", "1,1")
+    if isinstance(stride_val, str):
+        stride_x, stride_y = map(int, stride_val.split(","))
+    else:
+        stride_x, stride_y = map(int, stride_val)
+
+    feature_ext = getattr(args, "feature_ext", ".npy")
+    use_file_name = getattr(args, "use_file_name", False)
+    threshold = getattr(args, "threshold", 0.25)
+    num_workers = getattr(args, "num_workers", 1)
+    max_frames = getattr(args, "max_frames", -1)
 
     images = list(coco_gt.dataset.get("images", []))
-    if args.max_frames > 0:
-        images = images[: args.max_frames]
+    if max_frames > 0:
+        images = images[:max_frames]
 
     tasks: List[Tuple] = []
 
@@ -405,13 +420,13 @@ def compute_kbrs_for_replay(
                 img_w,
                 img_h,
                 args.input_root,
-                args.feature_ext,
-                args.use_file_name,
+                feature_ext,
+                use_file_name,
                 win_w,
                 win_h,
                 stride_x,
                 stride_y,
-                args.threshold,
+                threshold,
                 positions,
                 source_tag,
             )
