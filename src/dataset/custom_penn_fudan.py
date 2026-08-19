@@ -213,8 +213,24 @@ class CustomPennFudanDataset(BasePennFudanDataset):
     @staticmethod
     def _build_channel_indices(include_components):
         if include_components:
-            # 구성요소 → 채널 인덱스 리스트
-            return sorted(sum([config.COMPONENT_CHANNEL_MAP[c] for c in include_components], []))
+            expanded_components = []
+            for c in include_components:
+                c_clean = str(c).lower().strip()
+                if c_clean in ["units", "unit"]:
+                    expanded_components.extend(["worker", "ground", "air"])
+                elif c_clean in ["buildings", "building"]:
+                    expanded_components.append("building")
+                elif c_clean in ["resources", "resource"]:
+                    expanded_components.append("resource")
+                elif c_clean in config.COMPONENT_CHANNEL_MAP:
+                    expanded_components.append(c_clean)
+                else:
+                    Logger.warn(f"Unknown component '{c}' ignored. Available: {list(config.COMPONENT_CHANNEL_MAP.keys())}")
+
+            indices = set()
+            for c in expanded_components:
+                indices.update(config.COMPONENT_CHANNEL_MAP.get(c, []))
+            return sorted(list(indices)) if indices else list(range(len(config.Channel)))
         # 전 채널 사용
         return list(range(len(config.Channel)))
 

@@ -177,6 +177,13 @@ def parse_args():
         default=[128.0, 128.0],
         help="IC max coordinate [max_x, max_y]",
     )
+    parser.add_argument(
+        "--include-components",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Specific channel components to include (e.g. units buildings vision terrain)",
+    )
     return parser.parse_args()
 
 
@@ -210,6 +217,7 @@ def run_benchmark():
             label_method=args.label_method,
             training_ids=args.replays,
             window_size=args.window_size,
+            include_components=args.include_components,
             interval=1,
             indices=list(range(args.num_samples * 4)),
             training=False,
@@ -226,6 +234,7 @@ def run_benchmark():
             label_method=args.label_method,
             training_ids=args.replays,
             window_size=args.window_size,
+            include_components=args.include_components,
             interval=1,
             indices=list(range(args.num_samples * 4)),
             training=False,
