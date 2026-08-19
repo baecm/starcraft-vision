@@ -488,13 +488,25 @@ def compute_ic_for_replay(
     기존 evaluate.py 의 eval_kernel_from_coco 를 그대로 사용.
     중간 과정을 로그로 찍어 준다.
     """
-    ic_x_len, ic_y_len = map(int, args.ic_kernel.split(","))
-    ic_grid_w, ic_grid_h = map(int, args.ic_grid.split(","))
-    ic_max_x, ic_max_y = map(float, args.ic_maxcoord.split(","))
+    if isinstance(args.ic_kernel, str):
+        ic_x_len, ic_y_len = map(int, args.ic_kernel.split(","))
+    else:
+        ic_x_len, ic_y_len = map(int, args.ic_kernel)
+
+    if isinstance(args.ic_grid, str):
+        ic_grid_w, ic_grid_h = map(int, args.ic_grid.split(","))
+    else:
+        ic_grid_w, ic_grid_h = map(int, args.ic_grid)
+
+    if isinstance(args.ic_maxcoord, str):
+        ic_max_x, ic_max_y = map(float, args.ic_maxcoord.split(","))
+    else:
+        ic_max_x, ic_max_y = map(float, args.ic_maxcoord)
 
     images = list(coco_gt.dataset.get("images", []))
-    if args.max_frames > 0:
-        images = images[: args.max_frames]
+    max_frames = getattr(args, "max_frames", -1)
+    if max_frames > 0:
+        images = images[:max_frames]
 
     num_images = len(images)
     num_preds = len(preds_all) if preds_all else 0
