@@ -219,7 +219,6 @@ def run_benchmark():
             window_size=args.window_size,
             include_components=args.include_components,
             interval=1,
-            indices=list(range(args.num_samples * 4)),
             training=False,
             verbose=True,
         )
@@ -236,7 +235,6 @@ def run_benchmark():
             window_size=args.window_size,
             include_components=args.include_components,
             interval=1,
-            indices=list(range(args.num_samples * 4)),
             training=False,
             verbose=True,
         )
@@ -244,28 +242,36 @@ def run_benchmark():
     if len(ds) == 0:
         raise RuntimeError("No valid replay samples loaded from dataset paths!")
 
-    sample_img, _ = ds[0]
-    total_channels = sample_img.shape[0]
-    single_c = max(1, total_channels // args.window_size)
-    print(f"[*] Channel Info: total_channels={total_channels}, single_frame_channels={single_c}, window_size={args.window_size}")
+    channel_info = ds.get_channel_info()
+    total_c = channel_info["total_channels"]
+    single_c = channel_info["single_frame_channels"]
+    print(f"[*] Channel Info: total_channels={total_c}, single_frame_channels={single_c}, window_size={args.window_size}")
 
-    grid_size = (128, 128)
-    num_queries = 3  # 1 Main Viewport + 2 PIP Viewports
+    # Group sample indices by replay_id & pick args.num_samples per replay
+    from collections import defaultdict
+    replay_sample_map = defaultdict(list)
+    for idx, (rid, win, img_dict, ann_dict) in enumerate(ds.files):
+        replay_sample_map[str(rid)].append(idx)
 
-    # 2. Build Models
+    eval_indices = []
+    for rid in map(str, args.replays):
+        r_indices = replay_sample_map.get(rid, [])
+        if r_indices:
+            if len(r_indices) <= args.num_samples:
+                eval_indices.extend(r_indices)
+            else:
+                sampled = [r_indices[i] for i in np.linspace(0, len(r_indices) - 1, args.num_samples, dtype=int)]
+                eval_indices.extend(sampled)
+
+    # 2. Load Models
     print(f"[*] Loading Target Model: {args.model_name}...")
+    baseline_model = BaselineMaskRCNNViewport(in_channels=single_c, num_queries=3).to(device)
+
     ckpt_path = args.checkpoint
     if not ckpt_path:
-        possible_dir = os.path.join("/workspace/models", args.model_name)
-        possible_pth = os.path.join(possible_dir, f"model_{args.epoch:03d}.pth")
-        if os.path.isfile(possible_pth):
-            ckpt_path = possible_pth
-
-    baseline_model = BaselineMaskRCNNViewport(
-        in_channels=single_c,
-        num_queries=num_queries,
-        grid_size=grid_size,
-    ).to(device)
+        possible_path = os.path.join(root_dir, "models", args.model_name, f"model_{args.epoch:03d}.pth")
+        if os.path.isfile(possible_path):
+            ckpt_path = possible_path
 
     if ckpt_path and os.path.isfile(ckpt_path):
         print(f"[*] Found trained checkpoint file: {ckpt_path}")
@@ -283,23 +289,22 @@ def run_benchmark():
         feat_dim=128,
         num_raters=5,
         latent_dim=64,
-        num_queries=num_queries,
-        grid_size=grid_size,
+        num_queries=3,
+        grid_size=(128, 128),
     ).to(device)
 
     proposed_model.eval()
     baseline_model.eval()
 
     evaluator = MultiRegionEvaluator(
-        grid_size=grid_size,
+        grid_size=(128, 128),
         jump_threshold=35.0,
         box_format="xyxy",
         m_cti_weights=(0.4, 0.4, 0.2),
     )
 
     # 3. Evaluate Metrics on Sequences
-    samples_to_eval = min(args.num_samples, len(ds))
-    print(f"[*] Evaluating over {samples_to_eval} sequence windows...")
+    print(f"[*] Evaluating over {len(eval_indices)} sequence windows ({args.num_samples} per replay)...")
 
     prop_metrics_list = []
     base_metrics_list = []
@@ -310,7 +315,7 @@ def run_benchmark():
     from tqdm import tqdm
 
     with torch.no_grad():
-        for i in tqdm(range(samples_to_eval), desc=f"[*] Benchmarking [{args.model_name}]"):
+        for i in tqdm(eval_indices, desc=f"[*] Benchmarking [{args.model_name}]"):
             img_tensor, target = ds[i]
             sample_rid = str(ds.files[i][0])
             H, W = img_tensor.shape[1], img_tensor.shape[2]
@@ -526,7 +531,7 @@ def run_benchmark():
         "task": args.task,
         "checkpoint": ckpt_path,
         "replays": args.replays,
-        "num_samples_evaluated": samples_to_eval,
+        "num_samples_evaluated": len(eval_indices),
         "summary_metrics": base_avg,
         "proposed_summary_metrics": prop_avg,
         "per_sample_metrics": base_metrics_list,
