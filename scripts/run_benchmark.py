@@ -340,7 +340,72 @@ def run_benchmark():
     prop_avg = {k: float(np.mean([m[k] for m in prop_metrics_list])) for k in keys}
     base_avg = {k: float(np.mean([m[k] for m in base_metrics_list])) for k in keys}
 
-    # 4. Print Summary Results Table
+    # 4. Single-Region Finding Metrics (IC@000, IC@030, IC@050, IC_multi, IC_ratio, Median IR, P90 IR, KBRS)
+    single_region_metrics = {}
+    if args.task in ["single", "all"]:
+        from estimate import compute_ic_for_replay, compute_kbrs_for_replay, load_coco_gt, load_coco_preds
+        ic_rows = []
+        kbrs_densities, kbrs_centereds, kbrs_mixtures = [], [], []
+
+        for replay_id in args.replays:
+            replay_id = str(replay_id)
+            try:
+                coco_gt = load_coco_gt(args.label_root, replay_id, args.label_method)
+                preds_by_img = load_coco_preds(
+                    pred_root="/workspace/predictions",
+                    model_name=args.model_name,
+                    epoch=args.epoch,
+                    replay_id=replay_id,
+                    label_method=args.label_method,
+                )
+                preds_all = []
+                for dets in preds_by_img.values():
+                    preds_all.extend(dets)
+
+                ic_row = compute_ic_for_replay(
+                    replay_id=replay_id,
+                    mode="model",
+                    coco_gt=coco_gt,
+                    args=args,
+                    preds_all=preds_all if preds_all else None,
+                    model_tag=f"{args.model_name}_e{args.epoch}",
+                )
+                ic_rows.append(ic_row)
+
+                d, c, m, _ = compute_kbrs_for_replay(
+                    replay_id=replay_id,
+                    mode="model",
+                    coco_gt=coco_gt,
+                    args=args,
+                    preds_by_img=preds_by_img,
+                    model_tag=f"{args.model_name}_e{args.epoch}",
+                )
+                kbrs_densities.append(d)
+                kbrs_centereds.append(c)
+                kbrs_mixtures.append(m)
+            except Exception as e:
+                print(f"[!] Note on single-region metric for replay {replay_id}: {e}")
+
+        if ic_rows:
+            def safe_mean(key):
+                vals = [r[key] for r in ic_rows if key in r and not np.isnan(r[key])]
+                return float(np.mean(vals)) if vals else float("nan")
+
+            single_region_metrics = {
+                "ic@000": safe_mean("ic@000"),
+                "ic@030": safe_mean("ic@030"),
+                "ic@050": safe_mean("ic@050"),
+                "ic_multi": safe_mean("ic_multi"),
+                "ic_ratio": safe_mean("ic_ratio"),
+                "median_ir": safe_mean("median_ir"),
+                "p90_ir": safe_mean("p90_ir"),
+                "kbrs_density": float(np.nanmean(kbrs_densities)) if kbrs_densities else float("nan"),
+                "kbrs_centeredness": float(np.nanmean(kbrs_centereds)) if kbrs_centereds else float("nan"),
+                "kbrs_mixture": float(np.nanmean(kbrs_mixtures)) if kbrs_mixtures else float("nan"),
+            }
+            base_avg.update(single_region_metrics)
+
+    # 5. Print Summary Results Table
     model_disp_name = f"{args.model_name} (e{args.epoch})"
     print("\n" + "=" * 85)
     print(f"📊 EVALUATION BENCHMARK RESULTS (Task Mode: {args.task.upper()})")
@@ -373,9 +438,8 @@ def run_benchmark():
         if args.task in ["single", "all"]:
             print("-" * 85)
             print(" [ Single-Region Finding Metrics ]")
-            print(f"  Single Region KBRS Density ↑    | 0.4120               | 0.5890                 | +42.96%")
-            print(f"  Single Region Centeredness ↑    | 0.5230               | 0.7140                 | +36.52%")
-            print(f"  Single Region Mixture Score ↑   | 0.2155               | 0.4205                 | +95.13%")
+            for k, v in single_region_metrics.items():
+                print(f"  {k:<30}  | {v:<20.4f} | {'N/A':<22} | N/A")
     else:
         print(f"{'Evaluation Metric':<40} | {model_disp_name:<25}")
         print("-" * 85)
@@ -392,9 +456,8 @@ def run_benchmark():
         if args.task in ["single", "all"]:
             print("-" * 85)
             print(" [ Single-Region Finding Metrics ]")
-            print(f"  Single Region KBRS Density ↑            | 0.4120")
-            print(f"  Single Region Centeredness ↑            | 0.5230")
-            print(f"  Single Region Mixture Score ↑           | 0.2155")
+            for k, v in single_region_metrics.items():
+                print(f"  {k:<40} | {v:<25.4f}")
 
     print("=" * 85)
 
