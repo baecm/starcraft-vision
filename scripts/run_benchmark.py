@@ -303,12 +303,16 @@ def run_benchmark():
 
     prop_metrics_list = []
     base_metrics_list = []
+    base_metrics_by_replay = {str(rid): [] for rid in args.replays}
+    ic_rows_by_replay = {}
+    kbrs_by_replay = {}
 
     from tqdm import tqdm
 
     with torch.no_grad():
         for i in tqdm(range(samples_to_eval), desc=f"[*] Benchmarking [{args.model_name}]"):
             img_tensor, target = ds[i]
+            sample_rid = str(ds.files[i][0])
             H, W = img_tensor.shape[1], img_tensor.shape[2]
 
             x_seq = img_tensor.view(1, args.window_size, single_c, H, W).to(device)
@@ -365,6 +369,7 @@ def run_benchmark():
 
             prop_metrics_list.append(p_m)
             base_metrics_list.append(b_m)
+            base_metrics_by_replay.setdefault(sample_rid, []).append(b_m)
 
     keys = prop_metrics_list[0].keys()
     prop_avg = {k: float(np.mean([m[k] for m in prop_metrics_list])) for k in keys}
@@ -401,6 +406,7 @@ def run_benchmark():
                     model_tag=f"{args.model_name}_e{args.epoch}",
                 )
                 ic_rows.append(ic_row)
+                ic_rows_by_replay[replay_id] = ic_row
 
                 d, c, m, _ = compute_kbrs_for_replay(
                     replay_id=replay_id,
@@ -413,6 +419,7 @@ def run_benchmark():
                 kbrs_densities.append(d)
                 kbrs_centereds.append(c)
                 kbrs_mixtures.append(m)
+                kbrs_by_replay[replay_id] = (d, c, m)
             except Exception as e:
                 print(f"[!] Note on single-region metric for replay {replay_id}: {e}")
 
@@ -519,18 +526,56 @@ def run_benchmark():
     with open(args.output_json, "w") as f:
         json.dump(summary_data, f, indent=4)
 
-    # Save output CSV
+    # Save output CSV (Replay-by-Replay rows + Mean row)
     import pandas as pd
     output_csv = args.output_json.replace(".json", ".csv")
-    csv_dict = {
-        "model_name": [args.model_name],
-        "epoch": [args.epoch],
-        "task": [args.task],
-        "replays": [",".join(map(str, args.replays))],
-        "num_samples": [samples_to_eval],
+
+    csv_rows = []
+    for rid in map(str, args.replays):
+        r_row = {
+            "replay_id": rid,
+            "model_name": args.model_name,
+            "epoch": args.epoch,
+            "task": args.task,
+        }
+        if rid in base_metrics_by_replay and len(base_metrics_by_replay[rid]) > 0:
+            for k in keys:
+                r_row[k] = float(np.mean([m[k] for m in base_metrics_by_replay[rid]]))
+        else:
+            for k in keys:
+                r_row[k] = float("nan")
+
+        if rid in ic_rows_by_replay:
+            ic_dict = ic_rows_by_replay[rid]
+            for ic_k in ["ic@000", "ic@030", "ic@050", "ic_multi", "ic_ratio", "median_ir", "p90_ir"]:
+                if ic_k in ic_dict:
+                    r_row[ic_k] = ic_dict[ic_k]
+        if rid in kbrs_by_replay:
+            d, c, m = kbrs_by_replay[rid]
+            r_row["kbrs_density"] = d
+            r_row["kbrs_centeredness"] = c
+            r_row["kbrs_mixture"] = m
+
+        csv_rows.append(r_row)
+
+    mean_row = {
+        "replay_id": "Mean",
+        "model_name": args.model_name,
+        "epoch": args.epoch,
+        "task": args.task,
     }
-    csv_dict.update({k: [v] for k, v in base_avg.items()})
-    pd.DataFrame(csv_dict).to_csv(output_csv, index=False)
+    if csv_rows:
+        col_names = [c for c in csv_rows[0].keys() if c not in ["replay_id", "model_name", "epoch", "task"]]
+        for col in col_names:
+            vals = [r[col] for r in csv_rows if col in r and not np.isnan(r[col])]
+            mean_row[col] = float(np.mean(vals)) if vals else float("nan")
+
+    csv_rows.append(mean_row)
+
+    pd.DataFrame(csv_rows).to_csv(output_csv, index=False)
+
+    print(f"✅ Benchmark Results saved to JSON: {args.output_json}")
+    print(f"✅ Benchmark Results saved to CSV : {output_csv}")
 
     print(f"✅ Benchmark Results saved to JSON: {args.output_json}")
     print(f"✅ Benchmark Results saved to CSV : {output_csv}")
