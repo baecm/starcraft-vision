@@ -5,6 +5,9 @@ x-common-config: &common-config
     dockerfile: infra/docker/Dockerfile
   image: starcraft-vision:dev
   environment:
+    - HOME=/tmp
+    - JUPYTER_RUNTIME_DIR=/tmp/jupyter_runtime
+    - JUPYTER_DATA_DIR=/tmp/jupyter_data
     - PYTHONPATH=/workspace/src
     - TORCH_HOME=/workspace/.torch_cache
     - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES}
