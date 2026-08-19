@@ -590,9 +590,6 @@ def run_benchmark():
     print(f"✅ Benchmark Results saved to JSON: {args.output_json}")
     print(f"✅ Benchmark Results saved to CSV : {output_csv}")
 
-    print(f"✅ Benchmark Results saved to JSON: {args.output_json}")
-    print(f"✅ Benchmark Results saved to CSV : {output_csv}")
-
 
 if __name__ == "__main__":
     run_benchmark()
