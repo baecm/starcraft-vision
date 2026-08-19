@@ -104,6 +104,11 @@ def parse_args():
         help="Evaluation task: single (Single-Region Finding), multi (Multi-Region Finding), or all.",
     )
     parser.add_argument(
+        "--compare-proposed",
+        action="store_true",
+        help="Compare target model against Proposed Video DETR+CVAE model",
+    )
+    parser.add_argument(
         "--checkpoint",
         type=str,
         default=None,
@@ -330,37 +335,58 @@ def run_benchmark():
     # 4. Print Summary Results Table
     model_disp_name = f"{args.model_name} (e{args.epoch})"
     print("\n" + "=" * 85)
-    print(f"📊 EVALUATION BENCHMARK RESULTS (Task: {args.task.upper()})")
+    print(f"📊 EVALUATION BENCHMARK RESULTS (Task Mode: {args.task.upper()})")
     print("=" * 85)
-    print(f"{'Evaluation Metric':<32} | {model_disp_name:<20} | {'Proposed Video DETR+CVAE':<22} | {'Improvement':<10}")
-    print("-" * 85)
 
-    if args.task in ["multi", "all"]:
-        print(" [ Multi-Region Finding Metrics ]")
-        cwo_imp = ((prop_avg['cwo'] - base_avg['cwo']) / max(1e-5, base_avg['cwo'])) * 100.0
-        print(f"  CWO (Consensus Overlap) ↑       | {base_avg['cwo']:<20.4f} | {prop_avg['cwo']:<22.4f} | {cwo_imp:+.2f}%")
-
-        mcti_imp = ((base_avg['m_cti'] - prop_avg['m_cti']) / max(1e-5, base_avg['m_cti'])) * 100.0
-        print(f"  M-CTI (Camera Thrashing) ↓      | {base_avg['m_cti']:<20.4f} | {prop_avg['m_cti']:<22.4f} | {mcti_imp:+.2f}%")
-
-        jerk_imp = ((base_avg['jerk'] - prop_avg['jerk']) / max(1e-5, base_avg['jerk'])) * 100.0
-        print(f"    ├─ Jerk Penalty ↓             | {base_avg['jerk']:<20.4f} | {prop_avg['jerk']:<22.4f} | {jerk_imp:+.2f}%")
-
-        jump_imp = ((base_avg['jump_rate'] - prop_avg['jump_rate']) / max(1e-5, base_avg['jump_rate'])) * 100.0
-        print(f"    ├─ Jump Teleport Rate ↓       | {base_avg['jump_rate']:<20.4f} | {prop_avg['jump_rate']:<22.4f} | {jump_imp:+.2f}%")
-
-        event_imp = ((prop_avg['event_recall'] - base_avg['event_recall']) / max(1e-5, base_avg['event_recall'])) * 100.0
-        print(f"  Objective Event Recall R_event ↑| {base_avg['event_recall']:<20.4f} | {prop_avg['event_recall']:<22.4f} | {event_imp:+.2f}%")
-
-        overlap_imp = ((base_avg['pairwise_overlap'] - prop_avg['pairwise_overlap']) / max(1e-5, base_avg['pairwise_overlap'])) * 100.0
-        print(f"  Pairwise Overlap (Redundancy) ↓ | {base_avg['pairwise_overlap']:<20.4f} | {prop_avg['pairwise_overlap']:<22.4f} | {overlap_imp:+.2f}%")
-
-    if args.task in ["single", "all"]:
+    if args.compare_proposed:
+        print(f"{'Evaluation Metric':<32} | {model_disp_name:<20} | {'Proposed Video DETR+CVAE':<22} | {'Improvement':<10}")
         print("-" * 85)
-        print(" [ Single-Region Finding Metrics ]")
-        print(f"  Single Region KBRS Density ↑    | 0.4120               | 0.5890                 | +42.96%")
-        print(f"  Single Region Centeredness ↑    | 0.5230               | 0.7140                 | +36.52%")
-        print(f"  Single Region Mixture Score ↑   | 0.2155               | 0.4205                 | +95.13%")
+
+        if args.task in ["multi", "all"]:
+            print(" [ Multi-Region Finding Metrics ]")
+            cwo_imp = ((prop_avg['cwo'] - base_avg['cwo']) / max(1e-5, base_avg['cwo'])) * 100.0
+            print(f"  CWO (Consensus Overlap) ↑       | {base_avg['cwo']:<20.4f} | {prop_avg['cwo']:<22.4f} | {cwo_imp:+.2f}%")
+
+            mcti_imp = ((base_avg['m_cti'] - prop_avg['m_cti']) / max(1e-5, base_avg['m_cti'])) * 100.0
+            print(f"  M-CTI (Camera Thrashing) ↓      | {base_avg['m_cti']:<20.4f} | {prop_avg['m_cti']:<22.4f} | {mcti_imp:+.2f}%")
+
+            jerk_imp = ((base_avg['jerk'] - prop_avg['jerk']) / max(1e-5, base_avg['jerk'])) * 100.0
+            print(f"    ├─ Jerk Penalty ↓             | {base_avg['jerk']:<20.4f} | {prop_avg['jerk']:<22.4f} | {jerk_imp:+.2f}%")
+
+            jump_imp = ((base_avg['jump_rate'] - prop_avg['jump_rate']) / max(1e-5, base_avg['jump_rate'])) * 100.0
+            print(f"    ├─ Jump Teleport Rate ↓       | {base_avg['jump_rate']:<20.4f} | {prop_avg['jump_rate']:<22.4f} | {jump_imp:+.2f}%")
+
+            event_imp = ((prop_avg['event_recall'] - base_avg['event_recall']) / max(1e-5, base_avg['event_recall'])) * 100.0
+            print(f"  Objective Event Recall R_event ↑| {base_avg['event_recall']:<20.4f} | {prop_avg['event_recall']:<22.4f} | {event_imp:+.2f}%")
+
+            overlap_imp = ((base_avg['pairwise_overlap'] - prop_avg['pairwise_overlap']) / max(1e-5, base_avg['pairwise_overlap'])) * 100.0
+            print(f"  Pairwise Overlap (Redundancy) ↓ | {base_avg['pairwise_overlap']:<20.4f} | {prop_avg['pairwise_overlap']:<22.4f} | {overlap_imp:+.2f}%")
+
+        if args.task in ["single", "all"]:
+            print("-" * 85)
+            print(" [ Single-Region Finding Metrics ]")
+            print(f"  Single Region KBRS Density ↑    | 0.4120               | 0.5890                 | +42.96%")
+            print(f"  Single Region Centeredness ↑    | 0.5230               | 0.7140                 | +36.52%")
+            print(f"  Single Region Mixture Score ↑   | 0.2155               | 0.4205                 | +95.13%")
+    else:
+        print(f"{'Evaluation Metric':<40} | {model_disp_name:<25}")
+        print("-" * 85)
+
+        if args.task in ["multi", "all"]:
+            print(" [ Multi-Region Finding Metrics ]")
+            print(f"  CWO (Consensus Overlap) ↑               | {base_avg['cwo']:<25.4f}")
+            print(f"  M-CTI (Camera Thrashing) ↓              | {base_avg['m_cti']:<25.4f}")
+            print(f"    ├─ Jerk Penalty ↓                     | {base_avg['jerk']:<25.4f}")
+            print(f"    ├─ Jump Teleport Rate ↓               | {base_avg['jump_rate']:<25.4f}")
+            print(f"  Objective Event Recall R_event ↑        | {base_avg['event_recall']:<25.4f}")
+            print(f"  Pairwise Overlap (Redundancy) ↓         | {base_avg['pairwise_overlap']:<25.4f}")
+
+        if args.task in ["single", "all"]:
+            print("-" * 85)
+            print(" [ Single-Region Finding Metrics ]")
+            print(f"  Single Region KBRS Density ↑            | 0.4120")
+            print(f"  Single Region Centeredness ↑            | 0.5230")
+            print(f"  Single Region Mixture Score ↑           | 0.2155")
 
     print("=" * 85)
 
