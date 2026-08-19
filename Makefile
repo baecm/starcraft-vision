@@ -125,7 +125,7 @@ benchmark:
 
 notebook:
 	CONTAINER_NAME=notebook_$$(date +%Y%m%d_%H%M%S); \
-	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME -p 8888:8888 --rm notebook debug -c "jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''"
+	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME -p 8888:8888 --rm notebook debug -c "command -v jupyter >/dev/null 2>&1 || pip install jupyterlab; jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''"
 
 # Entry points
 preprocess_input:
