@@ -83,6 +83,13 @@ class CustomPennFudanDataset(BasePennFudanDataset):
     # -----------------------------
     # Public API
     # -----------------------------
+    def get_channel_info(self):
+        single_c = len(self.channel_indices)
+        return {
+            "single_frame_channels": single_c,
+            "total_channels": single_c * self.window_size,
+        }
+
     def __len__(self):
         return len(self.files)
 

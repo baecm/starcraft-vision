@@ -242,9 +242,14 @@ def run_benchmark():
     if len(ds) == 0:
         raise RuntimeError("No valid replay samples loaded from dataset paths!")
 
-    channel_info = ds.get_channel_info()
-    total_c = channel_info["total_channels"]
-    single_c = channel_info["single_frame_channels"]
+    if hasattr(ds, "get_channel_info"):
+        channel_info = ds.get_channel_info()
+        total_c = channel_info["total_channels"]
+        single_c = channel_info["single_frame_channels"]
+    else:
+        single_c = len(getattr(ds, "channel_indices", range(11)))
+        total_c = single_c * args.window_size
+
     print(f"[*] Channel Info: total_channels={total_c}, single_frame_channels={single_c}, window_size={args.window_size}")
 
     # Group sample indices by replay_id & pick args.num_samples per replay
