@@ -14,7 +14,7 @@ PYDEBUG_SERVICE  ?= pydebug
 
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
-		zeppelin
+		zeppelin benchmark
 
 # 디렉토리 생성
 $(shell mkdir -p $(PID_DIR) logs results models predictions .torch_cache)
@@ -116,6 +116,10 @@ run:
 debug:
 	CONTAINER_NAME=debug_$(shell date +%Y%m%d_%H%M%S); \
 	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm debugger debug $(ARGS);
+
+benchmark:
+	CONTAINER_NAME=benchmark_$$(date +%Y%m%d_%H%M%S); \
+	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm -v $$(pwd)/scripts:/workspace/scripts debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/run_benchmark.py $(ARGS)";
 
 # Entry points
 preprocess_input:

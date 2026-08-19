@@ -280,6 +280,12 @@ NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name maskrcnn_
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name maskrcnn_win4_kbrs_fold1_s123_kbrs025_base_score_20260203_055642 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs --label-method all_correct"
 
 NVIDIA_VISIBLE_DEVICES=0 make inference ARGS="--model-name deformable_detr_vanilla_win1_fold1_s123_20260818_071132 --model-number 30 --replays 275 1725 3613 4520 4664 --label-method all_correct --cuda"
+NVIDIA_VISIBLE_DEVICES=0 make inference ARGS="--model-name centernet_vanilla_win1_fold1_s123_20260818_071116 --model-number 30 --replays 275 1725 3613 4520 4664 --label-method all_correct --cuda"
 
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name deformable_detr_vanilla_win1_fold1_s123_20260818_071132 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs --label-method all_correct"
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name centernet_vanilla_win1_fold1_s123_20260818_071116 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs --label-method all_correct"
+
+# =====================================================================
+# 3D Evaluation Suite & Multi-Viewport Control AI Benchmark
+# =====================================================================
+NVIDIA_VISIBLE_DEVICES=0 make benchmark
