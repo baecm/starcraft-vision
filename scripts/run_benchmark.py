@@ -153,8 +153,8 @@ def parse_args():
     parser.add_argument(
         "--output-json",
         type=str,
-        default="/workspace/results/benchmark_results.json",
-        help="Output JSON summary report path",
+        default=None,
+        help="Output JSON summary report path (default: /workspace/results/benchmark/{model_name}_e{epoch}.json)",
     )
     return parser.parse_args()
 
@@ -162,8 +162,10 @@ def parse_args():
 def run_benchmark():
     args = parse_args()
 
-    if args.output_json == "/workspace/results/benchmark_results.json":
-        args.output_json = f"/workspace/results/benchmark_{args.model_name}_e{args.epoch}.json"
+    if not args.output_json:
+        bench_dir = "/workspace/results/benchmark"
+        os.makedirs(bench_dir, exist_ok=True)
+        args.output_json = os.path.join(bench_dir, f"{args.model_name}_e{args.epoch}.json")
 
     print("=" * 85)
     print(f"🚀 Running Evaluation Benchmark (Task Mode: {args.task.upper()})")
