@@ -477,8 +477,21 @@ def run_benchmark():
         if args.task in ["single", "all"]:
             print("-" * 85)
             print(" [ Single-Region Finding Metrics ]")
+            label_map = {
+                "ic@000": "IC@000 (Intersection Coverage @ any) ↑",
+                "ic@030": "IC@030 (Intersection Coverage @ 0.30) ↑",
+                "ic@050": "IC@050 (Intersection Coverage @ 0.50) ↑",
+                "ic_multi": "IC_multi (Multi-Target Coverage) ↑",
+                "ic_ratio": "IC_ratio (Intersection Ratio) ↑",
+                "median_ir": "Median IR (Median Intersection Ratio) ↑",
+                "p90_ir": "P90 IR (90th Percentile IR) ↑",
+                "kbrs_density": "Single Region KBRS Density ↑",
+                "kbrs_centeredness": "Single Region KBRS Centeredness ↑",
+                "kbrs_mixture": "Single Region KBRS Mixture Score ↑",
+            }
             for k, v in single_region_metrics.items():
-                print(f"  {k:<40} | {v:<25.4f}")
+                disp_lbl = label_map.get(k, k)
+                print(f"  {disp_lbl:<40} | {v:<25.4f}")
 
     print("=" * 85)
 
