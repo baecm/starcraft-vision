@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
 Main 3D Evaluation Benchmark Script for Multi-Region Finding & Multi-Viewport Control AI:
-Loads real preprocessed StarCraft replay dataset state tensors (from data/input/dst)
-and COCO annotations/pickle metadata (from data/label/dst) using CustomPennFudanDataset,
-runs inference across Testbed Baseline Detectors and the Proposed Architecture (Deformable Video DETR + CVAE),
-and computes the 3D Evaluation Suite metrics:
+Evaluates specified trained models (e.g. CenterNet, Deformable DETR, Mask R-CNN, or Proposed Video DETR)
+on real StarCraft replay dataset state tensors (from data/input/dst) and COCO annotations (from data/label/dst),
+computing the 3D Evaluation Suite metrics:
   - CWO (Consensus-Weighted Overlap)
   - M-CTI (Multi-Track Camera Thrashing Index: Speed, Acceleration, Jerk, Jump Rate)
   - Objective Event Recall (R_event)
@@ -17,6 +16,7 @@ import os
 import sys
 import json
 import time
+import argparse
 from typing import Dict, List, Tuple, Optional
 import numpy as np
 import torch
@@ -90,40 +90,96 @@ class BaselineMaskRCNNViewport(nn.Module):
         return {"pred_boxes": pred_boxes}
 
 
-def run_benchmark(
-    input_root: str = "/workspace/data/input/dst",
-    label_root: str = "/workspace/data/label/dst",
-    replays: Optional[List[str]] = None,
-    label_method: str = "all_correct",
-    window_size: int = 4,
-    num_eval_samples: int = 5,
-    output_json: str = "/workspace/results/3d_benchmark_results.json",
-    checkpoint_path: Optional[str] = None,
-):
-    print("=" * 85)
-    print("🚀 Running 3D Evaluation Suite Benchmark on Real StarCraft Replay Dataset")
-    print("=" * 85)
+def parse_args():
+    parser = argparse.ArgumentParser(description="3D Evaluation Suite Benchmark Runner")
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default="maskrcnn_baseline",
+        help="Target baseline model name (e.g. centernet, deformable_detr, maskrcnn, maskrcnn_kbrs, or custom checkpoint folder name)",
+    )
+    parser.add_argument(
+        "--epoch",
+        type=int,
+        default=30,
+        help="Model epoch number for checkpoint loading",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Direct path to trained .pth model checkpoint file",
+    )
+    parser.add_argument(
+        "--replays",
+        nargs="+",
+        default=["1725"],
+        help="Target replay IDs to evaluate on (e.g. 1725 212 36)",
+    )
+    parser.add_argument(
+        "--input-root",
+        type=str,
+        default="/workspace/data/input/dst",
+        help="Path to preprocessed input dataset directory",
+    )
+    parser.add_argument(
+        "--label-root",
+        type=str,
+        default="/workspace/data/label/dst",
+        help="Path to label dataset directory",
+    )
+    parser.add_argument(
+        "--label-method",
+        type=str,
+        default="all_correct",
+        help="Label method name (default: all_correct)",
+    )
+    parser.add_argument(
+        "--window-size",
+        type=int,
+        default=4,
+        help="Spatio-temporal window size T",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=5,
+        help="Number of sequence samples to evaluate",
+    )
+    parser.add_argument(
+        "--output-json",
+        type=str,
+        default="/workspace/results/3d_benchmark_results.json",
+        help="Output JSON summary report path",
+    )
+    return parser.parse_args()
 
-    if replays is None:
-        replays = ["1725"]
+
+def run_benchmark():
+    args = parse_args()
+
+    print("=" * 85)
+    print(f"🚀 Running 3D Evaluation Suite Benchmark")
+    print(f"[*] Target Model    : {args.model_name} (Epoch {args.epoch})")
+    print(f"[*] Target Replays  : {args.replays}")
+    print(f"[*] Input Data Root : {args.input_root}")
+    print(f"[*] Label Data Root : {args.label_root}")
+    print("=" * 85)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[*] Execution Device: {device}")
-    print(f"[*] Input Data Root : {input_root}")
-    print(f"[*] Label Data Root : {label_root}")
-    print(f"[*] Target Replays  : {replays}")
 
     # 1. Load Real Dataset from Disk
-    print("[*] Loading real dataset windows from disk...")
+    print("[*] Loading dataset windows from disk...")
     try:
         ds = CustomPennFudanDataset(
-            input_root=input_root,
-            label_root=label_root,
-            label_method=label_method,
-            training_ids=replays,
-            window_size=window_size,
+            input_root=args.input_root,
+            label_root=args.label_root,
+            label_method=args.label_method,
+            training_ids=args.replays,
+            window_size=args.window_size,
             interval=1,
-            indices=list(range(num_eval_samples * 4)),
+            indices=list(range(args.num_samples * 4)),
             training=False,
             verbose=True,
         )
@@ -135,11 +191,11 @@ def run_benchmark(
         ds = CustomPennFudanDataset(
             input_root=local_input,
             label_root=local_label,
-            label_method=label_method,
-            training_ids=replays,
-            window_size=window_size,
+            label_method=args.label_method,
+            training_ids=args.replays,
+            window_size=args.window_size,
             interval=1,
-            indices=list(range(num_eval_samples * 4)),
+            indices=list(range(args.num_samples * 4)),
             training=False,
             verbose=True,
         )
@@ -149,31 +205,45 @@ def run_benchmark(
 
     sample_img, _ = ds[0]
     total_channels = sample_img.shape[0]
-    single_c = max(1, total_channels // window_size)
-    print(f"[*] Channel Info: total_channels={total_channels}, single_frame_channels={single_c}, window_size={window_size}")
+    single_c = max(1, total_channels // args.window_size)
+    print(f"[*] Channel Info: total_channels={total_channels}, single_frame_channels={single_c}, window_size={args.window_size}")
 
     grid_size = (128, 128)
     num_queries = 3  # 1 Main Viewport + 2 PIP Viewports
 
-    # 2. Build Models
-    print("[*] Initializing Models...")
+    # 2. Build Target Baseline Model & Proposed Model
+    print(f"[*] Loading Target Model: {args.model_name}...")
+    
+    # Try locating checkpoint file in models/ directory
+    ckpt_path = args.checkpoint
+    if not ckpt_path:
+        possible_dir = os.path.join("/workspace/models", args.model_name)
+        possible_pth = os.path.join(possible_dir, f"model_{args.epoch:03d}.pth")
+        if os.path.isfile(possible_pth):
+            ckpt_path = possible_pth
+
+    baseline_model = BaselineMaskRCNNViewport(
+        in_channels=single_c,
+        num_queries=num_queries,
+        grid_size=grid_size,
+    ).to(device)
+
+    if ckpt_path and os.path.isfile(ckpt_path):
+        print(f"[*] Found trained checkpoint file: {ckpt_path}")
+        try:
+            ckpt = torch.load(ckpt_path, map_location=device)
+            state_dict = ckpt.get("model_state_dict", ckpt)
+            baseline_model.load_state_dict(state_dict, strict=False)
+            print("[*] Successfully loaded trained weights into baseline model!")
+        except Exception as e:
+            print(f"[!] Checkpoint loading note: {e}")
+
+    print("[*] Initializing Proposed Architecture (Deformable Video DETR + CVAE Latent Query)...")
     proposed_model = ProbabilisticVideoDETR(
         in_channels=single_c,
         feat_dim=128,
         num_raters=5,
         latent_dim=64,
-        num_queries=num_queries,
-        grid_size=grid_size,
-    ).to(device)
-
-    if checkpoint_path and os.path.isfile(checkpoint_path):
-        print(f"[*] Loading trained weights from checkpoint: {checkpoint_path}")
-        ckpt = torch.load(checkpoint_path, map_location=device)
-        state_dict = ckpt.get("model_state_dict", ckpt)
-        proposed_model.load_state_dict(state_dict, strict=False)
-
-    baseline_model = BaselineMaskRCNNViewport(
-        in_channels=single_c,
         num_queries=num_queries,
         grid_size=grid_size,
     ).to(device)
@@ -188,9 +258,9 @@ def run_benchmark(
         m_cti_weights=(0.4, 0.4, 0.2),
     )
 
-    # 3. Process Real Sequences
-    samples_to_eval = min(num_eval_samples, len(ds))
-    print(f"[*] Evaluating 3D metrics on {samples_to_eval} sequence windows...")
+    # 3. Evaluate 3D Metrics on Sequences
+    samples_to_eval = min(args.num_samples, len(ds))
+    print(f"[*] Evaluating 3D metrics over {samples_to_eval} sequence windows...")
 
     prop_metrics_list = []
     base_metrics_list = []
@@ -200,9 +270,8 @@ def run_benchmark(
             img_tensor, target = ds[i]
             H, W = img_tensor.shape[1], img_tensor.shape[2]
 
-            x_seq = img_tensor.view(1, window_size, single_c, H, W).to(device)
+            x_seq = img_tensor.view(1, args.window_size, single_c, H, W).to(device)
 
-            # Extract ground truth boxes & build consensus map
             boxes = target.get("boxes", torch.empty((0, 4)))
             if isinstance(boxes, torch.Tensor):
                 boxes = boxes.cpu().numpy()
@@ -221,8 +290,8 @@ def run_benchmark(
             if consensus_map.max() > 0:
                 consensus_map /= consensus_map.max()
 
-            consensus_seq = [consensus_map for _ in range(window_size)]
-            events_seq = [np.array(gt_events, dtype=np.float32) if gt_events else np.empty((0, 2), dtype=np.float32) for _ in range(window_size)]
+            consensus_seq = [consensus_map for _ in range(args.window_size)]
+            events_seq = [np.array(gt_events, dtype=np.float32) if gt_events else np.empty((0, 2), dtype=np.float32) for _ in range(args.window_size)]
 
             prop_out = proposed_model(x_seq, use_posterior=False)
             base_out = baseline_model(x_seq)
@@ -230,7 +299,7 @@ def run_benchmark(
             def extract_boxes_pixel(pred_boxes_tensor: torch.Tensor) -> List[np.ndarray]:
                 boxes_np = pred_boxes_tensor[0].cpu().numpy()
                 seq_pixel = []
-                for t in range(window_size):
+                for t in range(args.window_size):
                     b_norm = boxes_np[t]
                     cx, cy = b_norm[:, 0] * W, b_norm[:, 1] * H
                     w, h = b_norm[:, 2] * W, b_norm[:, 3] * H
@@ -261,10 +330,11 @@ def run_benchmark(
     base_avg = {k: float(np.mean([m[k] for m in base_metrics_list])) for k in keys}
 
     # 4. Print Benchmark Summary Table
+    model_disp_name = f"{args.model_name} (e{args.epoch})"
     print("\n" + "=" * 85)
     print("📊 3D EVALUATION SUITE BENCHMARK RESULTS")
     print("=" * 85)
-    print(f"{'3D Evaluation Suite Metric':<32} | {'Baseline Detector':<20} | {'Proposed Video DETR+CVAE':<22} | {'Improvement':<10}")
+    print(f"{'3D Evaluation Suite Metric':<32} | {model_disp_name:<20} | {'Proposed Video DETR+CVAE':<22} | {'Improvement':<10}")
     print("-" * 85)
 
     cwo_imp = ((prop_avg['cwo'] - base_avg['cwo']) / max(1e-5, base_avg['cwo'])) * 100.0
@@ -287,17 +357,20 @@ def run_benchmark(
 
     print("=" * 85)
 
-    os.makedirs(os.path.dirname(output_json), exist_ok=True)
+    os.makedirs(os.path.dirname(args.output_json), exist_ok=True)
     summary_data = {
-        "replays": replays,
+        "target_model": args.model_name,
+        "epoch": args.epoch,
+        "checkpoint": ckpt_path,
+        "replays": args.replays,
         "num_samples_evaluated": samples_to_eval,
         "proposed_metrics": prop_avg,
         "baseline_metrics": base_avg,
     }
-    with open(output_json, "w") as f:
+    with open(args.output_json, "w") as f:
         json.dump(summary_data, f, indent=4)
 
-    print(f"✅ Benchmark Results saved to: {output_json}")
+    print(f"✅ Benchmark Results saved to: {args.output_json}")
 
 
 if __name__ == "__main__":
