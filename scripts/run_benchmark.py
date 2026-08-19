@@ -413,7 +413,21 @@ def run_benchmark():
     with open(args.output_json, "w") as f:
         json.dump(summary_data, f, indent=4)
 
-    print(f"✅ Benchmark Results saved to: {args.output_json}")
+    # Save output CSV
+    import pandas as pd
+    output_csv = args.output_json.replace(".json", ".csv")
+    csv_dict = {
+        "model_name": [args.model_name],
+        "epoch": [args.epoch],
+        "task": [args.task],
+        "replays": [",".join(map(str, args.replays))],
+        "num_samples": [samples_to_eval],
+    }
+    csv_dict.update({k: [v] for k, v in base_avg.items()})
+    pd.DataFrame(csv_dict).to_csv(output_csv, index=False)
+
+    print(f"✅ Benchmark Results saved to JSON: {args.output_json}")
+    print(f"✅ Benchmark Results saved to CSV : {output_csv}")
 
 
 if __name__ == "__main__":
