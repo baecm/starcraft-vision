@@ -404,8 +404,9 @@ def run_benchmark():
         "checkpoint": ckpt_path,
         "replays": args.replays,
         "num_samples_evaluated": samples_to_eval,
-        "proposed_metrics": prop_avg,
-        "baseline_metrics": base_avg,
+        "summary_metrics": base_avg,
+        "proposed_summary_metrics": prop_avg,
+        "per_sample_metrics": base_metrics_list,
     }
     with open(args.output_json, "w") as f:
         json.dump(summary_data, f, indent=4)
