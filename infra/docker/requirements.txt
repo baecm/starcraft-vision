@@ -12,6 +12,7 @@ requests
 debugpy
 orjson
 ipywidgets
+jupyterlab
 pyyaml
 scipy
 hydra-core==1.3.2

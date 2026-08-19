@@ -80,3 +80,21 @@ services:
       - ${RESULTS_DIR}:/workspace/results
       - ${CONF_DIR}:/workspace/conf
       - ./entrypoint.sh:/workspace/entrypoint.sh
+
+  notebook:
+    <<: *common-config
+    ports:
+      - "${JUPYTER_PORT:-8888}:8888"
+    volumes:
+      - ${WANDB_API_KEY}:/run/secrets/wandb_api_key:ro
+      - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
+      - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
+      - ${DATA_DIR}:/workspace/data
+      - ${SRC_DIR}:/workspace/src
+      - ./notebooks:/workspace/notebooks
+      - ${MODELS_DIR}:/workspace/models
+      - ${PREDICTIONS_DIR}:/workspace/predictions
+      - ${RESULTS_DIR}:/workspace/results
+      - ${CONF_DIR}:/workspace/conf
+      - ./entrypoint.sh:/workspace/entrypoint.sh
+

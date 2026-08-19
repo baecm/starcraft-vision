@@ -123,6 +123,10 @@ benchmark:
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/benchmark.cid
 
+notebook:
+	CONTAINER_NAME=notebook_$$(date +%Y%m%d_%H%M%S); \
+	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME -p 8888:8888 --rm notebook debug -c "jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''"
+
 # Entry points
 preprocess_input:
 	$(call run_or_parallel,preprocess_input)
@@ -135,6 +139,3 @@ stop:
 		[ -f $$cidfile ] && docker stop $$(cat $$cidfile) 2>/dev/null || true; \
 		rm -f $$cidfile; \
 	done
-
-zeppelin:
-	docker compose -f $(COMPOSE_FILE) up zeppelin
