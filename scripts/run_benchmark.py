@@ -432,10 +432,14 @@ def run_benchmark():
                 "ic@000": safe_mean("ic@000"),
                 "ic@030": safe_mean("ic@030"),
                 "ic@050": safe_mean("ic@050"),
+                "top1_ic@050": safe_mean("top1_ic@050"),
                 "ic_multi": safe_mean("ic_multi"),
                 "ic_ratio": safe_mean("ic_ratio"),
                 "median_ir": safe_mean("median_ir"),
                 "p90_ir": safe_mean("p90_ir"),
+                "center_jitter": safe_mean("center_jitter"),
+                "target_persistence": safe_mean("target_persistence"),
+                "inter_region_dist": safe_mean("inter_region_dist"),
                 "kbrs_density": float(np.nanmean(kbrs_densities)) if kbrs_densities else float("nan"),
                 "kbrs_centeredness": float(np.nanmean(kbrs_centereds)) if kbrs_centereds else float("nan"),
                 "kbrs_mixture": float(np.nanmean(kbrs_mixtures)) if kbrs_mixtures else float("nan"),
@@ -497,10 +501,14 @@ def run_benchmark():
                 "ic@000": "IC@000 (Intersection Coverage @ any) ↑",
                 "ic@030": "IC@030 (Intersection Coverage @ 0.30) ↑",
                 "ic@050": "IC@050 (Intersection Coverage @ 0.50) ↑",
+                "top1_ic@050": "Top-1 IC@050 (Main Viewport Precision) ↑",
                 "ic_multi": "IC_multi (Multi-Target Coverage) ↑",
                 "ic_ratio": "IC_ratio (Intersection Ratio) ↑",
                 "median_ir": "Median IR (Median Intersection Ratio) ↑",
                 "p90_ir": "P90 IR (90th Percentile IR) ↑",
+                "center_jitter": "Center Jitter (Single Viewport Jitter) ↓",
+                "target_persistence": "Target Persistence (Tracking Continuity) ↑",
+                "inter_region_dist": "Inter-Region Dist (Spatial Dispersion) ↑",
                 "kbrs_density": "Single Region KBRS Density ↑",
                 "kbrs_centeredness": "Single Region KBRS Centeredness ↑",
                 "kbrs_mixture": "Single Region KBRS Mixture Score ↑",
@@ -547,7 +555,7 @@ def run_benchmark():
 
         if rid in ic_rows_by_replay:
             ic_dict = ic_rows_by_replay[rid]
-            for ic_k in ["ic@000", "ic@030", "ic@050", "ic_multi", "ic_ratio", "median_ir", "p90_ir"]:
+            for ic_k in ["ic@000", "ic@030", "ic@050", "top1_ic@050", "ic_multi", "ic_ratio", "median_ir", "p90_ir", "center_jitter", "target_persistence", "inter_region_dist"]:
                 if ic_k in ic_dict:
                     r_row[ic_k] = ic_dict[ic_k]
         if rid in kbrs_by_replay:
