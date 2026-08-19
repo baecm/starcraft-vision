@@ -285,7 +285,4 @@ NVIDIA_VISIBLE_DEVICES=0 make inference ARGS="--model-name centernet_vanilla_win
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name deformable_detr_vanilla_win1_fold1_s123_20260818_071132 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs --label-method all_correct"
 NVIDIA_VISIBLE_DEVICES=0 make estimate ARGS="--mode model --model-name centernet_vanilla_win1_fold1_s123_20260818_071116 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs --label-method all_correct"
 
-# =====================================================================
-# 3D Evaluation Suite & Multi-Viewport Control AI Benchmark
-# =====================================================================
-NVIDIA_VISIBLE_DEVICES=0 make benchmark
+make benchmark ARGS="--model-name centernet_kbrs_win4_fold1_s123_kbrs025_20260814_044543 --epoch 30 --replays 1725 --label-method all_correct --task all"
