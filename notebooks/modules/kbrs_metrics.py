@@ -188,13 +188,10 @@ def build_agent_traces_from_df(gt_df, pred_df, width=128, height=128, max_x=3456
     for iid, gts in gt_grouped.items():
         preds = pred_grouped.get(iid, [])
         
-        # # 예측이 없는 경우 화면 밖 더미 좌표 할당
-        # if not preds:
-        #     dummy_vx, dummy_vy = -9999.0, -9999.0
-        #     agent0 = [{"vpx": dummy_vx, "vpy": dummy_vy}]
-            
         if len(preds) == 0:
-            continue
+            # 예측 실패 프레임: 화면 밖 더미 좌표 부여 -> IC = 0.0 페널티 공정 반영
+            dummy_vx, dummy_vy = -9999.0, -9999.0
+            agent0 = [{"vpx": dummy_vx, "vpy": dummy_vy}]
         else:
             px, py = preds[0][:2]
             pcx = px + KW / 2.0
