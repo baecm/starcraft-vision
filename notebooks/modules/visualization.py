@@ -123,3 +123,78 @@ def channel(data, save_dir=None, rep_name=None, frame=None):
         
     return fig, axes
 
+
+def render_frame_with_viewport_overlay(
+    input_npy: np.ndarray,
+    gt_bboxes=None,
+    pred_bboxes=None,
+    title=None,
+    ax=None,
+    figsize=(8, 8),
+    show_legend=True,
+):
+    """
+    11개 입력 채널 npy 데이터로 게임 미니맵 상태(State)를 복원(Reconstruction)하고,
+    GT 뷰포트(Red Dashed) 및 모델 예측 뷰포트(Blue/Green/Cyan Solid)를 
+    오버레이하여 실제 예측 배치 결과를 시각화합니다.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize, dpi=150)
+    else:
+        fig = ax.figure
+
+    # 1. 게임 미니맵 프레임 복원 (Terrain, Resource, P1, P2, Vision)
+    ax.imshow(input_npy[Channel.Terrain.value] > 0, cmap='Greys', alpha=0.5)
+    res_alpha = np.where(input_npy[Channel.Resource.value] == 1, 1.0, 0.0)
+    ax.imshow(input_npy[Channel.Resource.value] == 1, cmap='BuGn', alpha=res_alpha)
+
+    # Player 1 (Greens) & Player 2 (Reds)
+    for ch_p1, ch_p2 in [
+        (Channel.Player_1_Worker, Channel.Player_2_Worker),
+        (Channel.Player_1_Ground, Channel.Player_2_Ground),
+        (Channel.Player_1_Air, Channel.Player_2_Air),
+        (Channel.Player_1_Building, Channel.Player_2_Building)
+    ]:
+        p1_a = np.where(input_npy[ch_p1.value] != 0, 1.0, 0.0)
+        p2_a = np.where(input_npy[ch_p2.value] != 0, 1.0, 0.0)
+        ax.imshow(input_npy[ch_p1.value] != 0, cmap='Greens', alpha=p1_a)
+        ax.imshow(input_npy[ch_p2.value] != 0, cmap='Reds', alpha=p2_a)
+
+    vis_alpha = np.where(input_npy[Channel.Vision.value] == 1, 0.0, 0.85)
+    ax.imshow(np.zeros_like(input_npy[Channel.Vision.value]), cmap='Greys_r', alpha=vis_alpha)
+
+    # 2. GT 뷰포트 오버레이 (빨간색 점선 박스)
+    if gt_bboxes:
+        for idx, box in enumerate(gt_bboxes):
+            x, y, w, h = box[:4]
+            rect = patches.Rectangle(
+                (x, y), w, h,
+                linewidth=2.0, edgecolor='red', facecolor='none', linestyle='--',
+                label='Ground Truth (Rater)' if idx == 0 and show_legend else None
+            )
+            ax.add_patch(rect)
+
+    # 3. 모델 예측 뷰포트 오버레이 (Top-1: 파란색, Top-2: 초록색, Top-3: 하늘색)
+    colors = ['royalblue', 'limegreen', 'darkcyan', 'gold', 'magenta']
+    if pred_bboxes:
+        for idx, box in enumerate(pred_bboxes):
+            x, y, w, h = box[:4]
+            score = box[4] if len(box) > 4 else None
+            color = colors[idx % len(colors)]
+            lbl_name = f"Pred Top-{idx+1}" + (f" ({score:.2f})" if score is not None else "")
+            rect = patches.Rectangle(
+                (x, y), w, h,
+                linewidth=2.5, edgecolor=color, facecolor='none', linestyle='-',
+                label=lbl_name if show_legend else None
+            )
+            ax.add_patch(rect)
+
+    ax.set_xlim(0, 128)
+    ax.set_ylim(128, 0)
+    if title:
+        ax.set_title(title, fontsize=12, fontweight='bold')
+    if show_legend:
+        ax.legend(loc='upper right', framealpha=0.8)
+
+    return fig, ax
+
