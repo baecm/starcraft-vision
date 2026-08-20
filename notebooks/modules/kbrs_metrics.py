@@ -234,10 +234,9 @@ def get_official_metrics_df(gt_df, pred_df, skip_missing=False):
         max_x=3456.0, max_y=3720.0
     )
 
-
-def get_hit_only_metrics_df(gt_df, pred_df):
-    """예측이 존재하는 프레임만 조건부 선택하여 지표(Conditional Hit-Only Metrics)를 반환합니다."""
-    return get_official_metrics_df(gt_df, pred_df, skip_missing=True)
+    total_frames = gt_df['image_id'].nunique() if not gt_df.empty else 0
+    hit_frames = pred_df['image_id'].nunique() if not pred_df.empty else 0
+    hit_rate = float(hit_frames / max(1, total_frames) * 100.0)
     
     results = []
     for iid, img_ir in zip(image_ids, per_image):
@@ -247,7 +246,15 @@ def get_hit_only_metrics_df(gt_df, pred_df):
             'ir': ir,
             'ic@000': ir > 0.0,
             'ic@030': ir >= 0.30,
-            'ic@050': ir >= 0.50
+            'ic@050': ir >= 0.50,
+            'total_frames': total_frames,
+            'hit_frames': hit_frames,
+            'hit_rate': hit_rate,
         })
         
     return pd.DataFrame(results)
+
+
+def get_hit_only_metrics_df(gt_df, pred_df):
+    """예측이 존재하는 프레임만 조건부 선택하여 지표(Conditional Hit-Only Metrics)를 반환합니다."""
+    return get_official_metrics_df(gt_df, pred_df, skip_missing=True)

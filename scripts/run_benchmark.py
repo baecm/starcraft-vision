@@ -408,6 +408,10 @@ def run_benchmark():
                 for dets in preds_by_img.values():
                     preds_all.extend(dets)
 
+                total_f = len(coco_gt.dataset.get("images", []))
+                hit_f = sum(1 for img in coco_gt.dataset.get("images", []) if len(preds_by_img.get(int(img["id"]), [])) > 0)
+                hit_r = float(hit_f / max(1, total_f) * 100.0)
+
                 # 1) Official Overall IC (includes 0.0 penalty for missing prediction frames)
                 ic_row = compute_ic_for_replay(
                     replay_id=replay_id,
@@ -418,6 +422,9 @@ def run_benchmark():
                     model_tag=f"{args.model_name}_e{args.epoch}",
                     skip_missing_preds=False,
                 )
+                ic_row["total_frames"] = total_f
+                ic_row["hit_frames"] = hit_f
+                ic_row["hit_rate"] = hit_r
                 ic_rows.append(ic_row)
                 ic_rows_by_replay[replay_id] = ic_row
 
@@ -431,6 +438,9 @@ def run_benchmark():
                     model_tag=f"{args.model_name}_e{args.epoch}_hit",
                     skip_missing_preds=True,
                 )
+                ic_row_hit["total_frames"] = total_f
+                ic_row_hit["hit_frames"] = hit_f
+                ic_row_hit["hit_rate"] = hit_r
                 ic_rows_hit_by_replay[replay_id] = ic_row_hit
 
                 d, c, m, _ = compute_kbrs_for_replay(
@@ -582,7 +592,7 @@ def run_benchmark():
 
             if rid in ic_mapping:
                 ic_dict = ic_mapping[rid]
-                for ic_k in ["ic@000", "ic@030", "ic@050", "top1_ic@050", "ic_multi", "ic_ratio", "median_ir", "p90_ir", "center_jitter", "target_persistence", "inter_region_dist"]:
+                for ic_k in ["total_frames", "hit_frames", "hit_rate", "ic@000", "ic@030", "ic@050", "top1_ic@050", "ic_multi", "ic_ratio", "median_ir", "p90_ir", "center_jitter", "target_persistence", "inter_region_dist"]:
                     if ic_k in ic_dict:
                         r_row[ic_k] = ic_dict[ic_k]
             if rid in kbrs_by_replay:
