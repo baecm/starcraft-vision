@@ -6,12 +6,89 @@ import pandas as pd
 from pathlib import Path
 
 
+def find_experiments(predictions_dir="/workspace/predictions", model_name_filter=None):
+    """
+    YAML 없이 predictions/ 디렉터리를 동적으로 자동 스캔하여
+    존재하는 모든 실험 정보(아키텍처, 윈도우 크기, mode, epoch 등)를 파싱합니다.
+    """
+    if not os.path.exists(predictions_dir):
+        alt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "predictions"))
+        if os.path.exists(alt_path):
+            predictions_dir = alt_path
+        else:
+            return []
+
+    experiments = []
+    for item in sorted(os.listdir(predictions_dir)):
+        item_path = os.path.join(predictions_dir, item)
+        if not os.path.isdir(item_path):
+            continue
+
+        if model_name_filter and not any(f.lower() in item.lower() for f in (model_name_filter if isinstance(model_name_filter, (list, tuple, set)) else [model_name_filter])):
+            continue
+
+        arch = "maskrcnn" if "maskrcnn" in item else ("centernet" if "centernet" in item else ("deformable_detr" if "deformable" in item or "detr" in item else "unknown"))
+        win = 4 if "win4" in item else (1 if "win1" in item else 1)
+        mode = "kbrs" if "kbrs" in item else "vanilla"
+
+        epoch_dirs = [d for d in os.listdir(item_path) if d.startswith("model_") and os.path.isdir(os.path.join(item_path, d))]
+        epochs = sorted([int(d.replace("model_", "")) for d in epoch_dirs if d.replace("model_", "").isdigit()])
+
+        experiments.append({
+            "model_name": item,
+            "path": item_path,
+            "arch": arch,
+            "window_size": win,
+            "mode": mode,
+            "epochs": epochs,
+            "glob_pattern": f"*{item}*",
+        })
+
+    return experiments
+
+
 def load_config(config_path="config.yaml"):
     """
-    YAML 설정 파일을 불러옵니다.
+    YAML 설정 파일을 불러옵니다 (파일이 없으면 predictions/ 디렉터리 동적 스캔으로 자동 대체).
     """
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    candidate_paths = [
+        config_path,
+        os.path.join(os.path.dirname(__file__), "..", config_path),
+        os.path.join(os.getcwd(), config_path),
+        os.path.join(os.getcwd(), "..", config_path),
+        os.path.join("/workspace/notebooks", config_path),
+    ]
+    target_path = None
+    for p in candidate_paths:
+        if p and os.path.isfile(p):
+            target_path = p
+            break
+
+    if target_path:
+        with open(target_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+
+    # Fallback to dynamic Auto-Discovery dictionary if YAML file is absent
+    discovered = find_experiments()
+    exp_dict = {}
+    for exp in discovered:
+        arch = exp["arch"]
+        win_key = f"win{exp['window_size']}"
+        mode_key = exp["mode"]
+        exp_dict.setdefault(arch, {}).setdefault(win_key, {})[mode_key] = exp["glob_pattern"]
+
+    return {
+        "data": {
+            "root_dir": "/workspace/data",
+            "input_dst_dir": "/workspace/data/input/dst",
+            "label_dst_dir": "/workspace/data/label/dst",
+            "predictions_dir": "/workspace/predictions",
+            "figures_dir": "/workspace/results/figures",
+        },
+        "experiments": exp_dict,
+        "kbrs": {"weights": {"density": 0.3, "centeredness": 0.3, "mixture": 3.0}},
+        "animation": {"fps": 24, "prefetch": 8, "use_processes": True},
+    }
     
     
 def load_ground_truth(label_dir, target_replays, label_method):
