@@ -95,16 +95,40 @@ def load_ground_truth(label_dir, target_replays, label_method):
     """
     target_replays 리스트에 있는 리플레이 폴더만 선택하여 GT를 로드합니다.
     """
+    candidate_label_dirs = [
+        label_dir,
+        "/mnt/nas/baecm/starcraft-vision/data/label/dst",
+        "/workspace/data/label/dst",
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "label", "dst")),
+    ]
+    actual_label_dir = None
+    for d in candidate_label_dirs:
+        if d and os.path.exists(d):
+            actual_label_dir = d
+            break
+
+    if not actual_label_dir:
+        actual_label_dir = label_dir
+
     all_gt = []
     for rep in target_replays:
-        json_path = os.path.join(label_dir, f"{rep}.rep", f"{label_method}.json")
-        if os.path.exists(json_path):
+        rep_clean = str(rep).replace(".rep", "").strip()
+        possible_paths = [
+            os.path.join(actual_label_dir, f"{rep_clean}.rep", f"{label_method}.json"),
+            os.path.join(actual_label_dir, str(rep), f"{label_method}.json"),
+        ]
+        json_path = None
+        for p in possible_paths:
+            if os.path.exists(p):
+                json_path = p
+                break
+
+        if json_path and os.path.exists(json_path):
             with open(json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 if 'annotations' in data:
-                    # GT 어노테이션에도 replay 정보 주입
                     for ann in data['annotations']:
-                        ann['replay'] = f"{rep}.rep"
+                        ann['replay'] = f"{rep_clean}.rep"
                     all_gt.extend(data['annotations'])
     
     if not all_gt:
