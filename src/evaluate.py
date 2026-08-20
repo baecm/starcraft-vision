@@ -96,29 +96,27 @@ def coco_to_kernel_labels(
         ann_ids = coco_gt.getAnnIds(imgIds=image_id)
         anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
 
-        # if no predictions for this image, skip (we cannot evaluate predictor)
+        # if no predictions for this image, assign dummy coordinates for 0.0 IC penalty
         img_preds = preds_by_img.get(image_id, [])
         if len(img_preds) == 0:
-            continue
-
-        # Choose predictor: highest score if available, else first pred
-        if any("score" in p for p in img_preds):
-            best_pred = max(img_preds, key=lambda q: float(q.get("score", 0.0)))
+            dummy_vx, dummy_vy = -9999.0, -9999.0
+            agent0 = [{"vpx": dummy_vx, "vpy": dummy_vy}]
         else:
-            best_pred = img_preds[0]
+            # Choose predictor: highest score if available, else first pred
+            if any("score" in p for p in img_preds):
+                best_pred = max(img_preds, key=lambda q: float(q.get("score", 0.0)))
+            else:
+                best_pred = img_preds[0]
 
-        # compute centroid pixel coords for predictor
-        pcx, pcy = _centroid_from_coco_ann(best_pred, img_w, img_h)
+            # compute centroid pixel coords for predictor
+            pcx, pcy = _centroid_from_coco_ann(best_pred, img_w, img_h)
 
-        # convert pixel centroid to 'vpx','vpy' (map-scale coords) so that
-        # the kernel-mapping recovers px,py consistently:
-        # original mapping: px = round(vx/max_x * (width - x_len))
-        # invert: vx = px / (width - x_len) * max_x
-        vx = float(pcx) / max(1, (img_w - x_len)) * max_x
-        vy = float(pcy) / max(1, (img_h - y_len)) * max_y
+            # convert pixel centroid to 'vpx','vpy' (map-scale coords)
+            vx = float(pcx) / max(1, (img_w - x_len)) * max_x
+            vy = float(pcy) / max(1, (img_h - y_len)) * max_y
 
-        # agent0: predictor with single frame
-        agent0 = [{"vpx": vx, "vpy": vy}]
+            # agent0: predictor with single frame
+            agent0 = [{"vpx": vx, "vpy": vy}]
 
         # agents 1..: one per GT annotation (centroid mapped similarly)
         ref_agents: List[List[Dict[str, float]]] = []
