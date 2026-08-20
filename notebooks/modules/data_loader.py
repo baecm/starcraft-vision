@@ -138,10 +138,10 @@ def load_ground_truth(label_dir, target_replays, label_method):
     return df
 
 
-def load_experiment_json(predictions_dir, pattern, epoch, label_method):
+def load_experiment_json(predictions_dir, pattern, epoch, label_method, target_replay=None):
     """
     JSON 파일 내의 annotations 리스트를 파싱하여 DataFrame으로 반환합니다.
-    (동일 패턴의 중복 모델 폴더가 여러 개 발견될 경우 가장 최근 실행 폴더 1개만 자동 선택합니다)
+    target_replay가 제공되면 해당 리플레이 JSON 1개만 고속 직격 로드합니다.
     """
     base_dirs = [predictions_dir]
     if os.path.exists("/mnt/nas/baecm/starcraft-vision/predictions") and "/mnt/nas/baecm/starcraft-vision/predictions" not in base_dirs:
@@ -164,7 +164,20 @@ def load_experiment_json(predictions_dir, pattern, epoch, label_method):
     matching_dirs = sorted(list(set(matching_dirs)), key=os.path.getmtime, reverse=True)
     target_dir = matching_dirs[0]
 
-    json_files = glob.glob(os.path.join(target_dir, f"model_{epoch:03d}", "*.rep", f"{label_method}.json"))
+    if target_replay is not None:
+        if isinstance(target_replay, (list, tuple, set)):
+            target_reps = [str(r).replace(".rep", "").strip() + ".rep" for r in target_replay]
+        else:
+            target_reps = [str(target_replay).replace(".rep", "").strip() + ".rep"]
+        
+        json_files = []
+        for r_name in target_reps:
+            jp = os.path.join(target_dir, f"model_{epoch:03d}", r_name, f"{label_method}.json")
+            if os.path.exists(jp):
+                json_files.append(jp)
+    else:
+        json_files = glob.glob(os.path.join(target_dir, f"model_{epoch:03d}", "*.rep", f"{label_method}.json"))
+
     if not json_files:
         return pd.DataFrame()
 
