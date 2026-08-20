@@ -120,6 +120,11 @@ def load_experiment_json(predictions_dir, pattern, epoch, label_method):
     """
     search_path = os.path.join(predictions_dir, pattern, f"model_{epoch:03d}", "*.rep")
     json_files = glob.glob(f"{search_path}/{label_method}.json")
+
+    if not json_files and os.path.exists("/mnt/nas/baecm/starcraft-vision/predictions"):
+        alt_search_path = os.path.join("/mnt/nas/baecm/starcraft-vision/predictions", pattern, f"model_{epoch:03d}", "*.rep")
+        json_files = glob.glob(f"{alt_search_path}/{label_method}.json")
+
     if not json_files:
         return pd.DataFrame()
     

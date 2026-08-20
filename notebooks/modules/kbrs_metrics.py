@@ -172,6 +172,9 @@ except ImportError:
 
 def build_agent_traces_from_df(gt_df, pred_df, width=128, height=128, max_x=3456.0, max_y=3720.0):
     """Pandas DataFrame을 evaluate.py에서 사용하는 labels_tests 포맷으로 변환합니다."""
+    if pred_df is None or pred_df.empty or 'image_id' not in pred_df.columns:
+        return [], []
+
     # 1. Prediction은 최고 점수(Top-1) 1개만 사용
     pred_top1 = pred_df.sort_values(by=['image_id', 'score'], ascending=[True, False]).groupby('image_id').head(1)
     
