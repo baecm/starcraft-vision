@@ -141,37 +141,44 @@ def load_ground_truth(label_dir, target_replays, label_method):
 def load_experiment_json(predictions_dir, pattern, epoch, label_method):
     """
     JSON 파일 내의 annotations 리스트를 파싱하여 DataFrame으로 반환합니다.
+    (동일 패턴의 중복 모델 폴더가 여러 개 발견될 경우 가장 최근 실행 폴더 1개만 자동 선택합니다)
     """
-    search_path = os.path.join(predictions_dir, pattern, f"model_{epoch:03d}", "*.rep")
-    json_files = glob.glob(f"{search_path}/{label_method}.json")
+    base_dirs = [predictions_dir]
+    if os.path.exists("/mnt/nas/baecm/starcraft-vision/predictions") and "/mnt/nas/baecm/starcraft-vision/predictions" not in base_dirs:
+        base_dirs.append("/mnt/nas/baecm/starcraft-vision/predictions")
 
-    if not json_files and os.path.exists("/mnt/nas/baecm/starcraft-vision/predictions"):
-        alt_search_path = os.path.join("/mnt/nas/baecm/starcraft-vision/predictions", pattern, f"model_{epoch:03d}", "*.rep")
-        json_files = glob.glob(f"{alt_search_path}/{label_method}.json")
+    matching_dirs = []
+    for base_d in base_dirs:
+        if not os.path.exists(base_d):
+            continue
+        matched = glob.glob(os.path.join(base_d, pattern))
+        for m in matched:
+            epoch_path = os.path.join(m, f"model_{epoch:03d}")
+            if os.path.isdir(epoch_path):
+                matching_dirs.append(m)
 
+    if not matching_dirs:
+        return pd.DataFrame()
+
+    # 중복 모델 폴더가 여러 개 있으면 가장 최근(마지막 수정 시각) 폴더 1개만 선택!
+    matching_dirs = sorted(list(set(matching_dirs)), key=os.path.getmtime, reverse=True)
+    target_dir = matching_dirs[0]
+
+    json_files = glob.glob(os.path.join(target_dir, f"model_{epoch:03d}", "*.rep", f"{label_method}.json"))
     if not json_files:
         return pd.DataFrame()
-    
+
     all_annotations = []
     for f in json_files:
-        # 1. 파일 경로에서 리플레이 이름 추출 (예: '212.rep')
         replay_name = os.path.basename(os.path.dirname(f))
-        
         with open(f, 'r', encoding='utf-8') as json_file:
             data = json.load(json_file)
             if 'annotations' in data:
-                # 2. 각 어노테이션에 replay 정보 강제 주입
                 for ann in data['annotations']:
                     ann['replay'] = replay_name
                 all_annotations.extend(data['annotations'])
-                
-    if not all_annotations:
-        return pd.DataFrame()
 
-    df = pd.DataFrame(all_annotations)
-    
-    # 3. 중복 처리 로직 삭제 (Top-N이나 다중 GT를 보존하기 위해 원본 그대로 반환)
-    return df
+    return pd.DataFrame(all_annotations) if all_annotations else pd.DataFrame()
 
 
 def prepare_merged_dataframe(gt_df, vanilla_df, kbrs_df):
