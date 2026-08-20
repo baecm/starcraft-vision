@@ -94,7 +94,8 @@ services:
       - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
       - ${DATA_DIR}:/workspace/data
       - ${SRC_DIR}:/workspace/src
-      - ./notebooks:/workspace/notebooks
+      - ${NOTEBOOKS_DIR:-../notebooks}:/workspace/notebooks
+      - ../scripts:/workspace/scripts
       - ${MODELS_DIR}:/workspace/models
       - ${PREDICTIONS_DIR}:/workspace/predictions
       - ${RESULTS_DIR}:/workspace/results
