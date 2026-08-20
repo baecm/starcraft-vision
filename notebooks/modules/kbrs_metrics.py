@@ -170,7 +170,7 @@ except ImportError:
     from metrics import eval_intersection_run
 
 
-def build_agent_traces_from_df(gt_df, pred_df, width=128, height=128, max_x=3456.0, max_y=3720.0):
+def build_agent_traces_from_df(gt_df, pred_df, width=128, height=128, max_x=3456.0, max_y=3720.0, skip_missing=False):
     """Pandas DataFrame을 evaluate.py에서 사용하는 labels_tests 포맷으로 변환합니다."""
     if pred_df is None or pred_df.empty or 'image_id' not in pred_df.columns:
         return [], []
@@ -189,6 +189,8 @@ def build_agent_traces_from_df(gt_df, pred_df, width=128, height=128, max_x=3456
         preds = pred_grouped.get(iid, [])
         
         if len(preds) == 0:
+            if skip_missing:
+                continue
             # 예측 실패 프레임: 화면 밖 더미 좌표 부여 -> IC = 0.0 페널티 공정 반영
             dummy_vx, dummy_vy = -9999.0, -9999.0
             agent0 = [{"vpx": dummy_vx, "vpy": dummy_vy}]
@@ -218,9 +220,9 @@ def build_agent_traces_from_df(gt_df, pred_df, width=128, height=128, max_x=3456
     return labels_tests, image_ids
 
 
-def get_official_metrics_df(gt_df, pred_df):
+def get_official_metrics_df(gt_df, pred_df, skip_missing=False):
     """custom_evaluator를 실행하여 공식 IC 지표가 포함된 DataFrame을 반환합니다."""
-    labels_tests, image_ids = build_agent_traces_from_df(gt_df, pred_df)
+    labels_tests, image_ids = build_agent_traces_from_df(gt_df, pred_df, skip_missing=skip_missing)
     
     if not labels_tests:
         return pd.DataFrame()
@@ -231,6 +233,11 @@ def get_official_metrics_df(gt_df, pred_df):
         width=128, height=128,
         max_x=3456.0, max_y=3720.0
     )
+
+
+def get_hit_only_metrics_df(gt_df, pred_df):
+    """예측이 존재하는 프레임만 조건부 선택하여 지표(Conditional Hit-Only Metrics)를 반환합니다."""
+    return get_official_metrics_df(gt_df, pred_df, skip_missing=True)
     
     results = []
     for iid, img_ir in zip(image_ids, per_image):

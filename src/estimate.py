@@ -497,11 +497,11 @@ def compute_ic_for_replay(
     args: argparse.Namespace,
     preds_all: Optional[List[dict]] = None,
     model_tag: Optional[str] = None,
+    skip_missing_preds: bool = False,
 ) -> Dict[str, float]:
     """
     IC metric을 replay 단위로 계산.
-    기존 evaluate.py 의 eval_kernel_from_coco 를 그대로 사용.
-    중간 과정을 로그로 찍어 준다.
+    skip_missing_preds가 True이면 예측이 존재하는 프레임만 조건부 평가합니다.
     """
     if isinstance(args.ic_kernel, str):
         ic_x_len, ic_y_len = map(int, args.ic_kernel.split(","))
@@ -530,7 +530,7 @@ def compute_ic_for_replay(
         f"[IC replay={replay_id}] start "
         f"(mode={mode}, kernel={ic_x_len}x{ic_y_len}, "
         f"grid={ic_grid_w}x{ic_grid_h}, maxcoord=({ic_max_x},{ic_max_y}), "
-        f"num_images={num_images}, num_preds={num_preds})"
+        f"num_images={num_images}, num_preds={num_preds}, skip_missing={skip_missing_preds})"
     )
 
     # ------------------------------------------------------------
@@ -568,6 +568,7 @@ def compute_ic_for_replay(
                 kernel=(ic_x_len, ic_y_len),
                 grid=(ic_grid_w, ic_grid_h),
                 maxcoord=(ic_max_x, ic_max_y),
+                skip_missing_preds=skip_missing_preds,
             )
 
             mean_ir = agg_ic.get("mean_ir", float("nan"))
@@ -609,6 +610,7 @@ def compute_ic_for_replay(
             kernel=(ic_x_len, ic_y_len),
             grid=(ic_grid_w, ic_grid_h),
             maxcoord=(ic_max_x, ic_max_y),
+            skip_missing_preds=skip_missing_preds,
         )
 
         # agg_ic에는 mean_ir / median_ir / coverage_any / multi_coverage / num_images 등이 들어 있음

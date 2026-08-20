@@ -65,19 +65,12 @@ def coco_to_kernel_labels(
     grid_h: int,
     max_x: float,
     max_y: float,
+    skip_missing_preds: bool = False,
 ) -> List[List[List[Dict[str, float]]]]:
     """
     Convert COCO-style GT + preds into agent-trace tests for kernel-based evaluator.
-
-    Args:
-        coco_gt: COCO object loaded from GT json
-        preds_list: list of detection dicts (COCO results), each with 'image_id',
-                    'bbox' or 'segmentation', optional 'score'
-        x_len,y_len,grid_w,grid_h,max_x,max_y: mapping parameters
-
-    Returns:
-        tests: list of tests; each test is list of agents;
-               each agent is a list of frames(dict with vpx/vpy)
+    If skip_missing_preds is True, images without predictions are skipped (Hit-Only Metric).
+    Otherwise, missing predictions receive dummy coordinates for 0.0 IC penalty (Overall Metric).
     """
     # group preds by image_id
     preds_by_img: Dict[int, List[dict]] = {}
@@ -96,9 +89,11 @@ def coco_to_kernel_labels(
         ann_ids = coco_gt.getAnnIds(imgIds=image_id)
         anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
 
-        # if no predictions for this image, assign dummy coordinates for 0.0 IC penalty
+        # handle missing predictions
         img_preds = preds_by_img.get(image_id, [])
         if len(img_preds) == 0:
+            if skip_missing_preds:
+                continue
             dummy_vx, dummy_vy = -9999.0, -9999.0
             agent0 = [{"vpx": dummy_vx, "vpy": dummy_vy}]
         else:
@@ -150,6 +145,7 @@ def eval_kernel_from_coco(
     kernel: Tuple[int, int] = (20, 12),
     grid: Tuple[int, int] = (128, 128),
     maxcoord: Tuple[float, float] = (3456.0, 3720.0),
+    skip_missing_preds: bool = False,
 ) -> Tuple[Dict[str, Any], List[ImageIR], Dict[str, float]]:
     """
     Convenience wrapper for train/eval code.
@@ -172,6 +168,7 @@ def eval_kernel_from_coco(
         grid_h=height,
         max_x=max_x,
         max_y=max_y,
+        skip_missing_preds=skip_missing_preds,
     )
 
     per_image, agg = eval_intersection_run(

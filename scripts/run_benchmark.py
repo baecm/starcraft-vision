@@ -387,6 +387,7 @@ def run_benchmark():
 
     # 4. Single-Region Finding Metrics (IC@000, IC@030, IC@050, IC_multi, IC_ratio, Median IR, P90 IR, KBRS)
     single_region_metrics = {}
+    ic_rows_hit_by_replay = {}
     if args.task in ["single", "all"]:
         from estimate import compute_ic_for_replay, compute_kbrs_for_replay, load_coco_gt, load_coco_preds
         ic_rows = []
@@ -407,6 +408,7 @@ def run_benchmark():
                 for dets in preds_by_img.values():
                     preds_all.extend(dets)
 
+                # 1) Official Overall IC (includes 0.0 penalty for missing prediction frames)
                 ic_row = compute_ic_for_replay(
                     replay_id=replay_id,
                     mode="model",
@@ -414,9 +416,22 @@ def run_benchmark():
                     args=args,
                     preds_all=preds_all if preds_all else None,
                     model_tag=f"{args.model_name}_e{args.epoch}",
+                    skip_missing_preds=False,
                 )
                 ic_rows.append(ic_row)
                 ic_rows_by_replay[replay_id] = ic_row
+
+                # 2) Conditional Hit-Only IC (skips missing prediction frames)
+                ic_row_hit = compute_ic_for_replay(
+                    replay_id=replay_id,
+                    mode="model",
+                    coco_gt=coco_gt,
+                    args=args,
+                    preds_all=preds_all if preds_all else None,
+                    model_tag=f"{args.model_name}_e{args.epoch}_hit",
+                    skip_missing_preds=True,
+                )
+                ic_rows_hit_by_replay[replay_id] = ic_row_hit
 
                 d, c, m, _ = compute_kbrs_for_replay(
                     replay_id=replay_id,
@@ -450,9 +465,9 @@ def run_benchmark():
                 "center_jitter": safe_mean("center_jitter"),
                 "target_persistence": safe_mean("target_persistence"),
                 "inter_region_dist": safe_mean("inter_region_dist"),
-                "kbrs_density": float(np.nanmean(kbrs_densities)) if kbrs_densities else float("nan"),
-                "kbrs_centeredness": float(np.nanmean(kbrs_centereds)) if kbrs_centereds else float("nan"),
-                "kbrs_mixture": float(np.nanmean(kbrs_mixtures)) if kbrs_mixtures else float("nan"),
+                "kbrs_density": float(np.mean(kbrs_densities)) if kbrs_densities else float("nan"),
+                "kbrs_centeredness": float(np.mean(kbrs_centereds)) if kbrs_centereds else float("nan"),
+                "kbrs_mixture": float(np.mean(kbrs_mixtures)) if kbrs_mixtures else float("nan"),
             }
             base_avg.update(single_region_metrics)
 
@@ -544,56 +559,64 @@ def run_benchmark():
     with open(args.output_json, "w") as f:
         json.dump(summary_data, f, indent=4)
 
-    # Save output CSV (Replay-by-Replay rows + Mean row)
+    # Save output CSV (1. Official Overall CSV & 2. Hit-Only Conditional CSV)
     import pandas as pd
     output_csv = args.output_json.replace(".json", ".csv")
+    output_hit_csv = args.output_json.replace(".json", "_hit_only.csv")
 
-    csv_rows = []
-    for rid in map(str, args.replays):
-        r_row = {
-            "replay_id": rid,
+    def build_csv_dataframe(ic_mapping):
+        csv_rows = []
+        for rid in map(str, args.replays):
+            r_row = {
+                "replay_id": rid,
+                "model_name": args.model_name,
+                "epoch": args.epoch,
+                "task": args.task,
+            }
+            if rid in base_metrics_by_replay and len(base_metrics_by_replay[rid]) > 0:
+                for k in keys:
+                    r_row[k] = float(np.mean([m[k] for m in base_metrics_by_replay[rid]]))
+            else:
+                for k in keys:
+                    r_row[k] = float("nan")
+
+            if rid in ic_mapping:
+                ic_dict = ic_mapping[rid]
+                for ic_k in ["ic@000", "ic@030", "ic@050", "top1_ic@050", "ic_multi", "ic_ratio", "median_ir", "p90_ir", "center_jitter", "target_persistence", "inter_region_dist"]:
+                    if ic_k in ic_dict:
+                        r_row[ic_k] = ic_dict[ic_k]
+            if rid in kbrs_by_replay:
+                d, c, m = kbrs_by_replay[rid]
+                r_row["kbrs_density"] = d
+                r_row["kbrs_centeredness"] = c
+                r_row["kbrs_mixture"] = m
+
+            csv_rows.append(r_row)
+
+        mean_row = {
+            "replay_id": "Mean",
             "model_name": args.model_name,
             "epoch": args.epoch,
             "task": args.task,
         }
-        if rid in base_metrics_by_replay and len(base_metrics_by_replay[rid]) > 0:
-            for k in keys:
-                r_row[k] = float(np.mean([m[k] for m in base_metrics_by_replay[rid]]))
-        else:
-            for k in keys:
-                r_row[k] = float("nan")
+        if csv_rows:
+            col_names = [c for c in csv_rows[0].keys() if c not in ["replay_id", "model_name", "epoch", "task"]]
+            for col in col_names:
+                vals = [r[col] for r in csv_rows if col in r and not np.isnan(r[col])]
+                mean_row[col] = float(np.mean(vals)) if vals else float("nan")
 
-        if rid in ic_rows_by_replay:
-            ic_dict = ic_rows_by_replay[rid]
-            for ic_k in ["ic@000", "ic@030", "ic@050", "top1_ic@050", "ic_multi", "ic_ratio", "median_ir", "p90_ir", "center_jitter", "target_persistence", "inter_region_dist"]:
-                if ic_k in ic_dict:
-                    r_row[ic_k] = ic_dict[ic_k]
-        if rid in kbrs_by_replay:
-            d, c, m = kbrs_by_replay[rid]
-            r_row["kbrs_density"] = d
-            r_row["kbrs_centeredness"] = c
-            r_row["kbrs_mixture"] = m
+        csv_rows.append(mean_row)
+        return pd.DataFrame(csv_rows)
 
-        csv_rows.append(r_row)
+    df_overall = build_csv_dataframe(ic_rows_by_replay)
+    df_overall.to_csv(output_csv, index=False)
 
-    mean_row = {
-        "replay_id": "Mean",
-        "model_name": args.model_name,
-        "epoch": args.epoch,
-        "task": args.task,
-    }
-    if csv_rows:
-        col_names = [c for c in csv_rows[0].keys() if c not in ["replay_id", "model_name", "epoch", "task"]]
-        for col in col_names:
-            vals = [r[col] for r in csv_rows if col in r and not np.isnan(r[col])]
-            mean_row[col] = float(np.mean(vals)) if vals else float("nan")
+    df_hit_only = build_csv_dataframe(ic_rows_hit_by_replay)
+    df_hit_only.to_csv(output_hit_csv, index=False)
 
-    csv_rows.append(mean_row)
-
-    pd.DataFrame(csv_rows).to_csv(output_csv, index=False)
-
-    print(f"✅ Benchmark Results saved to JSON: {args.output_json}")
-    print(f"✅ Benchmark Results saved to CSV : {output_csv}")
+    print(f"✅ Benchmark Results saved to JSON : {args.output_json}")
+    print(f"✅ Benchmark Results saved to CSV  : {output_csv} (Official Overall)")
+    print(f"✅ Benchmark Results saved to CSV  : {output_hit_csv} (Hit-Only Conditional)")
 
 
 if __name__ == "__main__":
