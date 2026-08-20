@@ -147,20 +147,27 @@ def load_experiment_json(predictions_dir, pattern, epoch, label_method, target_r
     if os.path.exists("/mnt/nas/baecm/starcraft-vision/predictions") and "/mnt/nas/baecm/starcraft-vision/predictions" not in base_dirs:
         base_dirs.append("/mnt/nas/baecm/starcraft-vision/predictions")
 
+    clean_pattern = pattern.strip("*")
     matching_dirs = []
     for base_d in base_dirs:
         if not os.path.exists(base_d):
             continue
-        matched = glob.glob(os.path.join(base_d, pattern))
-        for m in matched:
-            epoch_path = os.path.join(m, f"model_{epoch:03d}")
-            if os.path.isdir(epoch_path):
-                matching_dirs.append(m)
+
+        # 1. Direct path check (5ms ultra-fast bypass)
+        direct_path = os.path.join(base_d, clean_pattern)
+        if os.path.isdir(direct_path) and os.path.isdir(os.path.join(direct_path, f"model_{epoch:03d}")):
+            matching_dirs.append(direct_path)
+        else:
+            # 2. Glob fallback only if pattern is a wildcard
+            matched = glob.glob(os.path.join(base_d, pattern))
+            for m in matched:
+                epoch_path = os.path.join(m, f"model_{epoch:03d}")
+                if os.path.isdir(epoch_path):
+                    matching_dirs.append(m)
 
     if not matching_dirs:
         return pd.DataFrame()
 
-    # 중복 모델 폴더가 여러 개 있으면 가장 최근(마지막 수정 시각) 폴더 1개만 선택!
     matching_dirs = sorted(list(set(matching_dirs)), key=os.path.getmtime, reverse=True)
     target_dir = matching_dirs[0]
 
