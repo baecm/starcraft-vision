@@ -12,8 +12,9 @@ except ModuleNotFoundError:
 from .backbones import (
     CenterNetBackbone,
     DeformableDETRBackbone,
+    ProbabilisticVideoDETR,
     build_maskrcnn_backbone,
-    build_rtdetr_backbone
+    build_rtdetr_backbone,
 )
 from .plugins import KBRSHook
 
@@ -90,6 +91,22 @@ def build_model(args: Any) -> nn.Module:
             loss_weights=loss_weights
         )
 
+    elif model_name in ["probabilistic_video_detr", "video_detr", "deformable_video_detr_cvae"]:
+        per_frame_c = getattr(args, "single_frame_channels", None)
+        if per_frame_c is None:
+            per_frame_c = in_channels // max(1, window_size) if in_channels > window_size else in_channels
+        model = ProbabilisticVideoDETR(
+            in_channels=per_frame_c,
+            feat_dim=getattr(args, "feat_dim", 128),
+            num_raters=getattr(args, "num_raters", 5),
+            latent_dim=getattr(args, "latent_dim", 64),
+            num_queries=getattr(args, "num_queries", 3),
+            num_heads=getattr(args, "num_heads", 8),
+            num_decoder_layers=getattr(args, "num_decoder_layers", 3),
+            grid_size=getattr(args, "grid_size", (128, 128)),
+            use_cvae=getattr(args, "use_cvae", True),
+        )
+
     elif model_name in ["deformable_detr", "deformable_video_detr", "deformable_video_detr_probabilistic"]:
         model = DeformableDETRBackbone(
             num_classes=num_classes,
@@ -101,7 +118,7 @@ def build_model(args: Any) -> nn.Module:
         )
 
     else:
-        raise ValueError(f"Unknown model_name: {model_name}. Supported: 'maskrcnn', 'rtdetr', 'centernet', 'deformable_detr'")
+        raise ValueError(f"Unknown model_name: {model_name}. Supported: 'maskrcnn', 'rtdetr', 'centernet', 'deformable_detr', 'probabilistic_video_detr'")
 
     if use_kbrs:
         kbrs_params = dict(kbrs_params or {})

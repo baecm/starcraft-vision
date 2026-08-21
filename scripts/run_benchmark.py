@@ -30,7 +30,7 @@ if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
 from metrics.evaluator import MultiRegionEvaluator, box_cxcywh_to_xyxy
-from models.probabilistic_video_detr import ProbabilisticVideoDETR
+from models import build_model, ProbabilisticVideoDETR
 from dataset.custom_penn_fudan import CustomPennFudanDataset
 
 
@@ -270,7 +270,28 @@ def run_benchmark():
 
     # 2. Load Models
     print(f"[*] Loading Target Model: {args.model_name}...")
-    baseline_model = BaselineMaskRCNNViewport(in_channels=single_c, num_queries=3).to(device)
+    from types import SimpleNamespace
+
+    is_kbrs = "kbrs" in args.model_name.lower()
+    base_arch = args.model_name.lower().replace("_kbrs", "").replace("_baseline", "")
+    if base_arch not in ["maskrcnn", "centernet", "deformable_detr", "rtdetr", "probabilistic_video_detr"]:
+        base_arch = "maskrcnn"
+
+    baseline_args = SimpleNamespace(
+        model_name=base_arch,
+        use_kbrs=is_kbrs,
+        num_classes=2,
+        in_channels=total_c,
+        single_frame_channels=single_c,
+        window_size=args.window_size,
+        num_queries=3,
+        use_probabilistic_query=False,
+    )
+    try:
+        baseline_model = build_model(baseline_args).to(device)
+    except Exception as e:
+        print(f"[*] Fallback to BaselineMaskRCNNViewport: {e}")
+        baseline_model = BaselineMaskRCNNViewport(in_channels=single_c, num_queries=3).to(device)
 
     ckpt_path = args.checkpoint
     if not ckpt_path:
@@ -289,14 +310,19 @@ def run_benchmark():
             print(f"[!] Checkpoint loading note: {e}")
 
     print("[*] Initializing Proposed Architecture (Deformable Video DETR + CVAE Latent Query)...")
-    proposed_model = ProbabilisticVideoDETR(
-        in_channels=single_c,
+    proposed_args = SimpleNamespace(
+        model_name="probabilistic_video_detr",
+        in_channels=total_c,
+        single_frame_channels=single_c,
+        window_size=args.window_size,
         feat_dim=128,
         num_raters=5,
         latent_dim=64,
         num_queries=3,
         grid_size=(128, 128),
-    ).to(device)
+        use_cvae=True,
+    )
+    proposed_model = build_model(proposed_args).to(device)
 
     proposed_model.eval()
     baseline_model.eval()

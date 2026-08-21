@@ -29,7 +29,7 @@ if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
 from src.metrics.evaluator import MultiRegionEvaluator, box_cxcywh_to_xyxy
-from src.models.probabilistic_video_detr import ProbabilisticVideoDETR
+from src.models import build_model, ProbabilisticVideoDETR
 from src.losses.unified_losses import UnifiedEnergyLoss, compute_spatial_entropy_map
 
 
@@ -195,14 +195,20 @@ def run_benchmark():
 
     # 2. Instantiate Models
     print("[*] Building Proposed Architecture (Deformable Video DETR + CVAE Latent Query)...")
-    proposed_model = ProbabilisticVideoDETR(
+    from types import SimpleNamespace
+    proposed_args = SimpleNamespace(
+        model_name="probabilistic_video_detr",
         in_channels=in_channels,
+        single_frame_channels=in_channels,
+        window_size=seq_len,
         feat_dim=128,
         num_raters=5,
         latent_dim=64,
         num_queries=num_queries,
         grid_size=grid_size,
-    ).to(device)
+        use_cvae=True,
+    )
+    proposed_model = build_model(proposed_args).to(device)
 
     print("[*] Building Baseline Architecture (Frame-by-Frame Detection + Top-K Viewports)...")
     baseline_model = BaselineMaskRCNNViewport(

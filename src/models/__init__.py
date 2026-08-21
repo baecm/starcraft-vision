@@ -1,4 +1,3 @@
-# src/models/__init__.py
 from .factory import build_model, KBRSWrapper
 from .backbones import (
     CenterNetBackbone,
@@ -6,18 +5,17 @@ from .backbones import (
     BaseRTDETR,
     build_maskrcnn_backbone,
     build_rtdetr_backbone,
+    SpatioTemporalEncoder,
+    DeformableVideoDETRDecoder,
+    ProbabilisticVideoDETR,
 )
 from .plugins import (
     KBRSConvScorer,
     KBRSHook,
+    evaluate_kbrs_score,
     DensityPeakHead,
     ProbabilisticLatentQuery,
-)
-from .probabilistic_video_detr import (
-    ProbabilisticVideoDETR,
-    SpatioTemporalEncoder,
     CVAELatentQueryInjector,
-    DeformableVideoDETRDecoder,
 )
 
 __all__ = [
@@ -28,12 +26,14 @@ __all__ = [
     "BaseRTDETR",
     "build_maskrcnn_backbone",
     "build_rtdetr_backbone",
+    "SpatioTemporalEncoder",
+    "DeformableVideoDETRDecoder",
+    "ProbabilisticVideoDETR",
     "KBRSConvScorer",
     "KBRSHook",
+    "evaluate_kbrs_score",
     "DensityPeakHead",
     "ProbabilisticLatentQuery",
-    "ProbabilisticVideoDETR",
-    "SpatioTemporalEncoder",
     "CVAELatentQueryInjector",
-    "DeformableVideoDETRDecoder",
 ]
+
