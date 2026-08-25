@@ -141,8 +141,8 @@ def parse_args():
     parser.add_argument(
         "--window-size",
         type=int,
-        default=4,
-        help="Spatio-temporal window size T",
+        default=None,
+        help="Spatio-temporal window size T (default: auto-detected from model_name or 4)",
     )
     parser.add_argument(
         "--num-samples",
@@ -190,6 +190,14 @@ def parse_args():
 def run_benchmark():
     args = parse_args()
 
+    if args.window_size is None:
+        if "win1" in args.model_name.lower():
+            args.window_size = 1
+        elif "win4" in args.model_name.lower():
+            args.window_size = 4
+        else:
+            args.window_size = 4
+
     if not args.output_json:
         bench_dir = "/workspace/results/benchmark"
         os.makedirs(bench_dir, exist_ok=True)
@@ -198,6 +206,7 @@ def run_benchmark():
     print("=" * 85)
     print(f"🚀 Running Evaluation Benchmark (Task Mode: {args.task.upper()})")
     print(f"[*] Target Model    : {args.model_name} (Epoch {args.epoch})")
+    print(f"[*] Window Size     : {args.window_size}")
     print(f"[*] Output Path     : {args.output_json}")
     print(f"[*] Target Task     : {args.task} (single: Single-Region, multi: Multi-Region, all: Both)")
     print(f"[*] Target Replays  : {args.replays}")
@@ -272,9 +281,18 @@ def run_benchmark():
     print(f"[*] Loading Target Model: {args.model_name}...")
     from types import SimpleNamespace
 
-    is_kbrs = "kbrs" in args.model_name.lower()
-    base_arch = args.model_name.lower().replace("_kbrs", "").replace("_baseline", "")
-    if base_arch not in ["maskrcnn", "centernet", "deformable_detr", "rtdetr", "probabilistic_video_detr"]:
+    model_lower = args.model_name.lower()
+    is_kbrs = "kbrs" in model_lower
+
+    if "centernet" in model_lower:
+        base_arch = "centernet"
+    elif "deformable" in model_lower or ("detr" in model_lower and "rtdetr" not in model_lower and "video_detr" not in model_lower):
+        base_arch = "deformable_detr"
+    elif "rtdetr" in model_lower:
+        base_arch = "rtdetr"
+    elif "probabilistic" in model_lower or "video_detr" in model_lower:
+        base_arch = "probabilistic_video_detr"
+    else:
         base_arch = "maskrcnn"
 
     baseline_args = SimpleNamespace(
@@ -375,9 +393,52 @@ def run_benchmark():
             events_seq = [np.array(gt_events, dtype=np.float32) if gt_events else np.empty((0, 2), dtype=np.float32) for _ in range(args.window_size)]
 
             prop_out = proposed_model(x_seq, use_posterior=False)
-            base_out = baseline_model(x_seq)
 
-            def extract_boxes_pixel(pred_boxes_tensor: torch.Tensor) -> List[np.ndarray]:
+            # Baseline sequence forward
+            if isinstance(baseline_model, (ProbabilisticVideoDETR, BaselineMaskRCNNViewport)):
+                base_out = baseline_model(x_seq)
+                def extract_boxes_pixel(pred_boxes_tensor: torch.Tensor) -> List[np.ndarray]:
+                    boxes_np = pred_boxes_tensor[0].cpu().numpy()
+                    seq_pixel = []
+                    for t in range(args.window_size):
+                        b_norm = boxes_np[t]
+                        cx, cy = b_norm[:, 0] * W, b_norm[:, 1] * H
+                        w, h = b_norm[:, 2] * W, b_norm[:, 3] * H
+                        b_cxcywh = np.stack([cx, cy, w, h], axis=-1)
+                        b_xyxy = box_cxcywh_to_xyxy(b_cxcywh)
+                        seq_pixel.append(b_xyxy)
+                    return seq_pixel
+                base_boxes = extract_boxes_pixel(base_out["pred_boxes"])
+            else:
+                # Frame-by-frame 2D Detector (Mask R-CNN, CenterNet, Deformable DETR, RT-DETR)
+                base_boxes = []
+                for t in range(args.window_size):
+                    frame_c = x_seq[0, t]  # (C, H, W)
+                    try:
+                        if base_arch == "centernet":
+                            dets = baseline_model(frame_c.unsqueeze(0))
+                        else:
+                            dets = baseline_model([frame_c])
+                        
+                        if isinstance(dets, list) and len(dets) > 0 and "boxes" in dets[0]:
+                            b = dets[0]["boxes"].detach().cpu().numpy()
+                            s = dets[0]["scores"].detach().cpu().numpy() if "scores" in dets[0] else np.ones(len(b))
+                            if len(b) > 0:
+                                top_idx = np.argsort(-s)[:3]
+                                top_b = b[top_idx]
+                                # pad to 3 viewports if needed
+                                if len(top_b) < 3:
+                                    pad = np.repeat(top_b[:1], 3 - len(top_b), axis=0) if len(top_b) > 0 else np.zeros((3, 4))
+                                    top_b = np.concatenate([top_b, pad], axis=0)
+                                base_boxes.append(top_b)
+                            else:
+                                base_boxes.append(np.zeros((3, 4), dtype=np.float32))
+                        else:
+                            base_boxes.append(np.zeros((3, 4), dtype=np.float32))
+                    except Exception:
+                        base_boxes.append(np.zeros((3, 4), dtype=np.float32))
+
+            def extract_prop_boxes(pred_boxes_tensor: torch.Tensor) -> List[np.ndarray]:
                 boxes_np = pred_boxes_tensor[0].cpu().numpy()
                 seq_pixel = []
                 for t in range(args.window_size):
@@ -389,8 +450,7 @@ def run_benchmark():
                     seq_pixel.append(b_xyxy)
                 return seq_pixel
 
-            prop_boxes = extract_boxes_pixel(prop_out["pred_boxes"])
-            base_boxes = extract_boxes_pixel(base_out["pred_boxes"])
+            prop_boxes = extract_prop_boxes(prop_out["pred_boxes"])
 
             p_m = evaluator.evaluate_sequence(
                 viewports_seq=prop_boxes,
