@@ -619,11 +619,21 @@ def main():
         run_tag=args.run_tag,
     )
 
-    print("\n=== Intersection & Kernel Metrics Summary ===")
+    from utils.report import ReportBlock, print_section_header
+
+    print_section_header("Intersection & Kernel Metrics Summary")
+
+    cols = list(all_rows[0].keys())
+    rb = ReportBlock(
+        title="Kernel IC Metrics (per prediction)",
+        columns=cols,
+        aligns=["left"] + ["right"] * (len(cols) - 1),
+    )
     for row in all_rows:
-        print(row)
-    print(f"\nSaved summary CSV : {csv_path}")
-    print(f"\nSaved summary JSON : {json_path}")
+        rb.add_row(*[row.get(c) for c in cols])
+    rb.add_note(f"Summary CSV  : {csv_path}")
+    rb.add_note(f"Summary JSON : {json_path}")
+    rb.print()
 
 
 if __name__ == "__main__":

@@ -568,77 +568,73 @@ def run_benchmark():
             base_avg.update(single_region_metrics)
 
     # 5. Print Summary Results Table
+    from utils.report import ReportBlock, print_section_header
+
     model_disp_name = f"{args.model_name} (e{args.epoch})"
-    print("\n" + "=" * 85)
-    print(f"📊 EVALUATION BENCHMARK RESULTS (Task Mode: {args.task.upper()})")
-    print("=" * 85)
+    print_section_header(f"EVALUATION BENCHMARK RESULTS (Task Mode: {args.task.upper()})")
+
+    def _imp(base_v: float, prop_v: float, lower_is_better: bool) -> str:
+        if lower_is_better:
+            imp = ((base_v - prop_v) / max(1e-5, abs(base_v))) * 100.0
+        else:
+            imp = ((prop_v - base_v) / max(1e-5, abs(base_v))) * 100.0
+        return f"{imp:+.2f}%"
 
     if args.compare_proposed:
-        print(f"{'Evaluation Metric':<32} | {model_disp_name:<20} | {'Proposed Video DETR+CVAE':<22} | {'Improvement':<10}")
-        print("-" * 85)
-
+        rb = ReportBlock(
+            title=f"Comparison: {model_disp_name} vs Proposed Video DETR+CVAE",
+            columns=["metric", "direction", model_disp_name, "Proposed", "Improvement"],
+            aligns=["left", "left", "right", "right", "right"],
+        )
         if args.task in ["multi", "all"]:
-            print(" [ Multi-Region Finding Metrics ]")
-            cwo_imp = ((prop_avg['cwo'] - base_avg['cwo']) / max(1e-5, base_avg['cwo'])) * 100.0
-            print(f"  CWO (Consensus Overlap) ↑       | {base_avg['cwo']:<20.4f} | {prop_avg['cwo']:<22.4f} | {cwo_imp:+.2f}%")
-
-            mcti_imp = ((base_avg['m_cti'] - prop_avg['m_cti']) / max(1e-5, base_avg['m_cti'])) * 100.0
-            print(f"  M-CTI (Camera Thrashing) ↓      | {base_avg['m_cti']:<20.4f} | {prop_avg['m_cti']:<22.4f} | {mcti_imp:+.2f}%")
-
-            jerk_imp = ((base_avg['jerk'] - prop_avg['jerk']) / max(1e-5, base_avg['jerk'])) * 100.0
-            print(f"    ├─ Jerk Penalty ↓             | {base_avg['jerk']:<20.4f} | {prop_avg['jerk']:<22.4f} | {jerk_imp:+.2f}%")
-
-            jump_imp = ((base_avg['jump_rate'] - prop_avg['jump_rate']) / max(1e-5, base_avg['jump_rate'])) * 100.0
-            print(f"    ├─ Jump Teleport Rate ↓       | {base_avg['jump_rate']:<20.4f} | {prop_avg['jump_rate']:<22.4f} | {jump_imp:+.2f}%")
-
-            event_imp = ((prop_avg['event_recall'] - base_avg['event_recall']) / max(1e-5, base_avg['event_recall'])) * 100.0
-            print(f"  Objective Event Recall R_event ↑| {base_avg['event_recall']:<20.4f} | {prop_avg['event_recall']:<22.4f} | {event_imp:+.2f}%")
-
-            overlap_imp = ((base_avg['pairwise_overlap'] - prop_avg['pairwise_overlap']) / max(1e-5, base_avg['pairwise_overlap'])) * 100.0
-            print(f"  Pairwise Overlap (Redundancy) ↓ | {base_avg['pairwise_overlap']:<20.4f} | {prop_avg['pairwise_overlap']:<22.4f} | {overlap_imp:+.2f}%")
-
+            rb.add_row("CWO (Consensus Overlap)", "↑", base_avg['cwo'], prop_avg['cwo'], _imp(base_avg['cwo'], prop_avg['cwo'], False))
+            rb.add_row("M-CTI (Camera Thrashing)", "↓", base_avg['m_cti'], prop_avg['m_cti'], _imp(base_avg['m_cti'], prop_avg['m_cti'], True))
+            rb.add_row("  Jerk Penalty", "↓", base_avg['jerk'], prop_avg['jerk'], _imp(base_avg['jerk'], prop_avg['jerk'], True))
+            rb.add_row("  Jump Teleport Rate", "↓", base_avg['jump_rate'], prop_avg['jump_rate'], _imp(base_avg['jump_rate'], prop_avg['jump_rate'], True))
+            rb.add_row("Objective Event Recall R_event", "↑", base_avg['event_recall'], prop_avg['event_recall'], _imp(base_avg['event_recall'], prop_avg['event_recall'], False))
+            rb.add_row("Pairwise Overlap (Redundancy)", "↓", base_avg['pairwise_overlap'], prop_avg['pairwise_overlap'], _imp(base_avg['pairwise_overlap'], prop_avg['pairwise_overlap'], True))
         if args.task in ["single", "all"]:
-            print("-" * 85)
-            print(" [ Single-Region Finding Metrics ]")
             for k, v in single_region_metrics.items():
-                print(f"  {k:<30}  | {v:<20.4f} | {'N/A':<22} | N/A")
+                rb.add_row(k, "", v, "-", "-")
+        rb.print()
     else:
-        print(f"{'Evaluation Metric':<40} | {model_disp_name:<25}")
-        print("-" * 85)
+        label_map = {
+            "cwo": ("CWO (Consensus Overlap)", "up"),
+            "m_cti": ("M-CTI (Camera Thrashing)", "down"),
+            "jerk": ("  Jerk Penalty", "down"),
+            "jump_rate": ("  Jump Teleport Rate", "down"),
+            "event_recall": ("Objective Event Recall R_event", "up"),
+            "pairwise_overlap": ("Pairwise Overlap (Redundancy)", "down"),
+            "ic@000": ("IC@000 (Intersection Coverage @ any)", "up"),
+            "ic@030": ("IC@030 (Intersection Coverage @ 0.30)", "up"),
+            "ic@050": ("IC@050 (Intersection Coverage @ 0.50)", "up"),
+            "top1_ic@050": ("Top-1 IC@050 (Main Viewport Precision)", "up"),
+            "ic_multi": ("IC_multi (Multi-Target Coverage)", "up"),
+            "ic_ratio": ("IC_ratio (Intersection Ratio)", "up"),
+            "median_ir": ("Median IR (Median Intersection Ratio)", "up"),
+            "p90_ir": ("P90 IR (90th Percentile IR)", "up"),
+            "center_jitter": ("Center Jitter (Single Viewport Jitter)", "down"),
+            "target_persistence": ("Target Persistence (Tracking Continuity)", "up"),
+            "inter_region_dist": ("Inter-Region Dist (Spatial Dispersion)", "up"),
+            "kbrs_density": ("KBRS Density", "up"),
+            "kbrs_centeredness": ("KBRS Centeredness", "up"),
+            "kbrs_mixture": ("KBRS Mixture Score", "up"),
+        }
 
+        rb = ReportBlock(
+            title=f"Summary Metrics — {model_disp_name}",
+            columns=["metric", "direction", "value"],
+            aligns=["left", "center", "right"],
+        )
         if args.task in ["multi", "all"]:
-            print(" [ Multi-Region Finding Metrics ]")
-            print(f"  CWO (Consensus Overlap) ↑               | {base_avg['cwo']:<25.4f}")
-            print(f"  M-CTI (Camera Thrashing) ↓              | {base_avg['m_cti']:<25.4f}")
-            print(f"    ├─ Jerk Penalty ↓                     | {base_avg['jerk']:<25.4f}")
-            print(f"    ├─ Jump Teleport Rate ↓               | {base_avg['jump_rate']:<25.4f}")
-            print(f"  Objective Event Recall R_event ↑        | {base_avg['event_recall']:<25.4f}")
-            print(f"  Pairwise Overlap (Redundancy) ↓         | {base_avg['pairwise_overlap']:<25.4f}")
-
+            for k in ["cwo", "m_cti", "jerk", "jump_rate", "event_recall", "pairwise_overlap"]:
+                lbl, d = label_map[k]
+                rb.add_row(lbl, "↑" if d == "up" else "↓", base_avg[k])
         if args.task in ["single", "all"]:
-            print("-" * 85)
-            print(" [ Single-Region Finding Metrics ]")
-            label_map = {
-                "ic@000": "IC@000 (Intersection Coverage @ any) ↑",
-                "ic@030": "IC@030 (Intersection Coverage @ 0.30) ↑",
-                "ic@050": "IC@050 (Intersection Coverage @ 0.50) ↑",
-                "top1_ic@050": "Top-1 IC@050 (Main Viewport Precision) ↑",
-                "ic_multi": "IC_multi (Multi-Target Coverage) ↑",
-                "ic_ratio": "IC_ratio (Intersection Ratio) ↑",
-                "median_ir": "Median IR (Median Intersection Ratio) ↑",
-                "p90_ir": "P90 IR (90th Percentile IR) ↑",
-                "center_jitter": "Center Jitter (Single Viewport Jitter) ↓",
-                "target_persistence": "Target Persistence (Tracking Continuity) ↑",
-                "inter_region_dist": "Inter-Region Dist (Spatial Dispersion) ↑",
-                "kbrs_density": "Single Region KBRS Density ↑",
-                "kbrs_centeredness": "Single Region KBRS Centeredness ↑",
-                "kbrs_mixture": "Single Region KBRS Mixture Score ↑",
-            }
             for k, v in single_region_metrics.items():
-                disp_lbl = label_map.get(k, k)
-                print(f"  {disp_lbl:<40} | {v:<25.4f}")
-
-    print("=" * 85)
+                lbl, d = label_map.get(k, (k, None))
+                rb.add_row(lbl, "↑" if d == "up" else ("↓" if d == "down" else ""), v)
+        rb.print()
 
     os.makedirs(os.path.dirname(args.output_json), exist_ok=True)
     summary_data = {
@@ -710,9 +706,20 @@ def run_benchmark():
     df_hit_only = build_csv_dataframe(ic_rows_hit_by_replay)
     df_hit_only.to_csv(output_hit_csv, index=False)
 
-    print(f"✅ Benchmark Results saved to JSON : {args.output_json}")
-    print(f"✅ Benchmark Results saved to CSV  : {output_csv} (Official Overall)")
-    print(f"✅ Benchmark Results saved to CSV  : {output_hit_csv} (Hit-Only Conditional)")
+    # Per-replay table in the log (copy-paste friendly TSV included)
+    from utils.report import ReportBlock
+
+    rb = ReportBlock(
+        title=f"Per-Replay Results — {model_disp_name}",
+        columns=list(df_overall.columns),
+        aligns=["left"] + ["right"] * (len(df_overall.columns) - 1),
+    )
+    for _, r in df_overall.iterrows():
+        rb.add_row(*[r.get(c) for c in df_overall.columns])
+    rb.add_note(f"JSON (overall)          : {args.output_json}")
+    rb.add_note(f"CSV  (official overall) : {output_csv}")
+    rb.add_note(f"CSV  (hit-only cond.)   : {output_hit_csv}")
+    rb.print()
 
 
 if __name__ == "__main__":

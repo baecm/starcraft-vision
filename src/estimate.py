@@ -930,8 +930,21 @@ def main():
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
     df_all.to_csv(args.csv_out, index=False)
-    print(f"\n[Info] saved replay-level summary to: {args.csv_out}")
-    print(df_all)
+
+    from utils.report import ReportBlock, print_section_header
+
+    print_section_header("Replay-Level Evaluation Summary")
+
+    cols = list(df_all.columns)
+    rb = ReportBlock(
+        title=f"Replay Summary ({args.mode}, task={args.task})",
+        columns=cols,
+        aligns=["left"] + ["right"] * (len(cols) - 1),
+    )
+    for _, r in df_all.iterrows():
+        rb.add_row(*[r.get(c) for c in cols])
+    rb.add_note(f"Saved CSV : {args.csv_out}")
+    rb.print()
 
 
 if __name__ == "__main__":
