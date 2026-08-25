@@ -66,11 +66,19 @@ def coco_to_kernel_labels(
     max_x: float,
     max_y: float,
     skip_missing_preds: bool = False,
-) -> List[List[List[Dict[str, float]]]]:
+    return_stats: bool = False,
+):
     """
     Convert COCO-style GT + preds into agent-trace tests for kernel-based evaluator.
     If skip_missing_preds is True, images without predictions are skipped (Hit-Only Metric).
     Otherwise, missing predictions receive dummy coordinates for 0.0 IC penalty (Overall Metric).
+
+    If return_stats is True, returns (tests, stats) where stats contains
+    frame-level skip accounting:
+      - total_frames:   all GT images considered
+      - missing_preds:  frames with no prediction (skipped if skip_missing_preds)
+      - no_gt_anns:     frames with no GT annotation (always skipped)
+      - evaluated:      frames actually included in tests
     """
     # group preds by image_id
     preds_by_img: Dict[int, List[dict]] = {}
@@ -80,8 +88,16 @@ def coco_to_kernel_labels(
 
     tests: List[List[List[Dict[str, float]]]] = []
 
+    stats = {
+        "total_frames": 0,
+        "missing_preds": 0,
+        "no_gt_anns": 0,
+        "evaluated": 0,
+    }
+
     for img in coco_gt.dataset.get("images", []):
         image_id = int(img["id"])
+        stats["total_frames"] += 1
         img_w = int(img.get("width", grid_w))
         img_h = int(img.get("height", grid_h))
 
@@ -92,6 +108,7 @@ def coco_to_kernel_labels(
         # handle missing predictions
         img_preds = preds_by_img.get(image_id, [])
         if len(img_preds) == 0:
+            stats["missing_preds"] += 1
             if skip_missing_preds:
                 continue
             dummy_vx, dummy_vy = -9999.0, -9999.0
@@ -126,10 +143,14 @@ def coco_to_kernel_labels(
 
         # Append test only if at least one reference exists
         if len(ref_agents) == 0:
+            stats["no_gt_anns"] += 1
             continue
 
         tests.append(test_agents)
+        stats["evaluated"] += 1
 
+    if return_stats:
+        return tests, stats
     return tests
 
 
@@ -159,7 +180,7 @@ def eval_kernel_from_coco(
     width, height = grid
     max_x, max_y = maxcoord
 
-    labels_tests = coco_to_kernel_labels(
+    labels_tests, skip_stats = coco_to_kernel_labels(
         coco_gt=coco_gt,
         preds_list=preds_list,
         x_len=x_len,
@@ -169,6 +190,7 @@ def eval_kernel_from_coco(
         max_x=max_x,
         max_y=max_y,
         skip_missing_preds=skip_missing_preds,
+        return_stats=True,
     )
 
     per_image, agg = eval_intersection_run(
@@ -187,6 +209,11 @@ def eval_kernel_from_coco(
         per_image=per_image,
         agg=agg,
     )
+    # frame-level skip accounting (esp. for skip_missing_preds=True / Hit-Only metric)
+    row["total_frames"] = skip_stats.get("total_frames", 0)
+    row["missing_preds"] = skip_stats.get("missing_preds", 0)
+    row["no_gt_anns"] = skip_stats.get("no_gt_anns", 0)
+    row["evaluated_frames"] = skip_stats.get("evaluated", 0)
 
     try:
         from metrics import compute_multi_region_metrics

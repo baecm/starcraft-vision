@@ -514,6 +514,14 @@ def run_benchmark():
                 ic_rows.append(ic_row)
                 ic_rows_by_replay[replay_id] = ic_row
 
+                skipped = total_f - hit_f
+                print(
+                    f"[IC replay={replay_id}] frames: total={total_f}, "
+                    f"evaluated={ic_row.get('evaluated_frames', hit_f)}, "
+                    f"skipped_missing_preds={skipped} ({skipped / max(1, total_f) * 100.0:.1f}%), "
+                    f"skipped_no_gt={ic_row.get('no_gt_anns', 0)}"
+                )
+
                 # 2) Conditional Hit-Only IC (skips missing prediction frames)
                 ic_row_hit = compute_ic_for_replay(
                     replay_id=replay_id,
@@ -674,7 +682,7 @@ def run_benchmark():
 
             if rid in ic_mapping:
                 ic_dict = ic_mapping[rid]
-                for ic_k in ["total_frames", "hit_frames", "hit_rate", "ic@000", "ic@030", "ic@050", "top1_ic@050", "ic_multi", "ic_ratio", "median_ir", "p90_ir", "center_jitter", "target_persistence", "inter_region_dist"]:
+                for ic_k in ["total_frames", "hit_frames", "hit_rate", "missing_preds", "no_gt_anns", "evaluated_frames", "ic@000", "ic@030", "ic@050", "top1_ic@050", "ic_multi", "ic_ratio", "median_ir", "p90_ir", "center_jitter", "target_persistence", "inter_region_dist"]:
                     if ic_k in ic_dict:
                         r_row[ic_k] = ic_dict[ic_k]
             if rid in kbrs_by_replay:
