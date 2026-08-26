@@ -82,6 +82,7 @@ services:
       - ${PREDICTIONS_DIR}:/workspace/predictions
       - ${RESULTS_DIR}:/workspace/results
       - ${CONF_DIR}:/workspace/conf
+      - ../scripts:/workspace/scripts
       - ./entrypoint.sh:/workspace/entrypoint.sh
 
   notebook:

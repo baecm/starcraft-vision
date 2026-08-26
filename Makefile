@@ -5,8 +5,21 @@ DEBUG_PORT   ?= 5678
 ENABLE_SYNOLOGY_CHAT ?= false
 export ENABLE_SYNOLOGY_CHAT
 
-USER_UID ?= $(shell id -u)
-USER_GID ?= $(shell id -g)
+ifeq ($(OS),Windows_NT)
+    USER_UID ?= 1000
+    USER_GID ?= 1000
+    # Auto-mount Windows network drive Z: into WSL2 docker-desktop host
+    $(shell wsl -d docker-desktop -e sh -c "if [ -d /mnt/host ] && [ ! -d /mnt/host/z/starcraft-vision ]; then mkdir -p /mnt/host/z && mount -t drvfs 'Z:' /mnt/host/z 2>/dev/null; fi" 2>/dev/null)
+    # Use Git Bash on Windows (8.3 short path avoids space issues in Make)
+    SHELL := C:/PROGRA~1/Git/bin/bash.exe
+    .SHELLFLAGS := -c
+    # Disable MSYS automatic path conversion so /workspace paths are preserved for Docker
+    export MSYS_NO_PATHCONV := 1
+    export MSYS2_ARG_CONV_EXCL := *
+else
+    USER_UID ?= $(shell id -u 2>/dev/null || echo 1000)
+    USER_GID ?= $(shell id -g 2>/dev/null || echo 1000)
+endif
 export UID := $(USER_UID)
 export GID := $(USER_GID)
 
@@ -17,7 +30,9 @@ PYDEBUG_SERVICE  ?= pydebug
 		zeppelin benchmark
 
 # 디렉토리 생성
-$(shell mkdir -p $(PID_DIR) logs results models predictions .torch_cache)
+ifneq ($(OS),Windows_NT)
+    $(shell mkdir -p $(PID_DIR) logs results models predictions .torch_cache)
+endif
 
 define run_or_parallel
 	@REPLAY_COUNT=$(shell echo $(ARGS) | sed -n 's/.*--replays\([^"]*\).*/\1/p' | wc -w); \
@@ -119,7 +134,7 @@ debug:
 
 benchmark:
 	CONTAINER_NAME=benchmark_$$(date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm -v $$(pwd)/scripts:/workspace/scripts debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/run_benchmark.py $(ARGS)" \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/run_benchmark.py $(ARGS)" \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/benchmark.cid
 

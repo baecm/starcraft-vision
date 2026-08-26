@@ -289,3 +289,25 @@ NVIDIA_VISIBLE_DEVICES=0 make benchmark ARGS="--model-name maskrcnn_win4_vanilla
 NVIDIA_VISIBLE_DEVICES=0 make benchmark ARGS="--model-name maskrcnn_win4_kbrs_fold1_s123_kbrs025_base_score_20260203_055642 --epoch 30 --include-components units buildings vision --replays 275 1725 3613 4520 4664 --label-method all_correct --task all"
 NVIDIA_VISIBLE_DEVICES=0 make benchmark ARGS="--model-name deformable_detr_vanilla_win1_fold1_s123_20260818_071132          --epoch 30 --include-components units buildings vision --replays 275 1725 3613 4520 4664 --label-method all_correct --task all"
 NVIDIA_VISIBLE_DEVICES=0 make benchmark ARGS="--model-name centernet_vanilla_win1_fold1_s123_20260818_071116                --epoch 30 --include-components units buildings vision --replays 275 1725 3613 4520 4664 --label-method all_correct --task all"
+
+# ==============================================================================
+# Windows Execution Commands (CMD / PowerShell / Git Bash)
+# ==============================================================================
+
+# [Windows CMD] Benchmark (Single-Region & Multi-Region All)
+# set NVIDIA_VISIBLE_DEVICES=0 && make benchmark ARGS="--model-name centernet_vanilla_win1_fold1_s123_20260818_071116 --epoch 30 --include-components units buildings vision --replays 275 1725 3613 4520 4664 --label-method all_correct --task all"
+# set NVIDIA_VISIBLE_DEVICES=0 && make benchmark ARGS="--model-name deformable_detr_vanilla_win1_fold1_s123_20260818_071132 --epoch 30 --include-components units buildings vision --replays 275 1725 3613 4520 4664 --label-method all_correct --task all"
+# set NVIDIA_VISIBLE_DEVICES=0 && make benchmark ARGS="--model-name maskrcnn_win4_vanilla_fold1_s123_20251201_072032 --epoch 30 --include-components units buildings vision --replays 275 1725 3613 4520 4664 --label-method all_correct --task all"
+# set NVIDIA_VISIBLE_DEVICES=0 && make benchmark ARGS="--model-name maskrcnn_win4_kbrs_fold1_s123_kbrs025_base_score_20260203_055642 --epoch 30 --include-components units buildings vision --replays 275 1725 3613 4520 4664 --label-method all_correct --task all"
+
+# [Windows CMD] Inference
+# set NVIDIA_VISIBLE_DEVICES=0 && make inference ARGS="--model-name centernet_vanilla_win1_fold1_s123_20260818_071116 --model-number 30 --replays 275 1725 3613 4520 4664 --label-method all_correct --cuda"
+# set NVIDIA_VISIBLE_DEVICES=0 && make inference ARGS="--model-name deformable_detr_vanilla_win1_fold1_s123_20260818_071132 --model-number 30 --replays 275 1725 3613 4520 4664 --label-method all_correct --cuda"
+
+# [Windows CMD] Estimate
+# set NVIDIA_VISIBLE_DEVICES=0 && make estimate ARGS="--mode model --model-name centernet_vanilla_win1_fold1_s123_20260818_071116 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs --label-method all_correct"
+# set NVIDIA_VISIBLE_DEVICES=0 && make estimate ARGS="--mode model --model-name deformable_detr_vanilla_win1_fold1_s123_20260818_071132 --epoch 30 --replays 275 1725 3613 4520 4664 --skip-kbrs --label-method all_correct"
+
+# [Windows PowerShell] Benchmark & Inference
+# $env:NVIDIA_VISIBLE_DEVICES="0"; make benchmark ARGS="--model-name centernet_vanilla_win1_fold1_s123_20260818_071116 --epoch 30 --include-components units buildings vision --replays 275 1725 3613 4520 4664 --label-method all_correct --task all"
+# $env:NVIDIA_VISIBLE_DEVICES="0"; make inference ARGS="--model-name centernet_vanilla_win1_fold1_s123_20260818_071116 --model-number 30 --replays 275 1725 3613 4520 4664 --label-method all_correct --cuda"

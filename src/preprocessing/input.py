@@ -20,7 +20,7 @@ def resolve_input_path(input_path):
     source_data_root = os.path.join(os.getcwd(), "data", "input", "src")
 
     if os.path.isdir(os.path.join(source_data_root, input_path)) and input_path.endswith(".rep"):
-        rep_dir = source_data_root + input_path
+        rep_dir = os.path.join(source_data_root, input_path)
     elif os.path.isdir(os.path.join(source_data_root, input_path + ".rep")):
         rep_dir = os.path.join(source_data_root, input_path + ".rep")
         print(f"[INFO] Interpreting input as directory with '.rep' suffix: {rep_dir}")
