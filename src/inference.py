@@ -103,7 +103,8 @@ def save_predictions_as_coco(
     replay_id: str,
     replay_results: list,
     label_method: str,
-    output_dir: str
+    output_dir: str,
+    score_threshold: float = None,
 ):
     """
     Save a single replay's predictions in COCO format (masks omitted for compactness).
@@ -114,12 +115,16 @@ def save_predictions_as_coco(
 
     categories = [{"id": 1, "name": "viewport", "supercategory": "viewport"}]
 
+    info_dict = {
+        "description": f"Predictions for replay {replay_id}",
+        "version": "1.0",
+        "label_method": label_method,
+    }
+    if score_threshold is not None:
+        info_dict["score_threshold"] = float(score_threshold)
+
     coco = {
-        "info": {
-            "description": f"Predictions for replay {replay_id}",
-            "version": "1.0",
-            "label_method": label_method,
-        },
+        "info": info_dict,
         "licenses": [],
         "images": [],
         "annotations": [],
@@ -196,7 +201,8 @@ def run_inference(args):
     if not getattr(args, "output_dir", None):   
         args.output_dir = "predictions"
         
-    default_run_name = os.path.join(args.model_name, f"model_{model_number:03d}")
+    th_suffix = f"_th{args.score_threshold}" if getattr(args, "score_threshold", None) is not None else ""
+    default_run_name = os.path.join(args.model_name, f"model_{model_number:03d}{th_suffix}")
     run_name = getattr(args, "run_name", None) or default_run_name
     run_dir = os.path.join(args.output_dir, run_name)
     
@@ -342,7 +348,8 @@ def run_inference(args):
             replay_id=replay_id,
             replay_results=replay_results,
             label_method=args.label_method,
-            output_dir=run_dir
+            output_dir=run_dir,
+            score_threshold=args.score_threshold,
         )
 
         # Cleanup per-replay

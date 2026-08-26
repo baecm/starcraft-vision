@@ -313,13 +313,27 @@ def load_coco_preds(
     epoch: int,
     replay_id: str,
     label_method: str,
+    score_threshold: Optional[float] = None,
 ) -> Dict[int, List[dict]]:
-    pred_dir = os.path.join(
-        pred_root, model_name, f"model_{epoch:03d}", f"{replay_id}.rep"
-    )
-    pred_path = os.path.join(pred_dir, f"{label_method}.json")
-    if not os.path.isfile(pred_path):
-        print(f"[!] Warning: Prediction file not found: {pred_path} -> Proceeding with fallback/empty detections.")
+    candidates = []
+    if score_threshold is not None:
+        candidates.append(os.path.join(pred_root, model_name, f"model_{epoch:03d}_th{score_threshold}", f"{replay_id}.rep", f"{label_method}.json"))
+    candidates.append(os.path.join(pred_root, model_name, f"model_{epoch:03d}", f"{replay_id}.rep", f"{label_method}.json"))
+
+    model_dir = os.path.join(pred_root, model_name)
+    if os.path.isdir(model_dir):
+        for entry in sorted(os.listdir(model_dir)):
+            if entry.startswith(f"model_{epoch:03d}_th"):
+                candidates.append(os.path.join(model_dir, entry, f"{replay_id}.rep", f"{label_method}.json"))
+
+    pred_path = None
+    for cand in candidates:
+        if os.path.isfile(cand):
+            pred_path = cand
+            break
+
+    if not pred_path:
+        print(f"[!] Warning: Prediction file not found in candidates: {candidates[:2]} -> Proceeding with fallback/empty detections.")
         return {}
 
     import json
@@ -850,6 +864,7 @@ def main():
                 epoch=args.epoch,
                 replay_id=replay_id,
                 label_method=args.label_method,
+                score_threshold=getattr(args, "threshold", None),
             )
             for dets in preds_by_img.values():
                 preds_all.extend(dets)
