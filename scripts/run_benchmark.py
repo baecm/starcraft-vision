@@ -475,7 +475,7 @@ def run_benchmark():
     single_region_metrics = {}
     ic_rows_hit_by_replay = {}
     if args.task in ["single", "all"]:
-        from estimate import compute_ic_for_replay, compute_kbrs_for_replay, load_coco_gt, load_coco_preds
+        from evaluate import compute_ic_for_replay, compute_kbrs_for_replay, load_coco_gt, load_coco_preds
         ic_rows = []
         kbrs_densities, kbrs_centereds, kbrs_mixtures = [], [], []
 
