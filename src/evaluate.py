@@ -65,18 +65,20 @@ def coco_to_kernel_labels(
     grid_h: int,
     max_x: float,
     max_y: float,
+    score_thresh: float = 0.0,
     skip_missing_preds: bool = False,
     return_stats: bool = False,
 ):
     """
     Convert COCO-style GT + preds into agent-trace tests for kernel-based evaluator.
-    If skip_missing_preds is True, images without predictions are skipped (Hit-Only Metric).
+    Only predictions with score >= score_thresh are considered valid.
+    If skip_missing_preds is True, images without valid predictions are skipped (Hit-Only Metric).
     Otherwise, missing predictions receive dummy coordinates for 0.0 IC penalty (Overall Metric).
 
     If return_stats is True, returns (tests, stats) where stats contains
     frame-level skip accounting:
       - total_frames:   all GT images considered
-      - missing_preds:  frames with no prediction (skipped if skip_missing_preds)
+      - missing_preds:  frames with no valid prediction (skipped if skip_missing_preds)
       - no_gt_anns:     frames with no GT annotation (always skipped)
       - evaluated:      frames actually included in tests
     """
@@ -105,20 +107,19 @@ def coco_to_kernel_labels(
         ann_ids = coco_gt.getAnnIds(imgIds=image_id)
         anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
 
-        # handle missing predictions
+        # filter predictions by score_thresh
         img_preds = preds_by_img.get(image_id, [])
-        if len(img_preds) == 0:
+        valid_preds = [p for p in img_preds if float(p.get("score", 1.0)) >= score_thresh]
+
+        if len(valid_preds) == 0:
             stats["missing_preds"] += 1
             if skip_missing_preds:
                 continue
             dummy_vx, dummy_vy = -9999.0, -9999.0
             agent0 = [{"vpx": dummy_vx, "vpy": dummy_vy}]
         else:
-            # Choose predictor: highest score if available, else first pred
-            if any("score" in p for p in img_preds):
-                best_pred = max(img_preds, key=lambda q: float(q.get("score", 0.0)))
-            else:
-                best_pred = img_preds[0]
+            # Choose predictor: highest score among valid preds
+            best_pred = max(valid_preds, key=lambda q: float(q.get("score", 0.0)))
 
             # compute centroid pixel coords for predictor
             pcx, pcy = _centroid_from_coco_ann(best_pred, img_w, img_h)
@@ -167,6 +168,7 @@ def eval_kernel_from_coco(
     grid: Tuple[int, int] = (128, 128),
     maxcoord: Tuple[float, float] = (3456.0, 3720.0),
     skip_missing_preds: bool = False,
+    score_thresh: float = 0.0,
 ) -> Tuple[Dict[str, Any], List[ImageIR], Dict[str, float]]:
     """
     Convenience wrapper for train/eval code.
@@ -189,6 +191,7 @@ def eval_kernel_from_coco(
         grid_h=height,
         max_x=max_x,
         max_y=max_y,
+        score_thresh=score_thresh,
         skip_missing_preds=skip_missing_preds,
         return_stats=True,
     )
@@ -208,6 +211,7 @@ def eval_kernel_from_coco(
         kernel=(x_len, y_len),
         per_image=per_image,
         agg=agg,
+        score_thresh=score_thresh,
     )
     # frame-level skip accounting (esp. for skip_missing_preds=True / Hit-Only metric)
     row["total_frames"] = skip_stats.get("total_frames", 0)
@@ -237,6 +241,7 @@ def _summarize_ic_row(
     kernel: Tuple[int, int],
     per_image: Sequence[ImageIR],
     agg: Dict[str, float],
+    score_thresh: float = 0.0,
 ) -> Dict[str, Any]:
     ir_values = np.array([x.ir for x in per_image], dtype=float)
     ic000 = float(np.mean(ir_values > 0.0)) if ir_values.size > 0 else 0.0
@@ -245,6 +250,7 @@ def _summarize_ic_row(
 
     row: Dict[str, Any] = {
         "name": name,
+        "score_thresh": round(float(score_thresh), 2),
         "kernel": f"{kernel[0]}x{kernel[1]}",
         "num_images": agg.get("num_images", 0),
         "ic@000": ic000,
@@ -268,24 +274,34 @@ def run_kernel_eval(
     pred_files: Sequence[str],
     pred_dir: str,
     out_dir: str,
-    names: Sequence[str],
+    names: Optional[Sequence[str]] = None,
     kernel: Tuple[int, int],
     grid: Tuple[int, int],
     maxcoord: Tuple[float, float],
+    score_thresholds: Optional[Sequence[float]] = None,
     per_image_csv: bool = False,
     batch_size: int = 0,
     run_tag: str = "",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]], str, str]:
     """
-    Run kernel-based intersection evaluation for one or more prediction files.
+    Run kernel-based intersection evaluation for one or more prediction files
+    across specified score thresholds.
 
     Returns:
-        all_rows: list of summary rows (one per prediction name)
-        summary_json: mapping name -> summary row
+        all_rows: list of summary rows (one per prediction name x score threshold)
+        summary_json: mapping name_th -> summary row
         csv_path: path to summary CSV
         json_path: path to summary JSON
     """
     os.makedirs(out_dir, exist_ok=True)
+
+    if score_thresholds is None:
+        score_thresholds = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    elif isinstance(score_thresholds, str):
+        score_thresholds = [float(s.strip()) for s in score_thresholds.split(",") if s.strip()]
+
+    if not names:
+        names = [os.path.splitext(os.path.basename(pf))[0] for pf in pred_files]
 
     all_rows: List[Dict[str, Any]] = []
     summary_json: Dict[str, Dict[str, Any]] = {}
@@ -304,11 +320,7 @@ def run_kernel_eval(
     max_x, max_y = maxcoord
 
     for pred_path, name in zip(pred_files, names):
-        path = os.path.join(pred_dir, pred_path)
-        if os.path.isabs(pred_path):
-            path = pred_path
-        else:
-            path = os.path.join(pred_dir, pred_path)
+        path = pred_path if os.path.isabs(pred_path) else os.path.join(pred_dir, pred_path)
 
         if not os.path.isfile(path):
             raise FileNotFoundError(f"Prediction file not found: {path}")
@@ -316,91 +328,100 @@ def run_kernel_eval(
         with open(path, "r", encoding="utf-8") as f:
             loaded = json.load(f)
 
-        # If loaded already in tests format, use directly
-        if isinstance(loaded, dict) and "tests" in loaded:
-            labels_tests = loaded["tests"]
-        elif isinstance(loaded, list) and len(loaded) > 0 and isinstance(loaded[0], list):
-            labels_tests = loaded
-        elif coco_gt is not None:
-            # loaded expected to be COCO detection results
-            preds_list = loaded
-            if isinstance(loaded, dict) and "annotations" in loaded:
-                preds_list = loaded["annotations"]
-            if not isinstance(preds_list, list):
-                raise ValueError("Prediction file not understood: expected tests or COCO detection list.")
-            labels_tests = coco_to_kernel_labels(
-                coco_gt=coco_gt,
-                preds_list=preds_list,
+        for th in score_thresholds:
+            th_val = float(th)
+
+            # If loaded already in tests format, use directly
+            if isinstance(loaded, dict) and "tests" in loaded:
+                labels_tests = loaded["tests"]
+            elif isinstance(loaded, list) and len(loaded) > 0 and isinstance(loaded[0], list):
+                labels_tests = loaded
+            elif coco_gt is not None:
+                preds_list = loaded
+                if isinstance(loaded, dict) and "annotations" in loaded:
+                    preds_list = loaded["annotations"]
+                if not isinstance(preds_list, list):
+                    raise ValueError("Prediction file not understood: expected tests or COCO detection list.")
+                labels_tests = coco_to_kernel_labels(
+                    coco_gt=coco_gt,
+                    preds_list=preds_list,
+                    x_len=x_len,
+                    y_len=y_len,
+                    grid_w=width,
+                    grid_h=height,
+                    max_x=max_x,
+                    max_y=max_y,
+                    score_thresh=th_val,
+                )
+            else:
+                raise ValueError(
+                    "Prediction file not in tests format and --gt not provided to convert COCO results."
+                )
+
+            # Run evaluator
+            per_image, agg = eval_intersection_run(
+                labels_tests,
                 x_len=x_len,
                 y_len=y_len,
-                grid_w=width,
-                grid_h=height,
+                width=width,
+                height=height,
                 max_x=max_x,
                 max_y=max_y,
             )
-        else:
-            raise ValueError(
-                "Prediction file not in tests format and --gt not provided to convert COCO results."
+
+            # summarize row
+            row_key = f"{name}_th{th_val:.1f}"
+            row = _summarize_ic_row(
+                name=name,
+                kernel=(x_len, y_len),
+                per_image=per_image,
+                agg=agg,
+                score_thresh=th_val,
             )
+            all_rows.append(row)
+            summary_json[row_key] = row
 
-        # Run evaluator
-        per_image, agg = eval_intersection_run(
-            labels_tests,
-            x_len=x_len,
-            y_len=y_len,
-            width=width,
-            height=height,
-            max_x=max_x,
-            max_y=max_y,
-        )
+            # per-image CSV
+            if per_image_csv:
+                per_csv = os.path.join(out_dir, f"{name}_th{th_val:.1f}_per_image.csv")
+                with open(per_csv, "w", newline="", encoding="utf-8") as f:
+                    w = csv.DictWriter(
+                        f,
+                        fieldnames=[
+                            "image_id",
+                            "width",
+                            "height",
+                            "ir",
+                            "overlap_count",
+                        ],
+                    )
+                    w.writeheader()
+                    for it in per_image:
+                        w.writerow(asdict(it))
 
-        # summarize row
-        row = _summarize_ic_row(name=name, kernel=(x_len, y_len), per_image=per_image, agg=agg)
-        all_rows.append(row)
-        summary_json[name] = row
-
-        # per-image CSV
-        if per_image_csv:
-
-            per_csv = os.path.join(out_dir, f"{name}_per_image.csv")
-            with open(per_csv, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(
-                    f,
-                    fieldnames=[
-                        "image_id",
-                        "width",
-                        "height",
-                        "ir",
-                        "overlap_count",
-                    ],
-                )
-                w.writeheader()
-                for it in per_image:
-                    w.writerow(asdict(it))
-
-        # per-batch kernel metrics (optional)
-        if batch_size and batch_size > 0 and len(per_image) > 0:
-
-            n = len(per_image)
-            bs = int(batch_size)
-            rows = []
-            for i in range(0, n, bs):
-                j = min(i + bs, n)
-                rows.append(
-                    {
-                        "name": name,
-                        "batch_index": i // bs,
-                        "start_idx": i,
-                        "end_idx": j - 1,
-                        "batch_size": j - i,
-                    }
-                )
-            batch_csv = os.path.join(out_dir, f"{name}_batch_metrics.csv")
-            with open(batch_csv, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-                w.writeheader()
-                for r in rows:
-                    w.writerow(r)
+            # per-batch kernel metrics (optional)
+            if batch_size and batch_size > 0 and len(per_image) > 0:
+                n = len(per_image)
+                bs = int(batch_size)
+                rows = []
+                for i in range(0, n, bs):
+                    j = min(i + bs, n)
+                    rows.append(
+                        {
+                            "name": name,
+                            "score_thresh": round(th_val, 2),
+                            "batch_index": i // bs,
+                            "start_idx": i,
+                            "end_idx": j - 1,
+                            "batch_size": j - i,
+                        }
+                    )
+                batch_csv = os.path.join(out_dir, f"{name}_th{th_val:.1f}_batch_metrics.csv")
+                with open(batch_csv, "w", newline="", encoding="utf-8") as f:
+                    w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                    w.writeheader()
+                    for r in rows:
+                        w.writerow(r)
 
     if len(all_rows) == 0:
         raise RuntimeError("No predictions evaluated.")
@@ -433,7 +454,7 @@ class KernelEvalResult:
         self.aggregates = aggregates
 
 
-def evaluate(model, data_loader, device, epoch: int = 0):
+def evaluate(model, data_loader, device, epoch: int = 0, score_thresh: float = 0.0):
     """
     Train 중에 호출되는 evaluate 함수.
 
@@ -445,7 +466,6 @@ def evaluate(model, data_loader, device, epoch: int = 0):
     model.eval()
 
     # ---- kernel/grid/maxcoord 설정 ----
-    # KBRS_PARAMS.region_size를 우선 사용하고, 없으면 디폴트 (20,12)
     try:
         import config as _cfg
         if hasattr(_cfg, "KBRS_PARAMS") and "region_size" in _cfg.KBRS_PARAMS:
@@ -455,7 +475,6 @@ def evaluate(model, data_loader, device, epoch: int = 0):
     except Exception:
         kernel = (20, 12)
 
-    # grid / maxcoord는 기존 스크립트 기본값과 동일하게
     grid = (128, 128)
     maxcoord = (3456.0, 3720.0)
 
@@ -467,36 +486,34 @@ def evaluate(model, data_loader, device, epoch: int = 0):
 
     with torch.no_grad():
         for images, targets in data_loader:
-            # images: List[Tensor[C,H,W]]
-            # targets: List[Dict]
             images = [img.to(device) for img in images]
             outputs = model(images)
 
             for img, tgt, out in zip(images, targets, outputs):
-                # img 크기 (모델 입력 기준, bbox도 여기에 맞춰져 있음)
                 _, img_h, img_w = img.shape
 
                 boxes_pred = out["boxes"]
                 scores_pred = out["scores"]
 
-                # 예측이 없으면 스킵
                 if boxes_pred.numel() == 0:
                     continue
 
-                # 최고 score 1개만 사용 (이전 설계와 동일하게 "대표 뷰포트"로 봄)
                 best_idx = int(scores_pred.argmax().item())
-                px1, py1, px2, py2 = boxes_pred[best_idx].detach().cpu().tolist()
-                pw = px2 - px1
-                ph = py2 - py1
-                pcx = px1 + pw / 2.0
-                pcy = py1 + ph / 2.0
+                best_score = float(scores_pred[best_idx].item())
 
-                # pixel → vpx, vpy (기존 coco_to_kernel_labels 와 동일한 역변환)
-                vx = float(pcx) / max(1, (img_w - x_len)) * max_x
-                vy = float(pcy) / max(1, (img_h - y_len)) * max_y
-                agent0 = [{"vpx": vx, "vpy": vy}]
+                if best_score < score_thresh:
+                    agent0 = [{"vpx": -9999.0, "vpy": -9999.0}]
+                else:
+                    px1, py1, px2, py2 = boxes_pred[best_idx].detach().cpu().tolist()
+                    pw = px2 - px1
+                    ph = py2 - py1
+                    pcx = px1 + pw / 2.0
+                    pcy = py1 + ph / 2.0
 
-                # GT 박스들 (하나 이상 있을 수 있음)
+                    vx = float(pcx) / max(1, (img_w - x_len)) * max_x
+                    vy = float(pcy) / max(1, (img_h - y_len)) * max_y
+                    agent0 = [{"vpx": vx, "vpy": vy}]
+
                 gt_boxes = tgt["boxes"].detach().cpu().numpy()
                 ref_agents: List[List[Dict[str, float]]] = []
 
@@ -510,17 +527,14 @@ def evaluate(model, data_loader, device, epoch: int = 0):
                     ref_agents.append([{"vpx": gvx, "vpy": gvy}])
 
                 if len(ref_agents) == 0:
-                    # GT 없으면 intersection 계산 불가 → 스킵
                     continue
 
                 labels_tests.append([agent0] + ref_agents)
 
-    # labels_tests 가 하나도 없으면 그냥 빈 결과 반환
     if len(labels_tests) == 0:
         Logger.info("[IC] No valid labels_tests (no preds or no GT). Skipping IC evaluation.")
         return KernelEvalResult(aggregates={})
 
-    # ---- kernel evaluator 호출 ----
     per_image, agg = eval_intersection_run(
         labels_tests,
         x_len=x_len,
@@ -531,16 +545,14 @@ def evaluate(model, data_loader, device, epoch: int = 0):
         max_y=max_y,
     )
 
-    # 요약 row (ic@000, ic_ratio 등)
     row = _summarize_ic_row(
         name=f"val_epoch_{epoch:03d}",
         kernel=(x_len, y_len),
         per_image=per_image,
         agg=agg,
+        score_thresh=score_thresh,
     )
 
-    # train.py에서는 eval_stats.aggregates 를 보고 로그를 남기므로,
-    # agg + row를 합쳐서 aggregates로 넣어준다.
     aggregates: Dict[str, Any] = {}
     aggregates.update(agg)
     aggregates.update(row)
@@ -555,7 +567,7 @@ def parse_args(argv=None):
         description=(
             "Kernel-based intersection evaluator driven from COCO GT + COCO predictions.\n"
             "If --gt is provided (COCO instances json), preds (COCO detection results)\n"
-            "are converted and evaluated.\n"
+            "are converted and evaluated across specified score thresholds.\n"
             "Alternatively, --pred may contain JSON with 'tests' already and will be used directly."
         )
     )
@@ -606,6 +618,13 @@ def parse_args(argv=None):
         help="Original coordinate maxima (max_x,max_y) used for normalization.",
     )
     parser.add_argument(
+        "--score-thresholds",
+        "--thresholds",
+        type=str,
+        default="0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9",
+        help="Comma-separated score thresholds to evaluate (default: '0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9').",
+    )
+    parser.add_argument(
         "--per-image",
         action="store_true",
         help="Write per-image CSV of results.",
@@ -628,6 +647,7 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     return args
 
+
 def main():
     args = parse_args()
     
@@ -641,6 +661,7 @@ def main():
         kernel=args.kernel,
         grid=args.grid,
         maxcoord=args.maxcoord,
+        score_thresholds=args.score_thresholds,
         per_image_csv=args.per_image,
         batch_size=args.batch_size,
         run_tag=args.run_tag,
@@ -648,13 +669,13 @@ def main():
 
     from utils.report import ReportBlock, print_section_header
 
-    print_section_header("Intersection & Kernel Metrics Summary")
+    print_section_header("Intersection & Kernel Metrics Summary by Score Threshold")
 
     cols = list(all_rows[0].keys())
     rb = ReportBlock(
-        title="Kernel IC Metrics (per prediction)",
+        title="Kernel IC Metrics (per prediction & score threshold)",
         columns=cols,
-        aligns=["left"] + ["right"] * (len(cols) - 1),
+        aligns=["left", "right"] + ["right"] * (len(cols) - 2),
     )
     for row in all_rows:
         rb.add_row(*[row.get(c) for c in cols])
@@ -665,3 +686,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
