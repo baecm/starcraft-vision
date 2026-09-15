@@ -42,8 +42,8 @@ evaluate)
   exec python src/evaluate.py "$@"
   ;;
 estimate)
-  log "Estimating labels..."
-  exec python src/estimate.py "$@"
+  log "Estimating metrics (unified evaluator)..."
+  exec python src/evaluate.py "$@"
   ;;
 run)
   log "Runninng train/inference squentially..."
