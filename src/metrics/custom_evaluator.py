@@ -197,10 +197,13 @@ def eval_intersection_run(
     *,
     x_len: int = 20,
     y_len: int = 12,
-    width: int = 128,
-    height: int = 128,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    grid_w: Optional[int] = None,
+    grid_h: Optional[int] = None,
     max_x: float = 3456.0,
     max_y: float = 3720.0,
+    **kwargs: Any,
 ) -> Tuple[List[ImageIR], Dict[str, float]]:
     """
     Legacy evaluation that mirrors the old `eval(...)` script.
@@ -208,6 +211,10 @@ def eval_intersection_run(
     Agent 0 is the predictor to evaluate; agents[1:] are references.
     Returns per_image list and aggregates dict (same keys as modern).
     """
+    if width is None:
+        width = grid_w if grid_w is not None else 128
+    if height is None:
+        height = grid_h if grid_h is not None else 128
     total_intersection = []
     intersection_multi = []
     is_intersect = []
@@ -301,11 +308,16 @@ def eval_intersection_run(
     multi_cov = float(np.mean(np.array([x.overlap_count for x in per_image]) >= 2)) if per_image else 0.0
     multi_inter_mean = float(np.mean(intersection_multi)) if len(intersection_multi) > 0 else 0.0
 
+    coverage_th03 = float(np.mean(is_intersect_30)) if len(is_intersect_30) > 0 else (float(np.mean(ir_values >= 0.30)) if ir_values.size > 0 else 0.0)
+    coverage_th05 = float(np.mean(is_intersect_50)) if len(is_intersect_50) > 0 else (float(np.mean(ir_values >= 0.50)) if ir_values.size > 0 else 0.0)
+
     aggregates: Dict[str, float] = {
         "mean_ir": mean_ir,
         "median_ir": median_ir,
         "p90_ir": p90_ir,
         "coverage_any": coverage_any,
+        "coverage_th03": coverage_th03,
+        "coverage_th05": coverage_th05,
         "multi_coverage": multi_cov,
         "multi_intersection": multi_inter_mean,
         "num_images": int(len(per_image)),

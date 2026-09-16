@@ -199,26 +199,33 @@ def eval_kernel_from_coco(
         labels_tests,
         x_len=x_len,
         y_len=y_len,
-        grid_w=grid_w,
-        grid_h=grid_h,
+        width=grid_w,
+        height=grid_h,
         max_x=max_x,
         max_y=max_y,
-        name=name,
-        batch_size=0,
     )
+
+    ir_values = np.array([x.ir for x in ir_per_image], dtype=float) if ir_per_image else np.array([])
+    ic000 = float(agg.get("coverage_any", np.mean(ir_values > 0.0) if ir_values.size > 0 else 0.0))
+    ic030 = float(agg.get("coverage_th03", np.mean(ir_values >= 0.30) if ir_values.size > 0 else 0.0))
+    ic050 = float(agg.get("coverage_th05", np.mean(ir_values >= 0.50) if ir_values.size > 0 else 0.0))
+    ic_multi = float(agg.get("multi_intersection", agg.get("multi_coverage", 0.0)))
+    mean_ir = float(agg.get("mean_ir", np.mean(ir_values) if ir_values.size > 0 else 0.0))
+    median_ir = float(agg.get("median_ir", np.median(ir_values) if ir_values.size > 0 else 0.0))
+    p90_ir = float(agg.get("p90_ir", np.percentile(ir_values, 90) if ir_values.size > 0 else 0.0))
 
     row = {
         "name": name,
         "score_thresh": float(score_thresh),
         "kernel": f"{x_len}x{y_len}",
         "num_images": int(agg.get("num_images", len(ir_per_image))),
-        "ic@000": float(agg.get("coverage_any", float("nan"))),
-        "ic@030": float(agg.get("coverage_th03", float("nan"))),
-        "ic@050": float(agg.get("coverage_th05", float("nan"))),
-        "ic_multi": float(agg.get("multi_coverage", float("nan"))),
-        "ic_ratio": float(agg.get("mean_ir", float("nan"))),
-        "median_ir": float(agg.get("median_ir", float("nan"))),
-        "p90_ir": float(agg.get("p90_ir", float("nan"))),
+        "ic@000": ic000,
+        "ic@030": ic030,
+        "ic@050": ic050,
+        "ic_multi": ic_multi,
+        "ic_ratio": mean_ir,
+        "median_ir": median_ir,
+        "p90_ir": p90_ir,
         "total_frames": int(stats.get("total_frames", 0)),
         "missing_preds": int(stats.get("missing_preds", 0)),
         "no_gt_anns": int(stats.get("no_gt_anns", 0)),
