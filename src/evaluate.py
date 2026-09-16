@@ -32,6 +32,10 @@ from metrics.evaluator import MultiRegionEvaluator
 from utils.logger import Logger
 from utils.report import ReportBlock, print_section_header
 
+# Ensure unbuffered stdout in container/redirection environments
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+
 
 # =====================================================================
 # 1. COCO & Geometry Helpers
@@ -602,9 +606,12 @@ def load_coco_preds(
     )
     pred_path = os.path.join(pred_dir, f"{label_method}.json")
     if not os.path.isfile(pred_path):
-        print(f"[!] Warning: Prediction file not found: {pred_path} -> Proceeding with fallback/empty detections.")
+        print(f"[!] Warning: Prediction file not found: {pred_path} -> Proceeding with fallback/empty detections.", flush=True)
         return {}
 
+    file_size_mb = os.path.getsize(pred_path) / (1024 * 1024)
+    print(f"[INFO] Loading predictions from {pred_path} ({file_size_mb:.1f} MB)...", flush=True)
+    t0 = time.time()
     with open(pred_path, "r", encoding="utf-8") as f:
         loaded = json.load(f)
 
@@ -619,6 +626,9 @@ def load_coco_preds(
     for det in dets:
         img_id = int(det["image_id"])
         preds_by_img.setdefault(img_id, []).append(det)
+
+    elapsed = time.time() - t0
+    print(f"[INFO] Successfully loaded {len(dets)} predictions across {len(preds_by_img)} frames in {elapsed:.2f}s", flush=True)
     return preds_by_img
 
 
@@ -719,6 +729,7 @@ def compute_ic_for_replay(
         }
 
     if mode == "model" and preds_all:
+        t_ic = time.time()
         row, per_img_ic, agg_ic = eval_kernel_from_coco(
             coco_gt,
             preds_all,
@@ -728,6 +739,11 @@ def compute_ic_for_replay(
             maxcoord=(ic_max_x, ic_max_y),
             skip_missing_preds=skip_missing_preds,
             score_thresh=score_thresh,
+        )
+        print(
+            f"[IC replay={replay_id}] thresh={score_thresh} done (t={time.time() - t_ic:.2f}s) "
+            f"-> IC@0.0={row.get('ic@000', float('nan')):.3f}, IC@0.5={row.get('ic@050', float('nan')):.3f}, IC_multi={row.get('ic_multi', float('nan')):.3f}",
+            flush=True,
         )
         return row
 
@@ -773,8 +789,17 @@ def compute_multi_region_for_replay(
     consensus_maps_seq = []
     event_coords_seq = []
     grid_w, grid_h = grid_size
+    num_images = len(images)
 
-    for img in images:
+    print(f"[Multi-Region replay={replay_id}] Preparing sequences ({num_images} frames)...", flush=True)
+    t0 = time.time()
+    step_interval = max(5000, num_images // 10)
+
+    for idx, img in enumerate(images):
+        if (idx + 1) % step_interval == 0 or (idx + 1) == num_images:
+            pct = (idx + 1) / num_images * 100.0
+            print(f"  [Multi-Region Prep] {idx + 1}/{num_images} frames ({pct:.1f}%)", flush=True)
+
         img_id = int(img["id"])
         h_img = float(img.get("height", grid_h))
         w_img = float(img.get("width", grid_w))
@@ -821,10 +846,17 @@ def compute_multi_region_for_replay(
         consensus_maps_seq.append(c_map)
         event_coords_seq.append(np.array(events, dtype=np.float32) if events else np.empty((0, 2), dtype=np.float32))
 
+    print(f"[Multi-Region replay={replay_id}] Evaluating 3D metrics (CWO, Event Recall, Pairwise Overlap, M-CTI)...", flush=True)
+    t_eval = time.time()
     metrics = evaluator.evaluate_sequence(
         viewports_seq=viewports_seq,
         consensus_maps_seq=consensus_maps_seq,
         event_coords_seq=event_coords_seq,
+    )
+    print(
+        f"[Multi-Region replay={replay_id}] Done (prep={t_eval - t0:.1f}s, eval={time.time() - t_eval:.1f}s) "
+        f"-> CWO={metrics.get('cwo', 0.0):.4f}, M-CTI={metrics.get('m_cti', 0.0):.4f}, Recall={metrics.get('event_recall', 0.0):.4f}",
+        flush=True,
     )
     return metrics
 

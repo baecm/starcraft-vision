@@ -350,8 +350,12 @@ class MultiRegionEvaluator:
         cwo_list = []
         recall_list = []
         overlap_list = []
+        step_interval = max(5000, T // 10)
 
         for t in range(T):
+            if (t + 1) % step_interval == 0 or (t + 1) == T:
+                print(f"    [Multi-Region Frames] {t + 1}/{T} frames ({(t + 1) / T * 100:.1f}%)", flush=True)
+
             v_t = viewports_seq[t]
             c_t = consensus_maps_seq[t] if consensus_maps_seq is not None else None
             e_t = event_coords_seq[t] if event_coords_seq is not None else None
@@ -366,6 +370,7 @@ class MultiRegionEvaluator:
                 recall_list.append(frame_metrics["event_recall"])
             overlap_list.append(frame_metrics["pairwise_overlap"])
 
+        print(f"    [Multi-Region Sequence] Computing M-CTI trajectory & jerk across {T} frames...", flush=True)
         # Sequence-level M-CTI
         m_cti_metrics = compute_m_cti(
             trajectories=viewports_seq,

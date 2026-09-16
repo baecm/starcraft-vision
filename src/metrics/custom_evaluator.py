@@ -232,7 +232,10 @@ def eval_intersection_run(
         min_length = min(lengths)
 
         temp_intersect = []
+        step_interval = max(10000, min_length // 5)
         for i in range(min_length):
+            if (i + 1) % step_interval == 0 or (i + 1) == min_length:
+                print(f"  [IC Eval] {i + 1}/{min_length} frames ({(i + 1) / min_length * 100:.1f}%)", flush=True)
             total_tiles = np.zeros((width, height), dtype=np.int32)
 
             # accumulate reference agent windows into integer count grid
