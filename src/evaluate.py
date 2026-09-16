@@ -73,7 +73,7 @@ centroid_from_coco_ann = _centroid_from_coco_ann
 
 def coco_to_kernel_labels(
     coco_gt: COCO,
-    preds_list: List[dict],
+    preds_list: Union[List[dict], Dict[int, List[dict]]],
     *,
     x_len: int,
     y_len: int,
@@ -89,10 +89,13 @@ def coco_to_kernel_labels(
     Convert COCO-style GT + preds into agent-trace tests for kernel-based evaluator.
     Only predictions with score >= score_thresh are considered valid.
     """
-    preds_by_img: Dict[int, List[dict]] = {}
-    for p in preds_list:
-        img_id = int(p["image_id"])
-        preds_by_img.setdefault(img_id, []).append(p)
+    if isinstance(preds_list, dict):
+        preds_by_img = preds_list
+    else:
+        preds_by_img = {}
+        for p in preds_list:
+            img_id = int(p["image_id"])
+            preds_by_img.setdefault(img_id, []).append(p)
 
     tests: List[List[List[Dict[str, float]]]] = []
     stats = {
@@ -102,14 +105,19 @@ def coco_to_kernel_labels(
         "evaluated": 0,
     }
 
+    img_to_anns = getattr(coco_gt, "imgToAnns", None)
+
     for img in coco_gt.dataset.get("images", []):
         image_id = int(img["id"])
         stats["total_frames"] += 1
         img_w = int(img.get("width", grid_w))
         img_h = int(img.get("height", grid_h))
 
-        ann_ids = coco_gt.getAnnIds(imgIds=image_id)
-        anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
+        if img_to_anns is not None:
+            anns = img_to_anns.get(image_id, [])
+        else:
+            ann_ids = coco_gt.getAnnIds(imgIds=image_id)
+            anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
 
         img_preds = preds_by_img.get(image_id, [])
         valid_preds = [p for p in img_preds if float(p.get("score", 1.0)) >= score_thresh]
@@ -149,7 +157,7 @@ def coco_to_kernel_labels(
 
 def eval_kernel_from_coco(
     coco_gt: COCO,
-    preds_list: List[dict],
+    preds_list: Union[List[dict], Dict[int, List[dict]]],
     *,
     name: str = "run",
     kernel: Tuple[int, int] = (20, 12),
@@ -637,7 +645,7 @@ def compute_ic_for_replay(
     mode: str,
     coco_gt: COCO,
     args: argparse.Namespace,
-    preds_all: Optional[List[dict]] = None,
+    preds_all: Optional[Union[List[dict], Dict[int, List[dict]]]] = None,
     model_tag: Optional[str] = None,
     skip_missing_preds: bool = False,
     score_thresh: float = 0.0,
@@ -675,7 +683,7 @@ def compute_ic_for_replay(
         images = images[:max_frames]
 
     num_images = len(images)
-    num_preds = len(preds_all) if preds_all else 0
+    num_preds = sum(len(v) for v in preds_all.values()) if isinstance(preds_all, dict) else (len(preds_all) if preds_all else 0)
 
     print(
         f"[IC replay={replay_id}] start "
@@ -766,6 +774,7 @@ def compute_multi_region_for_replay(
     coco_gt: COCO,
     preds_by_img: Optional[Dict[int, List[dict]]],
     grid_size: Tuple[int, int] = (128, 128),
+    multi_topk: int = 3,
 ) -> Dict[str, float]:
     images = list(coco_gt.dataset.get("images", []))
     if not images:
@@ -791,9 +800,11 @@ def compute_multi_region_for_replay(
     grid_w, grid_h = grid_size
     num_images = len(images)
 
-    print(f"[Multi-Region replay={replay_id}] Preparing sequences ({num_images} frames)...", flush=True)
+    topk_label = f"top-{multi_topk}" if multi_topk > 0 else "all"
+    print(f"[Multi-Region replay={replay_id}] Preparing sequences ({num_images} frames, viewports={topk_label})...", flush=True)
     t0 = time.time()
     step_interval = max(5000, num_images // 10)
+    img_to_anns = getattr(coco_gt, "imgToAnns", None)
 
     for idx, img in enumerate(images):
         if (idx + 1) % step_interval == 0 or (idx + 1) == num_images:
@@ -806,7 +817,10 @@ def compute_multi_region_for_replay(
 
         img_boxes = []
         if preds_by_img and img_id in preds_by_img:
-            for det in preds_by_img[img_id]:
+            dets = preds_by_img[img_id]
+            if multi_topk > 0 and len(dets) > multi_topk:
+                dets = sorted(dets, key=lambda d: float(d.get("score", 0.0)), reverse=True)[:multi_topk]
+            for det in dets:
                 b = det.get("bbox", None)
                 if b is not None and len(b) == 4:
                     x, y, w, h = b
@@ -820,8 +834,11 @@ def compute_multi_region_for_replay(
             img_boxes = [[0.0, 0.0, 32.0, 32.0]]
         viewports_seq.append(np.array(img_boxes, dtype=np.float32))
 
-        ann_ids = coco_gt.getAnnIds(imgIds=[img_id])
-        anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
+        if img_to_anns is not None:
+            anns = img_to_anns.get(img_id, [])
+        else:
+            ann_ids = coco_gt.getAnnIds(imgIds=[img_id])
+            anns = coco_gt.loadAnns(ann_ids) if ann_ids else []
 
         c_map = np.zeros((grid_h, grid_w), dtype=np.float32)
         events = []
@@ -855,7 +872,7 @@ def compute_multi_region_for_replay(
     )
     print(
         f"[Multi-Region replay={replay_id}] Done (prep={t_eval - t0:.1f}s, eval={time.time() - t_eval:.1f}s) "
-        f"-> CWO={metrics.get('cwo', 0.0):.4f}, M-CTI={metrics.get('m_cti', 0.0):.4f}, Recall={metrics.get('event_recall', 0.0):.4f}",
+        f"-> CWO={metrics.get('cwo', 0.0):.4f}, M-CTI={metrics.get('m_cti', 0.0):.4f}, Recall={metrics.get('event_recall', 0.0):.4f}, Overlap={metrics.get('pairwise_overlap', 0.0):.4f}",
         flush=True,
     )
     return metrics
@@ -1026,16 +1043,12 @@ def run_e2e_benchmark(args: argparse.Namespace):
         coco_gt = load_coco_gt(args.label_root, replay_id, args.label_method)
         preds_by_img = load_coco_preds(args.pred_root, args.model_name, args.epoch, replay_id, args.label_method)
 
-        preds_all = []
-        for dets in preds_by_img.values():
-            preds_all.extend(dets)
-
         ic_row = compute_ic_for_replay(
             replay_id=replay_id,
             mode="model",
             coco_gt=coco_gt,
             args=args,
-            preds_all=preds_all if preds_all else None,
+            preds_all=preds_by_img,
             model_tag=f"{args.model_name}_e{args.epoch}",
         )
 
@@ -1043,6 +1056,7 @@ def run_e2e_benchmark(args: argparse.Namespace):
             replay_id=replay_id,
             coco_gt=coco_gt,
             preds_by_img=preds_by_img,
+            multi_topk=getattr(args, "multi_topk", 3),
         )
 
         combined = dict(ic_row)
@@ -1152,6 +1166,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--skip-kbrs", action="store_true", help="Skip KBRS calculations")
     p.add_argument("--num-workers", type=int, default=0)
 
+    # Multi-Region options
+    p.add_argument("--multi-topk", type=int, default=3, help="Top-K predicted viewports to evaluate for Multi-Region metrics (default: 3, set 0 for all)")
+
     # IC metric kernel options
     p.add_argument("--ic-kernel", default="20,12")
     p.add_argument("--ic-grid", default="128,128")
@@ -1254,7 +1271,6 @@ def main():
             images = images[: args.max_frames]
 
         preds_by_img: Optional[Dict[int, List[dict]]] = None
-        preds_all: List[dict] = []
         model_tag: Optional[str] = None
 
         if args.mode == "model":
@@ -1265,8 +1281,6 @@ def main():
                 replay_id=replay_id,
                 label_method=args.label_method,
             )
-            for dets in preds_by_img.values():
-                preds_all.extend(dets)
             model_tag = f"{args.model_name}_e{args.epoch}"
 
         # 1. KBRS metric (computed once per replay if task in single/all)
@@ -1296,6 +1310,7 @@ def main():
                 replay_id=replay_id,
                 coco_gt=coco_gt,
                 preds_by_img=preds_by_img,
+                multi_topk=getattr(args, "multi_topk", 3),
             )
         else:
             multi_row = {
@@ -1315,7 +1330,7 @@ def main():
                     mode=args.mode,
                     coco_gt=coco_gt,
                     args=args,
-                    preds_all=preds_all if preds_all else None,
+                    preds_all=preds_by_img,
                     model_tag=model_tag,
                     score_thresh=th,
                 )
