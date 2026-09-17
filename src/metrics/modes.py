@@ -46,9 +46,12 @@ human ground truth comes from:
   (4) Reference multi-region metrics (`analyse_method` -> `IR`, `I@delta`,
       `BoK{k}@delta`, `OC{k}@delta` columns)
       So the single-region result and the best-of-K result can be compared
-      directly. `IR` reuses `custom_evaluator.intersection_ratio` (the same
-      function backing the project's `ic@000/030/050` numbers) instead of a
-      second, independently maintained overlap formula.
+      directly. `IR` is the same ratio as `custom_evaluator.intersection_ratio`
+      (the function behind the project's `ic@000/030/050` numbers) - see
+      `coverage_of`'s docstring for why it's computed by array slicing here
+      instead of calling that function directly: this ratio runs tens of
+      thousands of times per replay, and pycocotools' RLE encode/merge/area
+      overhead dominated the whole analysis's runtime for masks this small.
 
 Loading follows the rest of `src/metrics` and `src/evaluate.py`: ground truth
 goes through `pycocotools.coco.COCO`, and predictions are grouped by
@@ -74,11 +77,9 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-import pycocotools.mask as mask_util
 from pycocotools.coco import COCO
 from scipy.ndimage import gaussian_filter, maximum_filter
 
-from .custom_evaluator import intersection_ratio
 from .evaluator import compute_m_cti
 
 ATTRIBUTIONS = ["served_top1", "served_minor", "straddle", "off_mode", "no_mode"]
@@ -189,16 +190,42 @@ def box_mask(box: np.ndarray, height: int, width: int) -> np.ndarray:
     return mask
 
 
-def _rle(mask: np.ndarray) -> dict:
-    return mask_util.encode(np.asfortranarray(mask.astype(np.uint8)))
+def _slice_coverage(ys: slice, xs: slice, mask: np.ndarray) -> float:
+    """|box_slice ∩ mask| / |box_slice| for an already-computed box slice."""
+    area = (ys.stop - ys.start) * (xs.stop - xs.start)
+    if area == 0:
+        return 0.0
+    return float(mask[ys, xs].sum()) / float(area)
 
 
 def coverage_of(box: np.ndarray, mask: np.ndarray, height: int, width: int) -> float:
-    """|box ∩ mask| / |box|, i.e. the project's Intersection Ratio with `mask`
-    as the target. Delegates to `custom_evaluator.intersection_ratio` (the
-    same function behind `ic@000/030/050`) instead of reimplementing the
-    ratio, so "IR" means the same thing everywhere in `src/metrics`."""
-    return intersection_ratio(_rle(box_mask(box, height, width)), _rle(mask), denom="pred")
+    """|box ∩ mask| / |box| - the same ratio as
+    `custom_evaluator.intersection_ratio(box, mask, denom="pred")` (the
+    function behind `ic@000/030/050`), computed by slicing the existing
+    boolean array instead of going through pycocotools RLE encode/merge/area.
+    This runs O(frames * modes * k) times in `analyse_method`'s per-frame
+    loop - tens of thousands of frames per replay - where RLE's C-call and
+    compression overhead (on masks this small and already dense) was the
+    dominant cost of the whole analysis. The ratio itself is identical
+    either way; only the implementation changed, for speed.
+    """
+    ys, xs = box_slices(box, height, width)
+    return _slice_coverage(ys, xs, mask)
+
+
+def _rect_overlap_ratio(box_a: np.ndarray, box_b: np.ndarray, height: int, width: int) -> float:
+    """|box_a ∩ box_b| / |box_a| for two axis-aligned boxes, from clipped
+    slice bounds directly - no (H, W) array ever gets allocated, since both
+    sides are plain rectangles (unlike `coverage_of`, whose second argument
+    is a genuine, non-rectangular mask such as an observer union)."""
+    ya, xa = box_slices(box_a, height, width)
+    yb, xb = box_slices(box_b, height, width)
+    area_a = (ya.stop - ya.start) * (xa.stop - xa.start)
+    if area_a == 0:
+        return 0.0
+    inter_y = max(0, min(ya.stop, yb.stop) - max(ya.start, yb.start))
+    inter_x = max(0, min(xa.stop, xb.stop) - max(xa.start, xb.start))
+    return float(inter_y * inter_x) / float(area_a)
 
 
 # --------------------------------------------------------------------------
@@ -293,8 +320,7 @@ def attribute(
 
     covs = np.array(
         [
-            coverage_of(primary, box_mask(box_from_center(c, size_hw, height, width), height, width),
-                        height, width)
+            _rect_overlap_ratio(primary, box_from_center(c, size_hw, height, width), height, width)
             for c in modes.centers
         ]
     )
@@ -383,22 +409,27 @@ def analyse_method(
         }
         row["margin"] = row["support_top1"] - row["support_top2"]
 
+        # box_slices(b) is the same for a given b across every k that
+        # includes it (top_k only grows), so compute each box's slice once
+        # per frame instead of once per (k, observer) - this and the switch
+        # away from RLE below are what make the loop tractable on
+        # 60k+-frame replays.
+        top_slices = [box_slices(b, height, width) for b in boxes[:k_max]]
+
         for k in range(1, k_max + 1):
-            top_k = boxes[:k]
+            slices_k = top_slices[:k]
             row[f"BoK{k}@{delta}"] = float(
-                any(coverage_of(b, modes.union, height, width) >= delta for b in top_k)
+                any(_slice_coverage(ys, xs, modes.union) >= delta for ys, xs in slices_k)
             )
             served = 0
             for mask in modes.observers:
                 if not mask.any():
                     continue
+                obs_area = float(mask.sum())
                 # fraction of this observer's own viewport covered by box b,
                 # i.e. intersection_ratio(b, mask, denom="gt")
                 best = max(
-                    (
-                        intersection_ratio(_rle(box_mask(b, height, width)), _rle(mask), denom="gt")
-                        for b in top_k
-                    ),
+                    (float(mask[ys, xs].sum()) / obs_area for ys, xs in slices_k),
                     default=0.0,
                 )
                 served += int(best >= delta)
