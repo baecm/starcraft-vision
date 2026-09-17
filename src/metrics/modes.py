@@ -55,7 +55,8 @@ goes through `pycocotools.coco.COCO`, and predictions are grouped by
 `image_id` the same way `evaluate.coco_to_kernel_labels` and
 `multi_region_eval.compute_multi_region_metrics` already do.
 `scripts/mode_disagreement.py` resolves replay/model names to actual file
-paths via `estimate.load_coco_gt` / `estimate.load_coco_preds` (same
+paths via `evaluate.load_coco_gt` / `evaluate.load_coco_preds` (re-exported
+by `estimate.py` for backwards compatibility; same
 `{label-root}/{replay}.rep/{label-method}.json` and
 `{pred-root}/{model}/model_{epoch}/{replay}.rep/{label-method}.json` layout
 used by `make estimate`); `predictions_from_dets` adapts the latter's output

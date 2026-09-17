@@ -10,8 +10,9 @@ for what each number means and how it relates to the project's existing
 metrics (in particular why `mode_flip_rate` is not the same thing as
 `evaluator.compute_m_cti`'s `jump_rate`).
 
-GT and prediction files are resolved the same way `estimate.py` resolves
-them (`estimate.load_coco_gt` / `estimate.load_coco_preds`):
+GT and prediction files are resolved the same way `evaluate.py` resolves
+them (`load_coco_gt` / `load_coco_preds`, re-exported by `estimate.py` for
+backwards compatibility):
   GT   : {label-root}/{replay}.rep/{label-method}.json
   pred : {pred-root}/{model_name}/model_{epoch:03d}/{replay}.rep/{label-method}.json
 so a run just needs replay ids plus the model folder names under
@@ -93,8 +94,6 @@ def main() -> None:
                          "(e.g. maskrcnn=<dir>, maskrcnn_kbrs=<dir>, centernet=<dir>)")
     ap.add_argument("--epoch", type=int, default=30,
                     help="default epoch for --model specs that omit :EPOCH")
-    ap.add_argument("--score-threshold", type=float, default=None,
-                    help="matches estimate.py's model_<epoch>_th<threshold> prediction folders")
     ap.add_argument("--outdir", default="results")
     ap.add_argument("--delta", type=float, default=0.5)
     ap.add_argument("--sigma", type=float, default=4.0,
@@ -139,7 +138,6 @@ def main() -> None:
             dets_by_img = load_coco_preds(
                 pred_root=args.pred_root, model_name=model_name, epoch=epoch,
                 replay_id=replay, label_method=args.label_method,
-                score_threshold=args.score_threshold,
             )
             pred_by_frame = predictions_from_dets(dets_by_img)
             if not pred_by_frame:
