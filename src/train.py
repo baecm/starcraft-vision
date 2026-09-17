@@ -25,7 +25,6 @@ import config
 
 import detection.transforms as T
 from detection.engine_safe import train_one_epoch_safe as train_one_epoch
-from evaluate import evaluate
 
 from dataset.label_cache import ensure_label_pickles
 from dataset.loader import load_data, make_loader
