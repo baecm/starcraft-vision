@@ -149,6 +149,7 @@ def main() -> None:
                 size_hw=size_hw, sigma=args.sigma, min_sep=args.min_sep,
                 rel_threshold=args.rel_threshold, max_modes=args.max_modes,
                 delta=args.delta, straddle_floor=args.straddle_floor, k_max=args.k_max,
+                label=f"{replay}/{name}",
             )
             df.insert(0, "replay", replay)
             per_method_frames[name].append(df)

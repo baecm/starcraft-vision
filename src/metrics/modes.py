@@ -327,6 +327,7 @@ def analyse_method(
     delta: float,
     straddle_floor: float,
     k_max: int,
+    label: str = "",
 ) -> pd.DataFrame:
     frames = sorted(set(gt_by_frame) & set(pred_by_frame))
     if not frames:
@@ -335,7 +336,18 @@ def analyse_method(
     span = max(frames) - min(frames) + 1
     records = []
 
-    for frame in frames:
+    total_frames = len(frames)
+    # same cadence as evaluator.eval_intersection_run / MultiRegionEvaluator:
+    # at most ~10 updates per run, never more often than every 5000 frames,
+    # so a fold-wide log file doesn't balloon on large replays.
+    step_interval = max(5000, total_frames // 10)
+    tag = f" {label}" if label else ""
+
+    for idx, frame in enumerate(frames):
+        if (idx + 1) % step_interval == 0 or (idx + 1) == total_frames:
+            print(f"  [ModeDisagreement]{tag} {idx + 1}/{total_frames} frames "
+                  f"({(idx + 1) / total_frames * 100:.1f}%)", flush=True)
+
         obs = gt_by_frame[frame]
         modes = extract_modes(
             obs, height, width,
