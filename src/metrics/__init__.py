@@ -14,6 +14,23 @@ from .custom_evaluator import (
     kernel_scores,
 )
 from .multi_region_eval import compute_multi_region_metrics
+from .modes import (
+    Modes,
+    analyse_method,
+    attribute,
+    by_margin,
+    by_n_modes,
+    by_quartile,
+    by_replay,
+    extract_modes,
+    gt_boxes_by_frame,
+    image_size,
+    load_gt,
+    load_predictions,
+    predictions_from_dets,
+    primary_track_m_cti,
+    summarise as summarise_modes,
+)
 
 __all__ = [
     "MultiRegionEvaluator",
@@ -27,4 +44,19 @@ __all__ = [
     "intersection_ratio",
     "kernel_scores",
     "compute_multi_region_metrics",
+    "Modes",
+    "analyse_method",
+    "attribute",
+    "by_margin",
+    "by_n_modes",
+    "by_quartile",
+    "by_replay",
+    "extract_modes",
+    "gt_boxes_by_frame",
+    "image_size",
+    "load_gt",
+    "load_predictions",
+    "predictions_from_dets",
+    "primary_track_m_cti",
+    "summarise_modes",
 ]

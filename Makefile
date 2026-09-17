@@ -27,7 +27,7 @@ PYDEBUG_SERVICE  ?= pydebug
 
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
-		zeppelin benchmark
+		zeppelin benchmark mode-disagreement
 
 # 디렉토리 생성
 ifneq ($(OS),Windows_NT)
@@ -137,6 +137,18 @@ benchmark:
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/run_benchmark.py $(ARGS)" \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/benchmark.cid
+
+# Example:
+# make mode-disagreement ARGS="--replays 275 1725 3613 4520 4664 --label-method all_correct \
+#   --model maskrcnn=maskrcnn_win4_vanilla_fold1_s123_20251201_072032 \
+#   --model maskrcnn_kbrs=maskrcnn_win4_kbrs_fold1_s123_kbrs025_base_score_20260203_055642 \
+#   --model centernet=centernet_vanilla_win1_fold1_s123_20260818_071116 \
+#   --epoch 30 --outdir /workspace/results/mode_disagreement/fold1"
+mode-disagreement:
+	CONTAINER_NAME=mode_disagreement_$$(date +%Y%m%d_%H%M%S); \
+	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/mode_disagreement.py $(ARGS)" \
+		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	echo $$CONTAINER_NAME > $(PID_DIR)/mode_disagreement.cid
 
 notebook:
 	CONTAINER_NAME=notebook_$$(date +%Y%m%d_%H%M%S); \
