@@ -87,9 +87,9 @@ inference:
 	echo $$CONTAINER_NAME > $(PID_DIR)/inference.cid
 
 evaluate:
-	CONTAINER_NAME=evaluate_$(shell date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm evaluator evaluate $(ARGS) \
-		> logs/$$CONTAINER_NAME.log 2>&1 & \
+	CONTAINER_NAME=evaluate_$$(date +%Y%m%d_%H%M%S); \
+	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm evaluator evaluate $(ARGS) \
+		> logs/$$CONTAINER_NAME.log 2>&1; \
 	echo $$CONTAINER_NAME > $(PID_DIR)/evaluate.cid
 
 estimate:

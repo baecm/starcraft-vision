@@ -236,19 +236,11 @@ def compute_event_recall(
     if box_format == "cxcywh":
         v_arr = box_cxcywh_to_xyxy(v_arr)
 
-    # Check for each event if it lands in any viewport
-    recalled_count = 0
-    for ex, ey in e_arr:
-        captured = False
-        for box in v_arr:
-            x1, y1, x2, y2 = box
-            if x1 <= ex <= x2 and y1 <= ey <= y2:
-                captured = True
-                break
-        if captured:
-            recalled_count += 1
-
-    return float(recalled_count / len(e_arr))
+    # Vectorized event recall: e_arr is (N, 2), v_arr is (K, 4)
+    in_x = (e_arr[:, 0:1] >= v_arr[None, :, 0]) & (e_arr[:, 0:1] <= v_arr[None, :, 2])
+    in_y = (e_arr[:, 1:2] >= v_arr[None, :, 1]) & (e_arr[:, 1:2] <= v_arr[None, :, 3])
+    captured = np.any(in_x & in_y, axis=1)
+    return float(np.mean(captured))
 
 
 def compute_pairwise_overlap(
@@ -257,6 +249,7 @@ def compute_pairwise_overlap(
 ) -> float:
     """
     Computes mean pairwise IoU among K viewports to evaluate spatial redundancy.
+    Optimized with vectorized NumPy broadcasting (O(1) matrix op instead of O(K^2) Python loops).
 
     Args:
         viewports: Array/Tensor of shape (K, 4).
@@ -273,14 +266,23 @@ def compute_pairwise_overlap(
     if box_format == "cxcywh":
         v_arr = box_cxcywh_to_xyxy(v_arr)
 
-    total_iou = 0.0
-    num_pairs = 0
-    for i in range(K):
-        for j in range(i + 1, K):
-            total_iou += compute_iou_boxes(v_arr[i], v_arr[j])
-            num_pairs += 1
+    # Broadcasted pairwise IoU: (K, 1, 4) vs (1, K, 4)
+    b1 = v_arr[:, None, :]
+    b2 = v_arr[None, :, :]
 
-    return float(total_iou / max(1, num_pairs))
+    x1 = np.maximum(b1[..., 0], b2[..., 0])
+    y1 = np.maximum(b1[..., 1], b2[..., 1])
+    x2 = np.minimum(b1[..., 2], b2[..., 2])
+    y2 = np.minimum(b1[..., 3], b2[..., 3])
+
+    inter = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+    area1 = np.maximum(0.0, b1[..., 2] - b1[..., 0]) * np.maximum(0.0, b1[..., 3] - b1[..., 1])
+    area2 = np.maximum(0.0, b2[..., 2] - b2[..., 0]) * np.maximum(0.0, b2[..., 3] - b2[..., 1])
+    union = area1 + area2 - inter
+    iou = np.where(union > 1e-8, inter / union, 0.0)
+
+    triu_indices = np.triu_indices(K, k=1)
+    return float(np.mean(iou[triu_indices]))
 
 
 class MultiRegionEvaluator:
@@ -350,8 +352,12 @@ class MultiRegionEvaluator:
         cwo_list = []
         recall_list = []
         overlap_list = []
+        step_interval = max(5000, T // 10)
 
         for t in range(T):
+            if (t + 1) % step_interval == 0 or (t + 1) == T:
+                print(f"    [Multi-Region Frames] {t + 1}/{T} frames ({(t + 1) / T * 100:.1f}%)", flush=True)
+
             v_t = viewports_seq[t]
             c_t = consensus_maps_seq[t] if consensus_maps_seq is not None else None
             e_t = event_coords_seq[t] if event_coords_seq is not None else None
@@ -366,6 +372,7 @@ class MultiRegionEvaluator:
                 recall_list.append(frame_metrics["event_recall"])
             overlap_list.append(frame_metrics["pairwise_overlap"])
 
+        print(f"    [Multi-Region Sequence] Computing M-CTI trajectory & jerk across {T} frames...", flush=True)
         # Sequence-level M-CTI
         m_cti_metrics = compute_m_cti(
             trajectories=viewports_seq,
