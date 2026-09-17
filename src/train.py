@@ -379,6 +379,22 @@ def run_training(cfg: DictConfig):
     )
     Logger.info("[Info] JSON to Pickle conversion completed.")
 
+    model_arch = str(getattr(cfg.architecture, "model_name", "")).lower()
+    is_director = "director" in model_arch
+
+    if is_director:
+        from dataset.mode_cache import ensure_mode_cache
+        ensure_mode_cache(
+            label_root=label_root,
+            label_method=cfg.label_method,
+            replay_ids=sorted(set(all_replays)),
+            sigma=float(getattr(cfg, "mode_extraction_sigma", config.MODE_EXTRACTION_SIGMA)),
+            min_sep=float(getattr(cfg, "mode_extraction_min_sep", config.MODE_EXTRACTION_MIN_SEP)),
+            rel_threshold=float(getattr(cfg, "mode_extraction_rel_threshold", config.MODE_EXTRACTION_REL_THRESHOLD)),
+            max_modes=int(getattr(cfg, "mode_extraction_max_modes", config.MODE_EXTRACTION_MAX_MODES)),
+            num_workers=cfg.num_workers,
+        )
+
     # 7) train + val 로더 (val은 test_replays에서 cfg.val_count 만큼)
     data_loader_train, data_loader_validation, inner_ds = load_data(
         input_root=input_root,
@@ -394,6 +410,8 @@ def run_training(cfg: DictConfig):
         include_components=list(cfg.include_components),
         val_count=cfg.val_count,
         seed=int(seed),
+        pair_mode=is_director,
+        use_mode_cache=is_director,
     )
 
     # 8) test 로더 (test_replays 전체)
@@ -432,8 +450,12 @@ def run_training(cfg: DictConfig):
     Logger.info("[Stage] Initializing model...]")
     num_classes = 2  # background + viewport
 
-    # --- (1) loss_weights: dict 로 가정 (Hydra config에서 설정) ---
+    # --- (1) loss_weights: dict 로 가정 (Hydra config 및 architecture yaml에서 설정) ---
     loss_weights = {}
+    arch_loss_weights = getattr(cfg.architecture, "loss_weights", None)
+    if arch_loss_weights is not None:
+        for name, weight in arch_loss_weights.items():
+            loss_weights[name] = float(weight)
     if "loss_weights" in cfg and cfg.loss_weights is not None:
         for name, weight in cfg.loss_weights.items():
             loss_weights[name] = float(weight)

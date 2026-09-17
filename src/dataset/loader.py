@@ -72,6 +72,8 @@ def load_data(
     include_components: Optional[list[str]] = None,
     val_count: int = 1000,
     seed: Optional[int] = None,
+    pair_mode: bool = False,
+    use_mode_cache: bool = True,
 ) -> Tuple[DataLoader, Optional[DataLoader], object]:
     """
     학습/검증용 DataLoader를 구성하는 유틸.
@@ -126,6 +128,8 @@ def load_data(
         window_size=window_size,
         interval=interval,
         include_components=include_components,
+        pair_mode=pair_mode,
+        use_mode_cache=use_mode_cache,
     )
 
     n_train_full = len(train_full)
@@ -145,6 +149,8 @@ def load_data(
             interval=interval,
             include_components=include_components,
             verbose=False,
+            pair_mode=False,  # val은 pair 불필요
+            use_mode_cache=use_mode_cache,
         )
         n_val_full = len(val_full)
         Logger.info(f"[Info] Full val dataset size (from val_replays): {n_val_full}")

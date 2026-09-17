@@ -61,7 +61,8 @@ def _auto_num_workers(device: torch.device) -> int:
 
 def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int, 
                 architecture: str, num_classes: int = 2, use_kbrs: bool = False, 
-                kbrs_params: dict = None, rtdetr_version: str = "v1", rtdetr_size: str = "l"):
+                kbrs_params: dict = None, rtdetr_version: str = "v1", rtdetr_size: str = "l",
+                k_max: int = 3, conf_threshold: float = 0.2):
     
     # 1. factory.py가 요구하는 인자들을 담을 dummy args(SimpleNamespace) 생성
     model_args = SimpleNamespace(
@@ -73,7 +74,9 @@ def _load_model(model_path: str, device: torch.device, in_channels: int, window_
         kbrs_params=kbrs_params,
         loss_weights=None,
         rtdetr_version=rtdetr_version,  
-        rtdetr_size=rtdetr_size
+        rtdetr_size=rtdetr_size,
+        k_max=k_max,
+        conf_threshold=conf_threshold,
     )
     
     # 2. factory를 통해 모델 구조 생성 (Train과 완벽히 동일한 경로)
@@ -245,7 +248,9 @@ def run_inference(args):
 
     # 2. 아키텍처, 버전, 사이즈 결정 (pipeline.py -> cli.py 를 통해 넘어온 인자 사용)
     model_name_lower = args.model_name.lower()
-    if "centernet" in model_name_lower:
+    if "director" in model_name_lower:
+        arch_name = "director_centernet"
+    elif "centernet" in model_name_lower:
         arch_name = "centernet"
     elif "deformable" in model_name_lower or ("detr" in model_name_lower and "rtdetr" not in model_name_lower):
         arch_name = "deformable_detr"
@@ -258,6 +263,10 @@ def run_inference(args):
     rtdetr_size = getattr(args, "rtdetr_size", "l")
      
     # 3. Load model ONCE (reuse across replays)
+    th = getattr(args, "score_threshold", None)
+    if th is None:
+        th = config.DIRECTOR_TAU
+
     model = _load_model(
         model_path=model_path,
         device=device,
@@ -268,7 +277,9 @@ def run_inference(args):
         use_kbrs=use_kbrs_flag,         
         kbrs_params=kbrs_params,
         rtdetr_version=rtdetr_version,
-        rtdetr_size=rtdetr_size
+        rtdetr_size=rtdetr_size,
+        k_max=getattr(args, "k_max", config.DIRECTOR_K),
+        conf_threshold=float(th),
     )
 
     input_root = os.path.join(args.data_root, "input", "dst")

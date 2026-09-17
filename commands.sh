@@ -28,8 +28,13 @@ NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=maskrcnn batch_size=2 max_e
 NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=rtdetr batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample"
 NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=rtdetr batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample seed=123"
 
+# --- 5) Director-CenterNet (Multi-Region MRVP) ---
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=director_centernet batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample"
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=director_centernet batch_size=2 max_epoch=1 num_workers=1 dataset=fold1_sample seed=123"
+
 # --- Single-Replay Inference Test Example ---
 NVIDIA_VISIBLE_DEVICES=0 make inference ARGS="--model-name centernet --model-number 1 --replays 36 --batch-size 2 --cuda"
+NVIDIA_VISIBLE_DEVICES=0 make inference ARGS="--model-name director_centernet --model-number 1 --replays 36 --batch-size 2 --cuda"
 
 # =====================================================================
 # 1. Data Preprocessing
@@ -112,6 +117,41 @@ NVIDIA_VISIBLE_DEVICES=0 make run ARGS=" \
   seed=123 \
   kbrs_loss=kbrs025 \
 "
+
+# =====================================================================
+# CenterNet vs Director-CenterNet Comparison & Ablation Studies
+# =====================================================================
+# --- [Baseline] Vanilla CenterNet (Single-Region Viewport) ---
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=centernet batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123"
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=centernet batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123"
+
+# --- [Proposed] Director-CenterNet (Multi-Region Viewport Prediction, Full Model) ---
+# Objectives: L_hcm(1.0) + L_off(1.0) + L_sz(0.1) + L_rmc(0.5) + L_rep(0.3) + L_sm(0.2)
+NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=director_centernet batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123"
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=director_centernet batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123"
+
+# --- [Ablation Study 1] Cumulative Ablations (Paper Table 7: fold1, seed 123) ---
+# 1-1) L_hcm only (Row 1: w/o L_rmc, L_rep, L_smooth)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=director_centernet architecture.loss_weights.lambda_rmc=0.0 architecture.loss_weights.lambda_rep=0.0 architecture.loss_weights.lambda_sm=0.0 batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123 id_string=director_centernet_abl_hcm_only_fold1_s123"
+
+# 1-2) L_hcm + L_rmc (Row 2: w/o L_rep, L_smooth)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=director_centernet architecture.loss_weights.lambda_rep=0.0 architecture.loss_weights.lambda_sm=0.0 batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123 id_string=director_centernet_abl_hcm_rmc_fold1_s123"
+
+# 1-3) L_hcm + L_rmc + L_rep (Row 3: w/o L_smooth)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=director_centernet architecture.loss_weights.lambda_sm=0.0 batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123 id_string=director_centernet_abl_hcm_rmc_rep_fold1_s123"
+
+# 1-4) Full Director-CenterNet (Row 4: L_hcm + L_rmc + L_rep + L_smooth)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=director_centernet batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123 id_string=director_centernet_full_fold1_s123"
+
+# --- [Ablation Study 2] Leave-One-Out Ablations ---
+# 2-1) w/o L_rmc (Ranked Mode Coverage 제외 - 보조 모드 지도 제거 효과)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=director_centernet architecture.loss_weights.lambda_rmc=0.0 batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123 id_string=director_centernet_abl_no_rmc_fold1_s123"
+
+# 2-2) w/o L_rep (Spatial Repulsion 제외 - 중복 영역 억제 페널티 제거 효과)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=director_centernet architecture.loss_weights.lambda_rep=0.0 batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123 id_string=director_centernet_abl_no_rep_fold1_s123"
+
+# 2-3) w/o L_smooth (Trajectory Smoothness 제외 - 프레임 간 변위 페널티 제거 효과)
+NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=director_centernet architecture.loss_weights.lambda_sm=0.0 batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123 id_string=director_centernet_abl_no_smooth_fold1_s123"
 
 # CenterNet Pure Base Model (Density Peak Disabled)
 NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=centernet use_density_peak=false"

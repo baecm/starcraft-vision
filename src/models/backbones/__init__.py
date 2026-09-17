@@ -1,4 +1,5 @@
 from .centernet import CenterNetBackbone
+from .director_centernet import DirectorCenterNet
 from .deformable_detr import DeformableDETRBackbone
 from .maskrcnn import build_maskrcnn_backbone
 from .rtdetr import BaseRTDETR, build_rtdetr_backbone
@@ -7,6 +8,7 @@ from .deformable_video_detr import DeformableVideoDETRDecoder, ProbabilisticVide
 
 __all__ = [
     "CenterNetBackbone",
+    "DirectorCenterNet",
     "DeformableDETRBackbone",
     "build_maskrcnn_backbone",
     "BaseRTDETR",

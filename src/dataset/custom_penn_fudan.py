@@ -29,20 +29,27 @@ class CustomPennFudanDataset(BasePennFudanDataset):
         training: bool = True,
         verbose: bool = True,
         include_components: list = None,
-        trim_tail: int = 0
+        trim_tail: int = 0,
+        pair_mode: bool = False,
+        use_mode_cache: bool = True,
     ):
         self.input_root = input_root
+        self.label_root = label_root
+        self.label_method = label_method
         self.training = training
         self.verbose = verbose
         self.window_size = int(window_size)
         self.interval = max(1, int(interval))
         self.trim_tail = max(0, int(trim_tail))
+        self.pair_mode = bool(pair_mode)
+        self.use_mode_cache = bool(use_mode_cache)
 
         # 채널 인덱스 확정
         self.channel_indices = self._build_channel_indices(include_components)
 
-        # (rid, [window_img_ids], image_dict, ann_dict) 튜플 리스트
+        # (rid, [window_img_ids], [next_window_img_ids], image_dict, ann_dict) 튜플 리스트
         self.files = []
+        self.mode_caches = {}
 
         # 리플레이 단위로 메타 로딩 및 윈도우 구성
         for rid in map(str, training_ids):
@@ -54,6 +61,16 @@ class CustomPennFudanDataset(BasePennFudanDataset):
                     Logger.warn(f"Skipping {rid}: missing input dir or pickle file.")
                 continue
 
+            # Load Mode Cache if requested
+            if self.use_mode_cache:
+                try:
+                    from .mode_cache import load_mode_cache
+                    self.mode_caches[rid] = load_mode_cache(label_root, rid, label_method)
+                except Exception as e:
+                    if self.verbose:
+                        Logger.warn(f"Mode cache not loaded for {rid}: {e}")
+                    self.mode_caches[rid] = None
+
             image_dict, ann_dict = self._load_meta_from_pickle(pkl_path)
 
             sorted_image_ids = sorted(image_dict.keys())
@@ -64,9 +81,11 @@ class CustomPennFudanDataset(BasePennFudanDataset):
             windows = self._generate_windows(sorted_image_ids, self.window_size, self.interval)
             # 유효 윈도우만 필터(1회 NAS listdir로 RPC 네트워크 병목 제거)
             existing_files = set(os.listdir(input_dir))
-            for win in windows:
-                if all(f"{img_id}.npy" in existing_files for img_id in win):
-                    self.files.append((rid, win, image_dict, ann_dict))
+            valid_windows = [win for win in windows if all(f"{img_id}.npy" in existing_files for img_id in win)]
+
+            for i, win in enumerate(valid_windows):
+                next_win = valid_windows[min(i + 1, len(valid_windows) - 1)]
+                self.files.append((rid, win, next_win, image_dict, ann_dict))
 
         if not self.files:
             raise RuntimeError("Empty dataset or no valid windows found.")
@@ -75,7 +94,7 @@ class CustomPennFudanDataset(BasePennFudanDataset):
             self.files = [self.files[i] for i in indices]
 
         if self.verbose:
-            Logger.info(f"Total windows (samples): {len(self.files)}")
+            Logger.info(f"Total windows (samples): {len(self.files)} (pair_mode={self.pair_mode}, use_mode_cache={self.use_mode_cache})")
             value_to_name_map = {member.value: name for name, member in config.Channel.__members__.items()}
             channel_names = [value_to_name_map[i] for i in self.channel_indices]
             Logger.info(f"Using {len(self.channel_indices)} channels: {channel_names}")
@@ -94,7 +113,7 @@ class CustomPennFudanDataset(BasePennFudanDataset):
         return len(self.files)
 
     def __getitem__(self, idx):
-        rid, window_image_ids, image_dict, ann_dict = self.files[idx]
+        rid, window_image_ids, next_window_image_ids, image_dict, ann_dict = self.files[idx]
 
         # 입력 텐서 생성: (C * window_size, H, W)
         input_tensor = self._concat_window_frames(
@@ -114,8 +133,37 @@ class CustomPennFudanDataset(BasePennFudanDataset):
         anns = ann_dict.get(target_img_id, [])
         target = self._make_target_from_anns(anns, H, W, target_img_id)
 
+        # Mode cache 정보 주입
+        if self.use_mode_cache and self.mode_caches.get(rid) is not None:
+            m_info = self.mode_caches[rid].get(target_img_id)
+            if m_info is not None:
+                target["modes"] = {
+                    "centers": torch.from_numpy(m_info["centers"]),
+                    "support": torch.from_numpy(m_info["support"]),
+                    "n_observers": m_info.get("n_observers", 5),
+                }
+
+        # 연속 프레임 페어링 모드 (L_smooth용)
+        if self.pair_mode:
+            next_input_tensor = self._concat_window_frames(
+                root=self.input_root,
+                rid=rid,
+                image_ids=next_window_image_ids,
+                channel_indices=self.channel_indices
+            ).float()
+            target["next_image"] = next_input_tensor
+
+            next_target_img_id = next_window_image_ids[-1]
+            if self.use_mode_cache and self.mode_caches.get(rid) is not None:
+                next_m_info = self.mode_caches[rid].get(next_target_img_id)
+                if next_m_info is not None:
+                    target["next_modes"] = {
+                        "centers": torch.from_numpy(next_m_info["centers"]),
+                        "support": torch.from_numpy(next_m_info["support"]),
+                        "n_observers": next_m_info.get("n_observers", 5),
+                    }
+
         # ---- 디버깅/추적용 메타 (model forward에는 영향 없음; engine에서 텐서만 .to(device) 함) ----
-        # NaN/폭발 배치를 기록할 때 어떤 replay/window였는지 역추적 가능하게.
         target["rid"] = str(rid)
         target["window_image_ids"] = [int(x) for x in window_image_ids]
         target["sample_idx"] = int(idx)

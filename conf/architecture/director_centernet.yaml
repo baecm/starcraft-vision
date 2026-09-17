@@ -1,0 +1,19 @@
+# conf/architecture/director_centernet.yaml
+model_name: director_centernet
+centernet_down_ratio: 4
+k_max: 3
+conf_threshold: 0.2
+render_sigma: 2.0
+u_observers: 5
+
+resize_mode: fixed_square
+image_size: 640
+do_normalize: false
+
+loss_weights:
+  lambda_hcm: 1.0
+  lambda_off: 1.0
+  lambda_sz: 0.1
+  lambda_rmc: 0.5
+  lambda_rep: 0.3
+  lambda_sm: 0.2

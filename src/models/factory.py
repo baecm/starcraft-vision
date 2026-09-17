@@ -11,6 +11,7 @@ except ModuleNotFoundError:
     from src.utils.logger import Logger
 from .backbones import (
     CenterNetBackbone,
+    DirectorCenterNet,
     DeformableDETRBackbone,
     ProbabilisticVideoDETR,
     build_maskrcnn_backbone,
@@ -89,6 +90,19 @@ def build_model(args: Any) -> nn.Module:
             max_objs=getattr(args, "max_objs", 100),
             use_density_peak=use_dp,
             loss_weights=loss_weights
+        )
+
+    elif model_name in ["director_centernet", "director-centernet", "director_centernet_win4", "director"]:
+        model = DirectorCenterNet(
+            in_channels=in_channels,
+            num_classes=1,
+            down_ratio=getattr(args, "centernet_down_ratio", 4),
+            k_max=getattr(args, "k_max", getattr(config, "DIRECTOR_K", 3)),
+            conf_threshold=getattr(args, "conf_threshold", getattr(config, "DIRECTOR_TAU", 0.2)),
+            render_sigma=getattr(args, "render_sigma", getattr(config, "DIRECTOR_RENDER_SIGMA", 2.0)),
+            u_observers=getattr(args, "u_observers", getattr(config, "NUM_OBSERVERS_U", 5)),
+            viewport_size_hw=getattr(args, "viewport_size_hw", getattr(config, "VIEWPORT_SIZE_HW", (12, 20))),
+            loss_weights=loss_weights,
         )
 
     elif model_name in ["probabilistic_video_detr", "video_detr", "deformable_video_detr_cvae"]:
