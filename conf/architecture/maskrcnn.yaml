@@ -1,4 +1,5 @@
 model_name: maskrcnn
+score_threshold: 0.5
 
 resize_mode: resize
 do_normalize: false

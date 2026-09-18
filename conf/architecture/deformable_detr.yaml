@@ -1,4 +1,5 @@
 model_name: deformable_detr
+score_threshold: 0.5
 num_queries: 100
 use_probabilistic_query: false
 

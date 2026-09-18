@@ -1,5 +1,6 @@
 # conf/architecture/director_centernet.yaml
 model_name: director_centernet
+score_threshold: 0.3
 centernet_down_ratio: 4
 k_max: 3
 conf_threshold: 0.2

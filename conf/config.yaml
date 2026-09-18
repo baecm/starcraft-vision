@@ -31,6 +31,7 @@ interval: 8
 batch_size: 32
 learning_rate: 0.005
 sample_ratio: 1.0
+score_threshold: ${architecture.score_threshold}
 
 # ===== Validation & Testing =====
 val_count: 100
