@@ -336,24 +336,18 @@ class DirectorCenterNet(nn.Module):
             loss_off = torch.stack(off_losses).mean() if off_losses else torch.tensor(0.0, device=device)
             loss_sz = torch.stack(sz_losses).mean() if sz_losses else torch.tensor(0.0, device=device)
 
-            # Joint Objective (Eq 19)
-            total_loss = (
-                self.loss_weights["lambda_hcm"] * loss_hcm
-                + self.loss_weights["lambda_off"] * loss_off
-                + self.loss_weights["lambda_sz"] * loss_sz
-                + self.loss_weights["lambda_rmc"] * loss_rmc
-                + self.loss_weights["lambda_rep"] * loss_rep
-                + self.loss_weights["lambda_sm"] * loss_smooth
-            )
-
+            # Joint Objective (Eq 19). detection/engine_safe.py backprops
+            # sum(loss_dict.values()), so each entry carries its own lambda and no
+            # aggregate is returned: emitting "loss_total" alongside the components
+            # added every lambda to itself (lambda_rep=0.0 still weighed 1.0, which
+            # silently defeated the leave-one-out ablations).
             return {
-                "loss_centernet_hm": loss_hcm,
-                "loss_rmc": loss_rmc,
-                "loss_rep": loss_rep,
-                "loss_smooth": loss_smooth,
-                "loss_off": loss_off,
-                "loss_wh": loss_sz,
-                "loss_total": total_loss,
+                "loss_centernet_hm": self.loss_weights["lambda_hcm"] * loss_hcm,
+                "loss_rmc": self.loss_weights["lambda_rmc"] * loss_rmc,
+                "loss_rep": self.loss_weights["lambda_rep"] * loss_rep,
+                "loss_smooth": self.loss_weights["lambda_sm"] * loss_smooth,
+                "loss_off": self.loss_weights["lambda_off"] * loss_off,
+                "loss_wh": self.loss_weights["lambda_sz"] * loss_sz,
             }
 
         else:

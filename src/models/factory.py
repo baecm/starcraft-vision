@@ -40,9 +40,10 @@ class KBRSWrapper(nn.Module):
             else:
                 losses["loss_base"] = base_out
 
+            # engine_safe backprops sum(loss_dict.values()); adding an aggregate
+            # here re-counted every base loss on top of the base model's own.
             w_kbrs = self.kbrs_hook.loss_weights.get("loss_kbrs", 0.25)
-            losses["loss_kbrs"] = loss_kbrs
-            losses["loss_total"] = losses.get("loss_total", sum(losses.values())) + w_kbrs * loss_kbrs
+            losses["loss_kbrs"] = w_kbrs * loss_kbrs
             return losses
         else:
             return self.base_model(images, targets)

@@ -261,19 +261,14 @@ class DeformableDETRBackbone(nn.Module):
                 loss_bbox /= num_matches
                 loss_giou /= num_matches
 
-            total_loss = (
-                self.loss_weights["loss_ce"] * loss_ce +
-                self.loss_weights["loss_bbox"] * loss_bbox +
-                self.loss_weights["loss_giou"] * loss_giou +
-                self.loss_weights["loss_kl"] * kl_loss
-            )
-
+            # detection/engine_safe.py backprops sum(loss_dict.values()): each entry
+            # carries its weight and no aggregate is returned, since emitting
+            # "loss_total" alongside its own components counted each one twice.
             return {
-                "loss_ce": loss_ce,
-                "loss_bbox": loss_bbox,
-                "loss_giou": loss_giou,
-                "loss_kl": kl_loss,
-                "loss_total": total_loss
+                "loss_ce": self.loss_weights["loss_ce"] * loss_ce,
+                "loss_bbox": self.loss_weights["loss_bbox"] * loss_bbox,
+                "loss_giou": self.loss_weights["loss_giou"] * loss_giou,
+                "loss_kl": self.loss_weights["loss_kl"] * kl_loss,
             }
         else:
             results = []

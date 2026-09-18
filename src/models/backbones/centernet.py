@@ -80,6 +80,10 @@ class CenterNetBackbone(nn.Module):
             nn.Conv2d(head_conv, 2, kernel_size=1)
         )
 
+        # CenterNet heatmap prior: sigmoid(-2.19) ~= 0.1, so training does not start
+        # with every cell claiming p=0.5 against ~1000 negatives per positive.
+        self.hm_head[-1].bias.data.fill_(-2.19)
+
         if self.use_density_peak:
             from ..plugins.density_peak import DensityPeakHead
             self.density_peak_head = DensityPeakHead(in_channels=256, head_conv=head_conv)
@@ -125,7 +129,6 @@ class CenterNetBackbone(nn.Module):
                 if ct_x < 0 or ct_x >= feat_w or ct_y < 0 or ct_y >= feat_h:
                     continue
 
-                gt_hm[b, cls_id, ct_y, ct_x] = 1.0
                 gt_wh[b, k] = torch.tensor([w, h], device=device)
                 gt_off[b, k] = torch.tensor([cx - ct_x, cy - ct_y], device=device)
                 gt_mask[b, k] = 1.0
@@ -139,6 +142,18 @@ class CenterNetBackbone(nn.Module):
 
                 dist_sq = (x_grid[top:bottom, left:right] - ct_x) ** 2 + (y_grid[top:bottom, left:right] - ct_y) ** 2
                 gauss = torch.exp(-dist_sq / (2.0 * (radius ** 2)))
+
+                # Splat the Gaussian into the heatmap target, not just into the
+                # density map. Without it gt_hm is a one-hot delta, so the
+                # (1 - gt)^beta penalty-reduction term in focal_loss_keypoints is
+                # identically 1 and a cell one step off the centre is punished as
+                # hard as the far background. maximum() (not +=) keeps overlapping
+                # observers from pushing the target above 1.
+                gt_hm[b, cls_id, top:bottom, left:right] = torch.maximum(
+                    gt_hm[b, cls_id, top:bottom, left:right], gauss
+                )
+                gt_hm[b, cls_id, ct_y, ct_x] = 1.0  # exact peak stays the positive
+
                 density_accum[top:bottom, left:right] += gauss
 
             gt_density[b, 0] = density_accum
@@ -194,22 +209,19 @@ class CenterNetBackbone(nn.Module):
                 loss_density = torch.tensor(0.0, device=device)
                 loss_delta = torch.tensor(0.0, device=device)
 
-            total_loss = (
-                self.loss_weights["loss_hm"] * loss_hm +
-                self.loss_weights["loss_wh"] * loss_wh +
-                self.loss_weights["loss_off"] * loss_off +
-                (self.loss_weights.get("loss_density", 0.5) * loss_density if self.use_density_peak else 0.0) +
-                (self.loss_weights.get("loss_delta", 0.5) * loss_delta if self.use_density_peak else 0.0)
-            )
-
-            return {
-                "loss_centernet_hm": loss_hm,
-                "loss_wh": loss_wh,
-                "loss_off": loss_off,
-                "loss_density": loss_density,
-                "loss_delta": loss_delta,
-                "loss_total": total_loss
+            # detection/engine_safe.py backprops sum(loss_dict.values()), so every
+            # entry must already carry its weight and no aggregate may be present.
+            # Returning "loss_total" next to its own components counted each one
+            # twice: effective weights were (2.0, 1.1, 2.0) instead of (1, 0.1, 1).
+            losses = {
+                "loss_centernet_hm": self.loss_weights["loss_hm"] * loss_hm,
+                "loss_wh": self.loss_weights["loss_wh"] * loss_wh,
+                "loss_off": self.loss_weights["loss_off"] * loss_off,
             }
+            if self.use_density_peak:
+                losses["loss_density"] = self.loss_weights.get("loss_density", 0.5) * loss_density
+                losses["loss_delta"] = self.loss_weights.get("loss_delta", 0.5) * loss_delta
+            return losses
         else:
             img_h, img_w = batched.shape[-2:]
             results = []
