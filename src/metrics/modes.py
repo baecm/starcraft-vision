@@ -73,7 +73,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -116,21 +116,48 @@ def gt_boxes_by_frame(coco: COCO) -> Dict[int, np.ndarray]:
     return by_frame
 
 
-def _boxes_and_scores(dets: List[dict]) -> Tuple[np.ndarray, np.ndarray]:
+def _boxes_and_scores(
+    dets: List[dict],
+    size_wh: Optional[Tuple[float, float]] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
     items = sorted(dets, key=lambda a: -float(a.get("score", 1.0)))
     boxes = np.array([a["bbox"] for a in items], dtype=float)
     scores = np.array([float(a.get("score", 1.0)) for a in items], dtype=float)
+    if size_wh is not None and len(boxes):
+        boxes[:, 2] = float(size_wh[0])
+        boxes[:, 3] = float(size_wh[1])
     return boxes, scores
 
 
-def predictions_from_dets(dets_by_img: Dict[int, List[dict]]) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
+def predictions_from_dets(
+    dets_by_img: Dict[int, List[dict]],
+    size_wh: Optional[Tuple[float, float]] = None,
+) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
     """Adapt the {image_id: [det, ...]} grouping returned by
     `estimate.load_coco_preds` into the (boxes, scores) shape `analyse_method`
-    expects, highest score first."""
-    return {image_id: _boxes_and_scores(dets) for image_id, dets in dets_by_img.items() if dets}
+    expects, highest score first.
+
+    `size_wh` anchors every predicted box at its stored top-left corner and
+    forces it to that (width, height). A viewport is a fixed-size camera
+    rectangle, so this is what the rest of the project means by a prediction -
+    the detector's own width/height are not used downstream. Leaving it None
+    keeps whatever the file stores, which skews any position derived from the
+    box: a box clipped at the map edge by inference's clamp() comes back
+    narrower, and `box_center` then reports a centre pulled toward that edge by
+    (w_true - w_stored) / 2. Edge predictions are exactly the ones affected, so
+    raw sizes systematically overstate how close predictions sit to a corner.
+    """
+    return {
+        image_id: _boxes_and_scores(dets, size_wh)
+        for image_id, dets in dets_by_img.items()
+        if dets
+    }
 
 
-def load_predictions(path: str) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
+def load_predictions(
+    path: str,
+    size_wh: Optional[Tuple[float, float]] = None,
+) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
     """frame -> (boxes, scores), loaded directly from a prediction json file.
 
     Mirrors the preds_by_img grouping already used by
@@ -139,6 +166,7 @@ def load_predictions(path: str) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
     `estimate.load_coco_preds` + `predictions_from_dets` when the file lives
     at the project's usual `predictions/<model>/model_<epoch>/<replay>.rep/`
     layout, since that also handles score-threshold suffixed folders.
+    See `predictions_from_dets` for `size_wh`.
     """
     with open(path) as fh:
         data = json.load(fh)
@@ -147,7 +175,7 @@ def load_predictions(path: str) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
     by_img: Dict[int, List[dict]] = {}
     for a in anns:
         by_img.setdefault(int(a["image_id"]), []).append(a)
-    return predictions_from_dets(by_img)
+    return predictions_from_dets(by_img, size_wh)
 
 
 def infer_region_size(gt_by_frame: Dict[int, np.ndarray], sample: int = 200) -> Tuple[float, float]:

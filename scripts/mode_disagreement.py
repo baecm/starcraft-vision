@@ -113,12 +113,20 @@ def main() -> None:
     ap.add_argument("--region-size", type=int, nargs=2, default=None,
                     metavar=("H", "W"),
                     help="viewport size in tiles; inferred per-replay from the GT if omitted")
+    ap.add_argument("--raw-pred-size", action="store_true",
+                    help="measure predictions at the width/height stored in the "
+                         "prediction file instead of anchoring each box at its "
+                         "top-left corner and forcing the GT viewport size. Only "
+                         "for reproducing older numbers: a box clipped at the map "
+                         "edge is stored narrower, which drags its computed centre "
+                         "toward that edge and inflates corner statistics.")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
     models = [parse_model_spec(spec, args.epoch) for spec in args.model]
     print(f"replays: {args.replays}")
-    print(f"models : {[(n, m, e) for n, m, e in models]}\n")
+    print(f"models : {[(n, m, e) for n, m, e in models]}")
+    print(f"pred box size: {'as stored in the prediction file' if args.raw_pred_size else 'GT viewport size, anchored at top-left'}\n")
 
     per_method_frames = {name: [] for name, _, _ in models}
     per_method_mcti = {name: [] for name, _, _ in models}
@@ -133,13 +141,16 @@ def main() -> None:
             print(f"  [!] no GT frames for replay {replay}, skipping")
             continue
         size_hw = tuple(args.region_size) if args.region_size else infer_region_size(gt_by_frame)
+        # GT viewports all share one size, so it is also the size every
+        # prediction denotes; box_slices/box_center take (x, y, w, h).
+        pred_size_wh = None if args.raw_pred_size else (size_hw[1], size_hw[0])
 
         for name, model_name, epoch in models:
             dets_by_img = load_coco_preds(
                 pred_root=args.pred_root, model_name=model_name, epoch=epoch,
                 replay_id=replay, label_method=args.label_method,
             )
-            pred_by_frame = predictions_from_dets(dets_by_img)
+            pred_by_frame = predictions_from_dets(dets_by_img, pred_size_wh)
             if not pred_by_frame:
                 print(f"  [!] {name}: no predictions for replay {replay}, skipping")
                 continue
