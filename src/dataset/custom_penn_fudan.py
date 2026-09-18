@@ -47,7 +47,7 @@ class CustomPennFudanDataset(BasePennFudanDataset):
         # 채널 인덱스 확정
         self.channel_indices = self._build_channel_indices(include_components)
 
-        # (rid, [window_img_ids], [next_window_img_ids], image_dict, ann_dict) 튜플 리스트
+        # (rid, [window_img_ids], [next_window_img_ids], has_next, image_dict, ann_dict) 튜플 리스트
         self.files = []
         self.mode_caches = {}
 
@@ -84,8 +84,12 @@ class CustomPennFudanDataset(BasePennFudanDataset):
             valid_windows = [win for win in windows if all(f"{img_id}.npy" in existing_files for img_id in win)]
 
             for i, win in enumerate(valid_windows):
-                next_win = valid_windows[min(i + 1, len(valid_windows) - 1)]
-                self.files.append((rid, win, next_win, image_dict, ann_dict))
+                # the last window of a replay has no successor: it pairs with
+                # itself so the tensor shapes stay uniform, but has_next=False
+                # keeps that zero-displacement pair out of L_smooth.
+                has_next = i + 1 < len(valid_windows)
+                next_win = valid_windows[i + 1] if has_next else win
+                self.files.append((rid, win, next_win, has_next, image_dict, ann_dict))
 
         if not self.files:
             raise RuntimeError("Empty dataset or no valid windows found.")
@@ -113,7 +117,7 @@ class CustomPennFudanDataset(BasePennFudanDataset):
         return len(self.files)
 
     def __getitem__(self, idx):
-        rid, window_image_ids, next_window_image_ids, image_dict, ann_dict = self.files[idx]
+        rid, window_image_ids, next_window_image_ids, has_next, image_dict, ann_dict = self.files[idx]
 
         # 입력 텐서 생성: (C * window_size, H, W)
         input_tensor = self._concat_window_frames(
@@ -152,6 +156,7 @@ class CustomPennFudanDataset(BasePennFudanDataset):
                 channel_indices=self.channel_indices
             ).float()
             target["next_image"] = next_input_tensor
+            target["next_valid"] = bool(has_next)
 
             next_target_img_id = next_window_image_ids[-1]
             if self.use_mode_cache and self.mode_caches.get(rid) is not None:
@@ -188,10 +193,10 @@ class CustomPennFudanDataset(BasePennFudanDataset):
         anns_by_id: dict[int, dict] = OrderedDict()
         cat_ids: set[int] = set()
 
-        # self.files: List[Tuple[rid, window_image_ids, image_dict, ann_dict]]
+        # self.files: List[Tuple[rid, window_image_ids, next_window_image_ids, has_next, image_dict, ann_dict]]
         next_ann_id = 1
 
-        for rid, window_image_ids, image_dict, ann_dict in self.files:
+        for rid, window_image_ids, _next_window_image_ids, _has_next, image_dict, ann_dict in self.files:
             if not window_image_ids:
                 continue
 

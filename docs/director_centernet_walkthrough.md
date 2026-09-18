@@ -112,7 +112,9 @@ $$L = L_{hcm} + \lambda_{off} L_{off} + \lambda_{sz} L_{size} + \lambda_{rmc} L_
 - `CustomPennFudanDataset`에 `pair_mode=True` 옵션을 추가하여 각 샘플 로드 시 동일 replay 내의 연속된 다음 윈도우 $(t, t+1)$ 텐서와 모드 정보를 함께 로드하도록 구현했습니다:
   - `target["next_image"]`: 다음 프레임 윈도우 텐서
   - `target["next_modes"]`: 다음 프레임 순위 모드 메타데이터
+  - `target["next_valid"]`: 실제 후속 윈도우 존재 여부. replay의 마지막 윈도우는 후속이 없어 자기 자신과 페어링되므로(텐서 shape 유지 목적), 이 플래그가 `False`가 되어 $L_{smooth}$의 `valid_mask`에서 제외됩니다. 이것이 없으면 replay마다 변위 0인 가짜 쌍이 손실에 섞입니다.
 - 이를 통해 배치가 무작위 셔플되어도 $L_{smooth}$를 1:1로 안전하고 정확하게 역전파할 수 있습니다.
+- $L_{smooth}$ 활성화 조건은 `next_image`의 존재 여부로 판단합니다 (`next_modes`는 mode cache 적재 실패 시 없을 수 있어 게이트로 부적합).
 
 ---
 

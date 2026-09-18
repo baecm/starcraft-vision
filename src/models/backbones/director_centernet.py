@@ -218,18 +218,19 @@ class DirectorCenterNet(nn.Module):
             if targets is None:
                 raise ValueError("Targets must be provided during training.")
 
-            # Check if paired inputs exist (for L_smooth)
-            # targets may contain 'pair_image' or 'next_modes'
-            has_pairs = any("next_modes" in t for t in targets)
+            # L_smooth only needs the next frame's image; 'next_modes' rides on
+            # the mode cache and can be absent even when pairing is active.
+            has_pairs = any("next_image" in t for t in targets)
 
             feat = self._extract_features(batched)
             pred_hm, pred_off, pred_wh = self._predict_heads(feat)
             _, _, feat_h, feat_w = pred_hm.shape
             stride = self.down_ratio
 
-            # Render Gaussian targets (Eq 12)
-            # Collect mode dictionaries from targets
-            curr_modes = [t.get("modes", t) for t in targets]
+            # Render Gaussian targets (Eq 12). A sample whose mode cache entry
+            # is missing yields an empty dict here and is skipped by the
+            # renderer (no Top-1 target, no offset/size target for it).
+            curr_modes = [t.get("modes", {}) for t in targets]
             rendered = render_gaussian_heatmap_targets(
                 modes_list=curr_modes,
                 batch_size=b_size,
@@ -288,7 +289,15 @@ class DirectorCenterNet(nn.Module):
                         conf_thresh=self.conf_threshold,
                         k_max=self.k_max,
                     )
-                    loss_smooth = trajectory_smoothness_loss(primary_centers, primary_centers_next)
+                    # exclude replay-final windows, which pair with themselves
+                    next_valid = torch.tensor(
+                        [bool(t.get("next_valid", True)) for t in targets],
+                        dtype=torch.bool,
+                        device=device,
+                    )
+                    loss_smooth = trajectory_smoothness_loss(
+                        primary_centers, primary_centers_next, valid_mask=next_valid
+                    )
                 else:
                     loss_smooth = torch.tensor(0.0, device=device)
             else:

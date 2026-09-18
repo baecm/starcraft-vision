@@ -19,12 +19,16 @@ from losses.director_losses import (
 
 
 def test_render_targets_and_masking():
-    # 1 batch sample with 2 modes
-    # Top-1 mode at (row=30, col=40) with support=5
-    # Top-2 mode at (row=80, col=90) with support=3
+    # 1 batch sample with 2 modes.
+    # Centers are multiples of stride so they land exactly on sampled grid
+    # points; otherwise the discrete grid never samples the continuous peak
+    # (e.g. row=30 with stride=4 is 2 tiles off the nearest grid row, which
+    # alone scales the peak down by exp(-2^2 / 2*2^2) ~= 0.61).
+    # Top-1 mode at (row=32, col=40) with support=5 -> peak 5/5 = 1.0
+    # Top-2 mode at (row=80, col=88) with support=3 -> peak 3/5 = 0.6
     modes_list = [
         {
-            "centers": np.array([[30.0, 40.0], [80.0, 90.0]]),
+            "centers": np.array([[32.0, 40.0], [80.0, 88.0]]),
             "support": np.array([5, 3]),
             "n_observers": 5,
         }
@@ -55,19 +59,23 @@ def test_render_targets_and_masking():
     assert Y_minus.shape == (1, 1, feat_h, feat_w)
     assert mask_omega.shape == (1, 1, feat_h, feat_w)
 
-    # Top-1 center in feat coords: col 40 // 4 = 10, row 30 // 4 = 7 or 8 (30/4=7.5)
+    # Top-1 center in feat coords: row 32 / 4 = 8, col 40 / 4 = 10
     # Peak at Top-1 should be 1.0 (support 5 / 5 = 1.0)
-    assert torch.isclose(Y1.max(), torch.tensor(1.0), atol=1e-2)
-    # Peak at Top-2 should be 0.6 (support 3 / 5 = 0.6)
-    assert torch.isclose(Y_minus.max(), torch.tensor(0.6), atol=1e-2)
+    assert torch.isclose(Y1.max(), torch.tensor(1.0), atol=1e-4)
+    assert torch.isclose(Y1[0, 0, 8, 10], torch.tensor(1.0), atol=1e-4)
+    # Peak at Top-2 should be 0.6 (support 3 / 5 = 0.6), at row 80/4=20, col 88/4=22
+    assert torch.isclose(Y_minus.max(), torch.tensor(0.6), atol=1e-4)
+    assert torch.isclose(Y_minus[0, 0, 20, 22], torch.tensor(0.6), atol=1e-4)
+    # Top-1 mode must not leak into the auxiliary target
+    assert Y_minus[0, 0, 8, 10].item() < 1e-6
 
-    # Primary region mask A_t^(1): around (c1_y=30, c1_x=40) with h=12, w=20
-    # y in [24, 36], x in [30, 50].
-    # In feature grid: y in [6, 9], x in [8, 12]
+    # Primary region mask A_t^(1): around (c1_y=32, c1_x=40) with h=12, w=20
+    # -> y in [26, 38], x in [30, 50]
     # Inside primary region, mask_omega must be 0
-    assert mask_omega[0, 0, 7, 10].item() == 0.0
+    assert mask_omega[0, 0, 7, 10].item() == 0.0  # y=28, x=40
+    assert mask_omega[0, 0, 8, 10].item() == 0.0  # y=32, x=40 (center)
     # Far away from primary region, mask_omega must be 1
-    assert mask_omega[0, 0, 20, 20].item() == 1.0
+    assert mask_omega[0, 0, 20, 20].item() == 1.0  # y=80, x=80
 
 
 def test_l_rmc_empty_when_no_auxiliary_modes():
