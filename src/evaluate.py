@@ -41,11 +41,28 @@ if hasattr(sys.stdout, "reconfigure"):
 # 1. COCO & Geometry Helpers
 # =====================================================================
 
-def _centroid_from_coco_ann(ann: dict, img_w: int, img_h: int) -> Tuple[float, float]:
+def _centroid_from_coco_ann(
+    ann: dict,
+    img_w: int,
+    img_h: int,
+    size_wh: Optional[Tuple[float, float]] = None,
+) -> Tuple[float, float]:
     """
     Return centroid (cx, cy) in image pixel coordinates (0..img_w-1, 0..img_h-1)
     Handles 'segmentation' (polygon or RLE) and 'bbox'.
+
+    `size_wh` takes the annotation's top-left corner but measures the centroid
+    with that (width, height) instead of the stored one. Pass it for
+    predictions: inference clamps boxes to the map, so a box hanging off an
+    edge is written narrower than the viewport it denotes and its centroid
+    comes out pulled toward that edge by (w_true - w_stored) / 2. Ground-truth
+    annotations carry their true size, so they are measured as stored.
     """
+    def _centre(x, y, w, h) -> Tuple[float, float]:
+        if size_wh is not None:
+            w, h = size_wh
+        return float(x + w / 2.0), float(y + h / 2.0)
+
     if "segmentation" in ann and ann["segmentation"]:
         seg = ann["segmentation"]
         if isinstance(seg, dict) and "counts" in seg:
@@ -59,11 +76,11 @@ def _centroid_from_coco_ann(ann: dict, img_w: int, img_h: int) -> Tuple[float, f
                 bbox = None
         if bbox is not None:
             x, y, w, h = bbox
-            return float(x + w / 2.0), float(y + h / 2.0)
+            return _centre(x, y, w, h)
 
     if "bbox" in ann and ann["bbox"]:
         x, y, w, h = ann["bbox"]
-        return float(x + w / 2.0), float(y + h / 2.0)
+        return _centre(x, y, w, h)
 
     return float(img_w) / 2.0, float(img_h) / 2.0
 
@@ -130,7 +147,9 @@ def coco_to_kernel_labels(
             agent0 = [{"vpx": dummy_vx, "vpy": dummy_vy}]
         else:
             best_pred = max(valid_preds, key=lambda q: float(q.get("score", 0.0)))
-            pcx, pcy = _centroid_from_coco_ann(best_pred, img_w, img_h)
+            # a prediction denotes a top-left plus the fixed viewport size; its
+            # stored w/h are clamped at the map edge and would skew the centroid
+            pcx, pcy = _centroid_from_coco_ann(best_pred, img_w, img_h, size_wh=(x_len, y_len))
             vx = float(pcx) / max(1, (img_w - x_len)) * max_x
             vy = float(pcy) / max(1, (img_h - y_len)) * max_y
             agent0 = [{"vpx": vx, "vpy": vy}]
@@ -528,7 +547,7 @@ def compute_kbrs_for_replay(
             if not img_preds:
                 continue
             positions = [
-                _centroid_from_coco_ann(det, img_w, img_h)
+                _centroid_from_coco_ann(det, img_w, img_h, size_wh=(win_w, win_h))
                 for det in img_preds
                 if "bbox" in det and det["bbox"] is not None
             ]
