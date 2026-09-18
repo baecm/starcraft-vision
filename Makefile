@@ -6,8 +6,6 @@ ENABLE_SYNOLOGY_CHAT ?= false
 export ENABLE_SYNOLOGY_CHAT
 
 ifeq ($(OS),Windows_NT)
-    USER_UID ?= 1000
-    USER_GID ?= 1000
     # Auto-mount Windows network drive Z: into WSL2 docker-desktop host
     $(shell wsl -d docker-desktop -e sh -c "if [ -d /mnt/host ] && [ ! -d /mnt/host/z/starcraft-vision ]; then mkdir -p /mnt/host/z && mount -t drvfs 'Z:' /mnt/host/z 2>/dev/null; fi" 2>/dev/null)
     # Use Git Bash on Windows (8.3 short path avoids space issues in Make)
@@ -16,12 +14,11 @@ ifeq ($(OS),Windows_NT)
     # Disable MSYS automatic path conversion so /workspace paths are preserved for Docker
     export MSYS_NO_PATHCONV := 1
     export MSYS2_ARG_CONV_EXCL := *
-else
-    USER_UID ?= $(shell id -u 2>/dev/null || echo 1000)
-    USER_GID ?= $(shell id -g 2>/dev/null || echo 1000)
 endif
-export UID := $(USER_UID)
-export GID := $(USER_GID)
+
+# 컨테이너 실행 uid/gid는 infra/.env 의 UID/GID 에서 온다 (워크스테이션별, gitignore).
+# 마운트된 디렉터리의 소유자와 반드시 일치해야 한다. CIFS/NAS 마운트라면
+# `id -u` 가 아니라 그 마운트의 uid= 옵션 값이다.
 
 PYDEBUG_SERVICE  ?= pydebug
 
