@@ -40,7 +40,9 @@ services:
       - ${WANDB_API_KEY}:/run/secrets/wandb_api_key:ro
       - ${SYNOLOGY_CHAT_WEBHOOK_URL}:/run/secrets/synology_chat_webhook_url:ro
       - ${TORCH_CACHE_DIR}:/workspace/.torch_cache
-      - ${DATA_DIR}:/workspace/data:ro
+      # writable: training derives caches next to the labels they come from
+      # (label pickles via ensure_label_pickles, ranked modes via ensure_mode_cache)
+      - ${DATA_DIR}:/workspace/data
       - ${SRC_DIR}:/workspace/src:ro
       - ${MODELS_DIR}:/workspace/models
       - ${PREDICTIONS_DIR}:/workspace/predictions
