@@ -510,6 +510,16 @@ def run_training(cfg: DictConfig):
     cfg.num_classes = num_classes
     cfg.kbrs_params = kbrs_params
     cfg.loss_weights = loss_weights
+
+    # build_model reads these off the top level, so an architecture yaml that
+    # defines them is otherwise inert and the model silently falls back to the
+    # src/config.py defaults.
+    for _arch_key in (
+        "centernet_down_ratio", "max_objs",
+        "k_max", "conf_threshold", "render_sigma", "u_observers",
+    ):
+        if hasattr(cfg.architecture, _arch_key):
+            setattr(cfg, _arch_key, getattr(cfg.architecture, _arch_key))
     
     # RPN 스몰 앵커 옵션 (Mask R-CNN 전용)
     cfg.rpn_small_anchors = getattr(cfg, "rpn_small_anchors", False) if getattr(cfg, "resize_mode", "resize") == "keep" else False

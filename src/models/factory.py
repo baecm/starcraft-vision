@@ -9,6 +9,10 @@ try:
     from utils.logger import Logger
 except ModuleNotFoundError:
     from src.utils.logger import Logger
+try:
+    import config
+except ModuleNotFoundError:
+    from src import config
 from .backbones import (
     CenterNetBackbone,
     DirectorCenterNet,
