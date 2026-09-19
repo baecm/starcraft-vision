@@ -150,6 +150,21 @@ NVIDIA_VISIBLE_DEVICES=0 make train ARGS="architecture=director_centernet batch_
 NVIDIA_VISIBLE_DEVICES=0 make run ARGS="architecture=director_centernet batch_size=16 max_epoch=30 window_size=4 num_workers=16 dataset=fold1 seed=123"
 ```
 
+### ⓪ Ablation 설계 근거 (논문 실험 설정에 그대로 옮길 것)
+
+설계한 손실은 4개($L_{hcm}$, $L_{rmc}$, $L_{rep}$, $L_{smooth}$)지만 **ablation 축은 3개**다. $L_{off}$ / $L_{size}$는 표준 CenterNet 회귀 항이라 기여도 측정 대상이 아니라 전제다.
+
+**$L_{hcm}$은 기저이지 축이 아니다.** $\lambda_{hcm}=0$이면 히트맵에 양성 감독이 한 곳도 남지 않는다. $L_{rmc}$의 도메인은 보조 support로 한정되어 있어 주 영역 셀도 배경도 감독하지 않으므로, 학습 자체가 성립하지 않는 퇴화 설정이다. 따라서 격자는 $2^4=16$이 아니라 $2^3=8$이다.
+
+8개 중 **2개는 돌리지 않으며, 그 이유가 논문에 들어가야 한다.**
+
+- **$L_{hcm}+L_{rep}$ (미실행): 설계상 무의미하다.** $L_{rep}$는 *이미 존재하는* 영역 쌍의 IoU를 벌하는 항이라 영역을 생성하지 못한다. $L_{rmc}$가 없으면 프레임당 예측 영역이 사실상 1개이므로 밀어낼 대상이 존재하지 않고, 이 조합은 $L_{hcm}$ 단독과 구분되지 않는다. 즉 **$L_{rep}$의 효과는 $L_{rmc}$에 조건부로만 정의된다.** 이는 누락이 아니라 두 항의 의존 구조이며, Table에서 해당 칸을 비우는 근거로 명시할 것.
+- **$L_{hcm}+L_{smooth}$ (미실행): 선택적.** 다중 영역 기계 없이 시간적 안정화만의 효과를 보는 설정으로, 기존 단일 영역 연구에 가장 가깝다. $L_{smooth}$의 작동 여부는 VD 지표로 Row 3 vs Row 4에서 직접 읽히므로 필수는 아니다.
+
+**누적 비교군 Row 3과 leave-one-out의 `w/o L_smooth`는 같은 실행이다** ($L_{hcm}+L_{rmc}+L_{rep}$). 아래 ②-3과 ③-3은 `id_string`만 다른 중복이므로 한 번만 돌리고 두 표에 같은 수치를 싣는다.
+
+임계값 관련: `score_threshold` 스윕은 재학습이 필요 없다. [`src/inference.py`](../src/inference.py)가 임계값별로 `model_NNN_th<x>` 폴더를 분리하므로 학습된 체크포인트에 추론만 다시 돌리면 된다. 하한은 모델 내부 $\tau$(`DIRECTOR_TAU`)이며, 그 아래 peak은 필터에 도달하기 전에 이미 버려진다.
+
 ### ② Loss Ablation Studies (논문 Table 7 누적 비교군)
 ```bash
 # 1) L_hcm only (Row 1: w/o L_rmc, L_rep, L_smooth)
