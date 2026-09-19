@@ -105,8 +105,11 @@ set for a human director. We design four training objectives for this task: a
 \emph{Spatial Repulsion} loss, and a \emph{Trajectory Smoothness} loss.
 Consequently, we show that our automatic observer outperforms current
 rule-based methods, human observers, and single-region learning-based
-observers, and that it covers concurrent situations that a single-region
-observer cannot.
+observers. We further show that a detector-based observer already emits several
+candidate regions per frame, so the contribution of the proposed formulation is
+not multiplicity as such but that the regions are ranked by observer support,
+non-redundant, and temporally stable — which is what determines how many of the
+disagreeing observers the output actually serves.
 \end{abstract}
 
 %% Graphical abstract
@@ -178,21 +181,37 @@ watching the same replay share only about 52\% of their viewport area with each
 other, and questionnaires show that they attend to different aspects of the
 match, such as building upgrades, resource expansion, or fighting
 \cite{joo2023learning}. Moreover, this disagreement is not constant over a
-match: in the early game the viewports of observers mostly overlap, but as the
-game progresses and significant events begin to occur at several locations at
-the same time, the observers view different scenes and only a few of their
-viewports overlap. Accordingly, the reported accuracy of every method,
-including the human average, decreases monotonically with game progression
-\cite{joo2023learning, anonymous2025kbrs}. We therefore regard the roughly 50\%
-agreement ceiling not as measurement noise to be averaged away, but as evidence
-that the target distribution is \emph{multimodal}.
+match: it varies with what is happening on the map, and so does the accuracy of
+every method built on it. We therefore regard the roughly 50\% agreement
+ceiling not as measurement noise to be averaged away, but as evidence that the
+target distribution is \emph{multimodal}.
+
+Section~\ref{subsec:target_structure} quantifies this directly. Extracting the
+modes of the aggregated observer distribution and measuring a strong
+single-region observer against them, we find that $59\%$ of frames contain two
+or more modes, and that the observer's accuracy is governed by how many. IR
+falls monotonically from $0.779$ on unimodal frames to $0.499$ on frames with
+five modes, while the fraction of frames whose predicted region lands on a
+\emph{minority} mode rather than the consensus one rises from $0$ to $0.48$.
+The same relation holds when the modes are ranked by support: when the top two
+modes are supported by equal numbers of observers, IR is $0.595$ and the
+prediction alternates between them on $7.1\%$ of consecutive frame pairs; when
+a single mode is unanimous, IR is $0.853$ and that alternation rate is exactly
+zero.
+
+We stress that the controlling variable is the number of modes, not elapsed
+time. Accuracy on our test set is not monotonic in game progression: it is
+highest early, lowest at the midpoint, and highest of all at the end, tracking
+a mode count that peaks in mid-game ($2.60$) and falls as the match resolves
+into a single decisive engagement ($1.87$). Game progression is a proxy for
+multimodality, and it is an imperfect one.
 
 This interpretation explains the limitations of previous work. ROCI
 \cite{joo2023learning} and fixed-kernel auxiliary priors
 \cite{anonymous2025kbrs} are both devices for rescuing a single prediction on a
 multimodal target: they sharpen or re-weight the distribution so that one
 region can be selected from it. Such devices necessarily discard the minority
-modes, and they become least effective in exactly the mid-to-late game phase in
+modes, and they become least effective in exactly the phase in
 which the modes separate. In addition, when two regions receive nearly equal
 support, a model trained to select one of them oscillates between them across
 consecutive frames.
@@ -246,9 +265,12 @@ Our contributions are as follows.
         regions using minority observer attention rather than a hand-designed
         prior (Section~\ref{subsec:rmc_loss}).
   \item We demonstrate that the proposed method outperforms existing rule-based
-        methods, human observers, and single-region learning-based observers,
-        and that it covers concurrent situations a single-region observer
-        cannot (Section~\ref{sec:experiments}).
+        methods, human observers, and single-region learning-based observers.
+        We also show that those baselines already emit several candidate
+        regions per frame, and evaluate them on their own top-$K$ accordingly,
+        so that the comparison isolates whether the regions are ranked,
+        non-redundant and stable rather than merely numerous
+        (Section~\ref{sec:experiments}).
 \end{enumerate}
 
 %%====================================================================
@@ -467,6 +489,18 @@ multi-region setting. The gap between $\text{I@}\delta$ and BoK@$\delta$
 indicates how much of the human attention distribution is reachable by
 additional regions; OC@$\delta$ indicates how many of the disagreeing observers
 the output actually serves.
+
+A remark on how the baselines are scored. Detector-based single-region
+observers do not emit one box per frame; they emit a ranked list and previous
+work reports only its top entry. We therefore evaluate BoK@$\delta$ and
+OC@$\delta$ on their top-$K$ boxes as well, rather than treating them as
+producing a single region by construction. This is a deliberately demanding
+comparison: it credits the baselines with multi-region behaviour they were
+never trained for, and it raises the bar substantially — Mask R-CNN + prior
+reaches OC3@0.5 $=0.582$ against its own OC1@0.5 of $0.363$. The distinction
+the proposed method must establish is consequently not that it produces several
+regions, since a detector already does, but that the regions it produces are
+ranked by observer support, non-redundant, and temporally stable.
 
 \paragraph{Viewport Displacement (VD).}
 Average L2 displacement of the main viewport centre across consecutive 
@@ -823,31 +857,108 @@ recruitment criteria, instructions, and post-session questionnaires follow
 \cite{joo2023learning} so that the extended data remain compatible with the
 original portion.
 
-\paragraph{Characterising the target distribution.} Before training we report
-the structure of the supervision itself: the number of extracted modes per
-frame as a function of game progression, the support distribution of the Top-1
-to Top-$N$ modes, and pairwise observer agreement as a function of $U$.
-Table~\ref{tab:mode_structure} presents these statistics. This analysis is a
-contribution in its own right, since it quantifies the multimodality that
-motivates the task.
+\subsection{Structure of the Target Distribution}
+\label{subsec:target_structure}
+
+Before evaluating any proposed model we characterise the supervision itself.
+The mode counts below are a property of the aggregated observer data alone; the
+accuracy columns are measured with Mask R-CNN + prior \cite{anonymous2025kbrs},
+the strongest previously reported single-region observer, over $148{,}638$ test
+frames. This analysis is a contribution in its own right, since it quantifies
+the multimodality that motivates the task and, as shown below, identifies the
+variable that actually governs single-region accuracy.
 
 \begin{table}[t]
   \centering
-  \caption{Structure of the aggregated observer distribution by game
-  progression: mean number of extracted modes and mean support of the Top-1 to
-  Top-3 modes. \todo{Fill in after data collection.}}
-  \label{tab:mode_structure}
-  \begin{tabular}{lcccc}
+  \caption{Single-region accuracy as a function of the number of modes in the
+  aggregated observer distribution. IR falls monotonically as the target
+  becomes more multimodal, and the fraction of frames whose predicted region
+  serves a minority mode rather than the Top-1 mode rises correspondingly.
+  Measured with Mask R-CNN + prior over $148{,}638$ frames.}
+  \label{tab:by_nmodes}
+  \begin{tabular}{lrrccc}
     \toprule
-    Progression & $|\mathcal{M}_t|$ & Top-1 & Top-2 & Top-3 \\
+    $|\mathcal{M}_t|$ & Frames & Share & IR $\uparrow$ & I@0.5 $\uparrow$
+      & Served by minority mode \\
     \midrule
-    1/4 & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
-    2/4 & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
-    3/4 & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
-    4/4 & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    1 & 61{,}397 & 41.3\% & 0.779 & 0.830 & 0.000 \\
+    2 & 19{,}702 & 13.3\% & 0.714 & 0.774 & 0.256 \\
+    3 & 33{,}962 & 22.8\% & 0.609 & 0.682 & 0.284 \\
+    4 & 28{,}242 & 19.0\% & 0.546 & 0.626 & 0.337 \\
+    5 &  5{,}335 &  3.6\% & 0.499 & 0.577 & 0.479 \\
     \bottomrule
   \end{tabular}
 \end{table}
+
+Table~\ref{tab:by_nmodes} shows that $58.7\%$ of frames contain at least two
+modes, and that IR degrades by $36\%$ relative between unimodal frames and
+five-mode frames. The final column is the more direct statement: as the target
+fragments, a model trained to produce one region increasingly produces a region
+that serves a \emph{minority} of observers rather than the consensus. It is
+already behaving multimodally, but without control over which mode it selects.
+
+\begin{table}[t]
+  \centering
+  \caption{Single-region accuracy and temporal behaviour as a function of the
+  support margin $n_t(\mathbf{m}^{(1)}_t) - n_t(\mathbf{m}^{(2)}_t)$. The final
+  column is the fraction of consecutive frame pairs on which the prediction
+  alternates between the top two modes. Measured with Mask R-CNN + prior.}
+  \label{tab:by_margin}
+  \begin{tabular}{lrcccc}
+    \toprule
+    Margin & Frames & IR $\uparrow$ & I@0.5 $\uparrow$
+      & Served by minority mode & Top-2 alternation \\
+    \midrule
+    0 & 26{,}917 & 0.595 & 0.670 & 0.360 & 0.0706 \\
+    1 & 47{,}676 & 0.609 & 0.681 & 0.303 & 0.0413 \\
+    2 & 12{,}732 & 0.618 & 0.688 & 0.204 & 0.0383 \\
+    3 & 17{,}727 & 0.709 & 0.768 & 0.000 & 0.0109 \\
+    4 & 27{,}491 & 0.780 & 0.832 & 0.000 & 0.0023 \\
+    5 & 16{,}095 & 0.853 & 0.895 & 0.000 & 0.0000 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Table~\ref{tab:by_margin} isolates the thrashing mechanism. When the top two
+modes are supported by equal numbers of observers, the single-region model
+alternates between them on $7.1\%$ of consecutive frame pairs; when one mode is
+unanimous, it never does. Camera thrashing is therefore not a generic
+instability of the model but a specific consequence of forcing a single output
+on an ambiguous target, and it is worst exactly where the ambiguity is
+greatest.
+
+\begin{table}[t]
+  \centering
+  \caption{Target structure and single-region accuracy by game progression.
+  Mode counts are a property of the observer data; the remaining columns are
+  measured with Mask R-CNN + prior. Accuracy is \emph{not} monotonic in
+  progression: it tracks the mode count, which peaks at mid-game and falls as
+  the match resolves.}
+  \label{tab:by_progression}
+  \begin{tabular}{lrcccc}
+    \toprule
+    Progression & Frames & $|\mathcal{M}_t|$ & IR $\uparrow$
+      & OC3@0.5 $\uparrow$ & VD $\downarrow$ \\
+    \midrule
+    1/4 & 37{,}163 & 2.329 & 0.734 & 0.661 & 3.56 \\
+    2/4 & 37{,}157 & 2.596 & 0.572 & 0.509 & 4.81 \\
+    3/4 & 37{,}158 & 2.422 & 0.654 & 0.525 & 3.61 \\
+    4/4 & 37{,}160 & 1.865 & 0.749 & 0.632 & 1.72 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Table~\ref{tab:by_progression} qualifies a pattern reported in earlier work.
+Previous studies describe accuracy as declining with game progression
+\cite{joo2023learning, anonymous2025kbrs}; on our test set the relation is not
+monotonic but U-shaped, with the minimum at the midpoint and the maximum at the
+end. The mode count follows the inverse shape, and the rank ordering of the two
+columns agrees at every bin. We therefore read progression as a proxy for
+multimodality rather than as the governing variable: mid-game is where events
+occur at several locations at once, whereas a late game that has resolved into
+one decisive engagement is easier to observe than an early one. VD behaves the
+same way, which is consistent with thrashing being driven by ambiguity rather
+than by pace.
 
 Game-state tensors follow the channelisation protocol of \cite{bae2025observer}:
 four entity channels per player (workers, ground units, air units, buildings),
@@ -945,26 +1056,62 @@ Table~\ref{tab:multi_results} reports the multi-region metrics. These are the
 quantities the proposed formulation is designed to improve: the gap between
 I@$\delta$ and BoK@$\delta$ indicates how much of the human attention
 distribution is reachable by additional regions, and OC@$\delta$ indicates how
-many of the disagreeing observers the output actually serves. A single-region
-method has $|\hat{\mathcal{P}}_t| = 1$, so its BoK@$\delta$ equals its
-I@$\delta$ by definition.
+many of the disagreeing observers the output actually serves. Every method is
+scored on its own top-$K$ regions, including the baselines, which as noted in
+Section~\ref{sec:problem} emit a ranked list rather than a single box.
 
 \begin{table}[t]
   \centering
-  \caption{Multi-region coverage, per-observer service, and temporal
-  stability. Lower VD is better. \todo{Fill in experimental values.}}
+  \caption{Multi-region coverage, per-observer service, and temporal stability
+  on the mode-disagreement evaluation set ($\approx 148{,}600$ frames, fold~1
+  test replays, single seed). $|\hat{\mathcal{P}}_t|$ is the mean number of
+  regions the model emits per frame; BoK and OC are evaluated on its top $K$ of
+  those. Lower VD and jerk are better. \todo{Confirm whether the CenterNet row
+  is the plain-backbone model or the $\mathcal{L}_{\text{hcm}}$-only ablation,
+  and re-measure the baselines under the three-fold, three-seed protocol of
+  Table~\ref{tab:main_results} so the two tables agree.}}
   \label{tab:multi_results}
-  \begin{tabular}{lcccc}
+  \begin{tabular}{lrccccrr}
     \toprule
-    Method & BoK@0.5 $\uparrow$ & OC@0.5 $\uparrow$
-           & $|\hat{\mathcal{P}}_t|$ & VD (tiles) $\downarrow$ \\
+    & & \multicolumn{2}{c}{$K=1$} & \multicolumn{2}{c}{$K=3$} & & \\
+    \cmidrule(lr){3-4}\cmidrule(lr){5-6}
+    Method & $|\hat{\mathcal{P}}_t|$ & BoK@0.5 & OC@0.5 & BoK@0.5 & OC@0.5
+           & VD $\downarrow$ & Jerk $\downarrow$ \\
     \midrule
-    Mask R-CNN + prior (single)      & \todo{X} & \todo{X} & 1 & \todo{X} \\
-    CenterNet (single)               & \todo{X} & \todo{X} & 1 & \todo{X} \\
-    \textbf{Director-CenterNet}      & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    Mask R-CNN            & 6.44 & 0.720 & 0.353 & 0.918 & 0.575 & 3.92 & 15.4 \\
+    Mask R-CNN + prior    & 6.70 & 0.741 & 0.363 & 0.928 & \underline{0.582}
+                          & \underline{3.42} & \underline{14.1} \\
+    CenterNet (single)    & 4.74 & 0.680 & 0.328 & 0.915 & 0.557 & 7.20 & 27.8 \\
+    \midrule
+    \textbf{Director-CenterNet} & \todo{X} & \todo{X} & \todo{X} & \todo{X}
+                          & \todo{X} & \todo{X} & \todo{X} \\
     \bottomrule
   \end{tabular}
 \end{table}
+
+Two observations follow, and both shape what the proposed method has to
+demonstrate.
+
+First, the baselines are not single-region systems. They emit $4.7$ to $6.7$
+boxes per frame, with at least three in over $93\%$ of frames; previous work
+simply reports the first. Scored on their top three they reach BoK3@0.5 of
+$0.92$--$0.93$, so almost all of the human attention union is already reachable
+from an untrained ranked list and there is little headroom in that metric. The
+informative quantity is OC@$\delta$, which asks how many \emph{individual}
+observers are served: it rises only from $0.363$ to $0.582$ as $K$ goes from
+$1$ to $3$, and stops well short of $1$. The additional boxes a detector
+produces are proposals clustered around the same evidence, not a ranked account
+of where the disagreeing observers were looking. This is the gap the Ranked
+Mode Coverage and Spatial Repulsion objectives target, and $0.582$ — not the
+single-region $0.363$ — is the figure the proposed method must exceed.
+
+Second, the backbone change is not free. Replacing Mask R-CNN with a CenterNet
+heatmap detector costs a factor of two in temporal stability (VD $3.42
+\rightarrow 7.20$, jerk $14.1 \rightarrow 27.8$) before any multi-region
+objective is introduced. The Trajectory Smoothness loss is therefore not a
+refinement but a requirement of the architecture we adopt, and the appropriate
+reference point for it is the Mask R-CNN baseline rather than the untreated
+CenterNet.
 
 \subsection{Generalisation Tests}
 
@@ -1094,6 +1241,19 @@ need directly, and does so using supervision that was already present in the
 data prior work collected: the minority modes of the observer distribution
 that ROCI and fixed-kernel priors were designed to suppress. No new form of
 annotation is introduced, only a denser sampling of the same protocol.
+
+It is worth being precise about what is and is not new here, because
+Table~\ref{tab:multi_results} shows that the baselines already emit several
+regions per frame. Producing more than one region is not the contribution; a
+detector does that by construction, and previous work simply reported only the
+first. What a detector does not do is decide \emph{how many} regions the
+current frame warrants, order them by how much of the audience each represents,
+or keep them from duplicating one another. Those three properties are what turn
+a proposal list into a broadcast layout, and they are what the ranked-mode
+supervision, the repulsion penalty and the confidence threshold supply. The
+measurable consequence is OC@$\delta$: the baselines' additional proposals
+raise per-observer service only from $0.363$ to $0.582$, because they cluster
+around the same evidence rather than covering the observers who disagreed.
 
 \subsection{CenterNet vs.\ Mask R-CNN for MRVP}
 
