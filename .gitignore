@@ -4,3 +4,16 @@ __pycache__
 .vscode
 pyrightconfig.json
 
+
+# LaTeX build artifacts (docs/paper)
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.spl
+*.synctex.gz
+*.toc
+docs/paper/*.pdf
