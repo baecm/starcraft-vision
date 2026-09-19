@@ -256,18 +256,51 @@ def trajectory_smoothness_loss(
     primary_centers_t: torch.Tensor,
     primary_centers_next: torch.Tensor,
     valid_mask: Optional[torch.Tensor] = None,
+    huber_delta: float = config.DIRECTOR_SMOOTH_HUBER_DELTA,
+    norm_scale: float = config.MAP_DIAGONAL_TILES,
 ) -> torch.Tensor:
-    """Trajectory Smoothness loss (Eq 18): L2 displacement between primary centers."""
+    """Trajectory Smoothness loss (Eq 18): Huber displacement between primary centers.
+
+    The squared-L2 form this replaces made "hold still" cheaper than "follow the
+    action". Displacement is in tiles, so on a 128x128 map two independent
+    predictions differ by E[||d||^2] ~ 5461 at initialisation; times lambda_sm
+    0.2 that is ~1090 against a focal term of O(1). Because
+    `engine_safe.train_one_epoch_safe` clips the *global* gradient norm to
+    `config.GRAD_CLIP_NORM`, one term that large does not merely outweigh the
+    others - it rescales the whole update vector and leaves them almost no
+    share of it. Every ablation carrying L_smooth collapsed to a fixed camera;
+    none without it did.
+
+    Two changes, and the order between them is the point:
+
+    1. Huber in *tile* units, so `huber_delta` reads as "5 tiles" and the
+       per-sample gradient is capped at delta instead of growing with the
+       displacement. Small motion stays quadratic and nearly free.
+    2. Divide by the map diagonal afterwards, which is what puts the result on
+       an O(1) scale (worst case ~4.9).
+
+    Normalising *first* and then applying Huber would place delta at
+    5/181 = 0.028 and shrink the term by ~10^4, which switches the objective
+    off rather than fixing it - and would make the full-vs-no_smooth ablation a
+    null comparison.
+    """
     diff = primary_centers_t - primary_centers_next  # (B, 2)
     disp_sq = torch.sum(diff ** 2, dim=-1)  # (B,)
 
-    if valid_mask is not None:
-        valid = valid_mask & (~torch.isnan(disp_sq))
-        if not valid.any():
-            return torch.tensor(0.0, device=primary_centers_t.device, dtype=torch.float32)
-        return disp_sq[valid].mean()
+    # Huber on ||d|| expressed via ||d||^2, so the quadratic branch needs no
+    # sqrt at all and the linear branch only ever takes sqrt of something
+    # >= delta^2. A plain sqrt(disp_sq) would have an infinite derivative at
+    # zero displacement, which is exactly where the frozen-camera solution sits.
+    delta_sq = huber_delta ** 2
+    quadratic = 0.5 * disp_sq
+    linear = huber_delta * torch.sqrt(disp_sq.clamp_min(delta_sq)) - 0.5 * delta_sq
+    per_sample = torch.where(disp_sq <= delta_sq, quadratic, linear) / norm_scale
 
-    valid = ~torch.isnan(disp_sq)
+    if valid_mask is not None:
+        valid = valid_mask & (~torch.isnan(per_sample))
+    else:
+        valid = ~torch.isnan(per_sample)
+
     if not valid.any():
         return torch.tensor(0.0, device=primary_centers_t.device, dtype=torch.float32)
-    return disp_sq[valid].mean()
+    return per_sample[valid].mean()

@@ -77,6 +77,14 @@ def train_model(
     for epoch in tqdm.tqdm(range(num_epochs)):
         epoch_t0 = time.time()
 
+        # Loss terms that ramp over training (currently only Director's
+        # L_smooth) read the epoch off the module. Walking .modules() rather
+        # than calling model.set_epoch() keeps this working through
+        # KBRSWrapper and any future wrapper without each one forwarding it.
+        for _module in model.modules():
+            if hasattr(_module, "set_epoch"):
+                _module.set_epoch(epoch)
+
         # ---- train ----
         t0 = time.time()
         # --- NaN 회피 옵션 (cfg에 없으면 안전한 기본값 사용) ---

@@ -17,4 +17,13 @@ loss_weights:
   lambda_sz: 0.1
   lambda_rmc: 0.5
   lambda_rep: 0.3
-  lambda_sm: 0.2
+  # L_smooth is Huber-on-displacement / map-diagonal, not squared L2 in tiles.
+  # At 0.2 the old form dominated the globally clipped gradient and every
+  # ablation carrying it collapsed to a fixed camera.
+  lambda_sm: 0.02
+
+# L_smooth shaping (src/losses/director_losses.py)
+smooth_huber_delta: 5.0      # tiles; below this the penalty stays quadratic
+smooth_warmup_start: 5       # epochs [0, 5) train with L_smooth off
+smooth_warmup_full: 10       # linear ramp to full weight by epoch 10
+soft_center_radius: 2        # feature cells in the soft-argmax window

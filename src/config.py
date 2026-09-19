@@ -29,6 +29,23 @@ DIRECTOR_RENDER_SIGMA = 2.0
 DIRECTOR_K = 3
 DIRECTOR_TAU = 0.2
 
+# L_smooth (Eq 18). Displacement is measured in tiles, so the map diagonal is
+# the natural unit that puts the term on an O(1) scale next to the focal loss.
+MAP_DIAGONAL_TILES = (ORIGIN_SHAPE[0] ** 2 + ORIGIN_SHAPE[1] ** 2) ** 0.5  # ~181.02
+# Below this displacement the penalty stays quadratic (small camera motion is
+# free); above it the penalty is linear, so a big jump is expensive but its
+# gradient is bounded. ~5 tiles is the observed per-step displacement of the
+# healthy ablations (VD 3.6-5.3).
+DIRECTOR_SMOOTH_HUBER_DELTA = 5.0
+# Epochs [0, START) train with L_smooth off, then it ramps linearly to full
+# weight at FULL. Applying it from step 0 lets the model reach a frozen-camera
+# solution before the heatmap has learned anything worth stabilising.
+DIRECTOR_SMOOTH_WARMUP_START = 5
+DIRECTOR_SMOOTH_WARMUP_FULL = 10
+# Radius (in feature cells) of the softmax window used to build a heatmap-
+# differentiable primary centre for L_smooth. See DirectorCenterNet.
+DIRECTOR_SOFT_CENTER_RADIUS = 2
+
 
 class Channel(Enum):
     Player_1_Worker = 0

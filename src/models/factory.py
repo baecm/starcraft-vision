@@ -108,6 +108,10 @@ def build_model(args: Any) -> nn.Module:
             u_observers=getattr(args, "u_observers", getattr(config, "NUM_OBSERVERS_U", 5)),
             viewport_size_hw=getattr(args, "viewport_size_hw", getattr(config, "VIEWPORT_SIZE_HW", (12, 20))),
             loss_weights=loss_weights,
+            smooth_huber_delta=getattr(args, "smooth_huber_delta", config.DIRECTOR_SMOOTH_HUBER_DELTA),
+            smooth_warmup_start=getattr(args, "smooth_warmup_start", config.DIRECTOR_SMOOTH_WARMUP_START),
+            smooth_warmup_full=getattr(args, "smooth_warmup_full", config.DIRECTOR_SMOOTH_WARMUP_FULL),
+            soft_center_radius=getattr(args, "soft_center_radius", config.DIRECTOR_SOFT_CENTER_RADIUS),
         )
 
     elif model_name in ["probabilistic_video_detr", "video_detr", "deformable_video_detr_cvae"]:

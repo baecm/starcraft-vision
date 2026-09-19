@@ -63,7 +63,7 @@ print("[C] resolution")
 model.eval()
 with torch.no_grad():
     feat = model._extract_features(torch.zeros(1, 36, 128, 128))
-    hm, off, wh = model._predict_heads(feat)
+    hm, hm_logits, off, wh = model._predict_heads(feat)
 print(f"    input                      : (1, 36, 128, 128)")
 print(f"    fpn['0']                   : {tuple(feat.shape)}")
 print(f"    heatmap                    : {tuple(hm.shape)}")
@@ -143,11 +143,23 @@ total.backward()
 print(f"    {'TOTAL':<20}{float(total):>10.4f}" + "".join(f"{grad_norm(m):>16.3e}" for m in groups.values()))
 print()
 print(f"    GRAD_CLIP_NORM = 2.0 is applied to this total, globally.")
+print("    loss_smooth's hm_head column must be NON-zero now; it was 0 before")
+print("    the soft-argmax centre, which is why scaling it down alone could not")
+print("    make the objective do what it claims.")
+
+# ---------------------------------------------------------------- F
+print()
+print("[F] L_smooth warmup ramp (lambda_sm x scale)")
+lam = model.loss_weights["lambda_sm"]
+for epoch in (0, 4, 5, 7, 10, 29):
+    model.set_epoch(epoch)
+    print(f"    epoch {epoch:<3} scale {model.smooth_warmup_scale():.2f}  effective weight {lam * model.smooth_warmup_scale():.4f}")
+model.set_epoch(model.smooth_warmup_full)
 
 # how many peaks survive tau at init
 model.eval()
 with torch.no_grad():
-    boxes, scores, _, _ = model._extract_predicted_regions_differentiable(
+    boxes, scores, _, _, _ = model._extract_predicted_regions_differentiable(
         hm, off, wh, 128, 128, model.conf_threshold, model.k_max
     )
 print(f"    peaks passing tau at init  : {[len(s) for s in scores]}")

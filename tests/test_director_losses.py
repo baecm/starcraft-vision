@@ -174,17 +174,70 @@ def test_l_rep_spatial_repulsion():
 
 
 def test_l_smooth_trajectory():
+    diag = config.MAP_DIAGONAL_TILES
+    delta = config.DIRECTOR_SMOOTH_HUBER_DELTA  # 5 tiles
+
     c_t = torch.tensor([[50.0, 50.0]], requires_grad=True)
     c_next_same = torch.tensor([[50.0, 50.0]])
     loss_zero = trajectory_smoothness_loss(c_t, c_next_same)
     assert loss_zero.item() == 0.0
 
-    c_next_diff = torch.tensor([[53.0, 54.0]])  # dx=3, dy=4 -> dist_sq = 25
-    loss_diff = trajectory_smoothness_loss(c_t, c_next_diff)
-    assert torch.isclose(loss_diff, torch.tensor(25.0), atol=1e-4)
+    # dx=3, dy=4 -> dist=5 == delta, the top of the quadratic branch:
+    # 0.5 * 25 / 181.02
+    c_next_edge = torch.tensor([[53.0, 54.0]])
+    loss_edge = trajectory_smoothness_loss(c_t, c_next_edge)
+    assert torch.isclose(loss_edge, torch.tensor(0.5 * delta ** 2 / diag), atol=1e-6)
 
-    loss_diff.backward()
+    loss_edge.backward()
     assert c_t.grad is not None
+
+
+def test_l_smooth_huber_bounds_large_jumps():
+    """The squared form let a big jump dominate the globally clipped gradient."""
+    diag = config.MAP_DIAGONAL_TILES
+    delta = config.DIRECTOR_SMOOTH_HUBER_DELTA
+
+    def loss_and_grad(displacement):
+        c_t = torch.zeros(1, 2, requires_grad=True)
+        c_next = torch.tensor([[float(displacement), 0.0]])
+        loss = trajectory_smoothness_loss(c_t, c_next)
+        loss.backward()
+        return float(loss), float(c_t.grad.abs().max())
+
+    small_loss, small_grad = loss_and_grad(2.0)
+    big_loss, big_grad = loss_and_grad(120.0)
+
+    # Linear branch: delta * (d - delta/2) / diag
+    assert torch.isclose(
+        torch.tensor(big_loss), torch.tensor(delta * (120.0 - 0.5 * delta) / diag), atol=1e-6
+    )
+    # Both branches stay O(1) even at a near-map-wide jump, and the gradient
+    # saturates at delta/diag instead of growing with the displacement.
+    assert big_loss < 5.0
+    assert torch.isclose(torch.tensor(big_grad), torch.tensor(delta / diag), atol=1e-6)
+    assert small_grad < big_grad
+
+    # Squared L2 in tiles would have put these at 4 and 14400.
+    assert small_loss < 0.01
+
+
+def test_l_smooth_gradient_finite_at_zero_displacement():
+    """A frozen camera is exactly where sqrt(||d||^2) would blow up."""
+    c_t = torch.zeros(4, 2, requires_grad=True)
+    loss = trajectory_smoothness_loss(c_t, torch.zeros(4, 2))
+    loss.backward()
+    assert torch.isfinite(c_t.grad).all()
+    assert float(c_t.grad.abs().max()) == 0.0
+
+
+def test_l_smooth_respects_valid_mask():
+    c_t = torch.tensor([[0.0, 0.0], [0.0, 0.0]], requires_grad=True)
+    c_next = torch.tensor([[100.0, 0.0], [0.0, 0.0]])
+    mask = torch.tensor([False, True])
+    # Only the second (zero-displacement) pair is valid, so the large jump in
+    # the first must not contribute at all.
+    assert trajectory_smoothness_loss(c_t, c_next, valid_mask=mask).item() == 0.0
+    assert trajectory_smoothness_loss(c_t, c_next).item() > 0.0
 
 
 if __name__ == "__main__":
@@ -200,4 +253,10 @@ if __name__ == "__main__":
     print("test_l_rep_spatial_repulsion: PASS")
     test_l_smooth_trajectory()
     print("test_l_smooth_trajectory: PASS")
+    test_l_smooth_huber_bounds_large_jumps()
+    print("test_l_smooth_huber_bounds_large_jumps: PASS")
+    test_l_smooth_gradient_finite_at_zero_displacement()
+    print("test_l_smooth_gradient_finite_at_zero_displacement: PASS")
+    test_l_smooth_respects_valid_mask()
+    print("test_l_smooth_respects_valid_mask: PASS")
     print("\nALL DIRECTOR LOSS UNIT TESTS PASSED!")

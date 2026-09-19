@@ -48,6 +48,10 @@ class DirectorCenterNet(nn.Module):
         u_observers: int = config.NUM_OBSERVERS_U,
         viewport_size_hw: Tuple[int, int] = config.VIEWPORT_SIZE_HW,
         loss_weights: Optional[Dict[str, float]] = None,
+        smooth_huber_delta: float = config.DIRECTOR_SMOOTH_HUBER_DELTA,
+        smooth_warmup_start: int = config.DIRECTOR_SMOOTH_WARMUP_START,
+        smooth_warmup_full: int = config.DIRECTOR_SMOOTH_WARMUP_FULL,
+        soft_center_radius: int = config.DIRECTOR_SOFT_CENTER_RADIUS,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -58,6 +62,12 @@ class DirectorCenterNet(nn.Module):
         self.render_sigma = render_sigma
         self.u_observers = u_observers
         self.viewport_size_hw = viewport_size_hw
+        self.smooth_huber_delta = float(smooth_huber_delta)
+        self.smooth_warmup_start = int(smooth_warmup_start)
+        self.smooth_warmup_full = int(smooth_warmup_full)
+        self.soft_center_radius = int(soft_center_radius)
+        # Updated per epoch by train.py; only L_smooth's warmup reads it.
+        self._current_epoch = self.smooth_warmup_full
 
         default_weights = {
             "lambda_hcm": 1.0,
@@ -65,7 +75,9 @@ class DirectorCenterNet(nn.Module):
             "lambda_sz": 0.1,
             "lambda_rmc": 0.5,
             "lambda_rep": 0.3,
-            "lambda_sm": 0.2,
+            # 0.2 with a squared-L2 L_smooth collapsed every ablation that
+            # carried the term; see trajectory_smoothness_loss.
+            "lambda_sm": 0.02,
         }
         if loss_weights is not None:
             default_weights.update(loss_weights)
@@ -119,16 +131,99 @@ class DirectorCenterNet(nn.Module):
         # CenterNet standard bias initialization for heatmap head
         self.hm_head[-1].bias.data.fill_(-2.19)
 
+    def set_epoch(self, epoch: int) -> None:
+        """Tell the model which epoch it is, for L_smooth's warmup ramp.
+
+        train_model() calls this on every module that exposes it, so it works
+        through KBRSWrapper and any other wrapper without them forwarding it.
+        """
+        self._current_epoch = int(epoch)
+
+    def smooth_warmup_scale(self) -> float:
+        """0 before `smooth_warmup_start`, linear to 1 at `smooth_warmup_full`.
+
+        L_smooth is a statement about the trajectory of a camera that is
+        tracking something. Applying it from step 0 asks that of a randomly
+        initialised heatmap, and the cheapest way to satisfy it is to stop
+        moving - which is the solution the collapsed ablations found. Holding
+        it off until the primary region is roughly right makes it a
+        regulariser on a real trajectory instead of a shortcut.
+        """
+        epoch = self._current_epoch
+        if epoch < self.smooth_warmup_start:
+            return 0.0
+        if epoch >= self.smooth_warmup_full:
+            return 1.0
+        span = max(1, self.smooth_warmup_full - self.smooth_warmup_start)
+        return float(epoch - self.smooth_warmup_start) / float(span)
+
     def _extract_features(self, x: torch.Tensor) -> torch.Tensor:
         fpn_feats = self.backbone(x)
         # '0' corresponds to stride 4
         return fpn_feats["0"]
 
-    def _predict_heads(self, feat: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        pred_hm = torch.sigmoid(self.hm_head(feat))
+    def _predict_heads(
+        self, feat: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # The raw logits are returned alongside the sigmoid map because the
+        # soft-argmax centre (see _soft_peak_offsets) needs a softmax over
+        # logits; a softmax over already-squashed [0, 1] scores is nearly
+        # uniform and would carry almost no positional information.
+        hm_logits = self.hm_head(feat)
+        pred_hm = torch.sigmoid(hm_logits)
         pred_off = self.off_head(feat)
         pred_wh = self.wh_head(feat)
-        return pred_hm, pred_off, pred_wh
+        return pred_hm, hm_logits, pred_off, pred_wh
+
+    def _soft_peak_offsets(
+        self,
+        hm_logits_single: torch.Tensor,
+        sel_ys: torch.Tensor,
+        sel_xs: torch.Tensor,
+        radius: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Expected sub-cell displacement of the heatmap mass around each peak.
+
+        `torch.topk` hands back *indices*, which carry no gradient. A centre
+        built as (index + offset_head) is therefore a function of the offset
+        head alone: L_smooth and L_rep can reach `off_head` and `wh_head` but
+        never `hm_head`. The probe in scripts/probe_director.py measures
+        exactly that - L_smooth puts a gradient norm of 6.5e4 on the offset
+        head and precisely 0 on the heatmap head.
+
+        That is why scaling L_smooth down is necessary but not sufficient: the
+        objective is meant to stabilise *where the model looks*, and it has no
+        path to the map that decides it. Instead it dumps an unsatisfiable
+        gradient (the offset spans one cell; the displacement spans tens of
+        tiles) into the offset head and, through the shared trunk, corrupts the
+        features the heatmap head reads.
+
+        A softmax over the logits in a small window around each peak gives a
+        centre that *is* a differentiable function of the heatmap. It returns
+        displacements in feature cells, and collapses toward 0 as the peak
+        sharpens, so it stays a faithful estimate of the peak position.
+        """
+        feat_h, feat_w = hm_logits_single.shape
+        taps = torch.arange(-radius, radius + 1, device=hm_logits_single.device)
+        n = sel_ys.numel()
+
+        win_y = sel_ys.view(n, 1, 1) + taps.view(1, -1, 1)  # (n, W, 1)
+        win_x = sel_xs.view(n, 1, 1) + taps.view(1, 1, -1)  # (n, 1, W)
+        inside = (
+            (win_y >= 0) & (win_y < feat_h) & (win_x >= 0) & (win_x < feat_w)
+        ).expand(n, taps.numel(), taps.numel())
+
+        gather_y = win_y.clamp(0, feat_h - 1).expand_as(inside)
+        gather_x = win_x.clamp(0, feat_w - 1).expand_as(inside)
+        logits = hm_logits_single[gather_y, gather_x]
+        # Out-of-map taps must not receive probability mass, otherwise peaks on
+        # the border get pulled outward by the padding.
+        logits = logits.masked_fill(~inside, float("-inf"))
+
+        weights = torch.softmax(logits.reshape(n, -1), dim=1).view_as(logits)
+        d_y = (weights * taps.view(1, -1, 1)).sum(dim=(1, 2))
+        d_x = (weights * taps.view(1, 1, -1)).sum(dim=(1, 2))
+        return d_y, d_x
 
     def _extract_predicted_regions_differentiable(
         self,
@@ -139,8 +234,19 @@ class DirectorCenterNet(nn.Module):
         img_w: int,
         conf_thresh: float,
         k_max: int,
-    ) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor], torch.Tensor]:
-        """Extract top-K regions with differentiable box coordinates."""
+        hm_logits: Optional[torch.Tensor] = None,
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor], torch.Tensor, torch.Tensor]:
+        """Extract top-K regions with differentiable box coordinates.
+
+        Returns two versions of the primary centre. `primary_centers` is the
+        decoded one, (peak cell + offset head), which is what the boxes and
+        therefore inference use. `primary_centers_soft` replaces the offset
+        head with the soft-argmax displacement of _soft_peak_offsets, making it
+        differentiable with respect to the heatmap; L_smooth uses that one.
+        They are kept separate on purpose - adding both would double-count the
+        sub-cell position and bias the emitted boxes, since only the offset
+        head is supervised (by L_off) to represent it.
+        """
         b, c, feat_h, feat_w = pred_hm.shape
         stride = self.down_ratio
 
@@ -153,6 +259,7 @@ class DirectorCenterNet(nn.Module):
         scores_batch = []
         labels_batch = []
         primary_centers = torch.full((b, 2), float("nan"), device=pred_hm.device)
+        primary_centers_soft = torch.full((b, 2), float("nan"), device=pred_hm.device)
 
         default_h, default_w = self.viewport_size_hw
 
@@ -191,6 +298,17 @@ class DirectorCenterNet(nn.Module):
             primary_centers[i, 0] = cx[0]
             primary_centers[i, 1] = cy[0]
 
+            if hm_logits is not None:
+                top = sel_inds[:1]
+                d_y, d_x = self._soft_peak_offsets(
+                    hm_logits[i, 0],
+                    torch.div(top, feat_w, rounding_mode="floor"),
+                    top % feat_w,
+                    self.soft_center_radius,
+                )
+                primary_centers_soft[i, 0] = (sel_xs[0] + d_x[0]) * stride
+                primary_centers_soft[i, 1] = (sel_ys[0] + d_y[0]) * stride
+
             x1 = torch.clamp(cx - w / 2.0, 0.0, float(img_w))
             y1 = torch.clamp(cy - h / 2.0, 0.0, float(img_h))
             x2 = torch.clamp(cx + w / 2.0, 0.0, float(img_w))
@@ -203,7 +321,7 @@ class DirectorCenterNet(nn.Module):
             scores_batch.append(sel_scores)
             labels_batch.append(labels)
 
-        return boxes_batch, scores_batch, labels_batch, primary_centers
+        return boxes_batch, scores_batch, labels_batch, primary_centers, primary_centers_soft
 
     def forward(
         self,
@@ -223,7 +341,7 @@ class DirectorCenterNet(nn.Module):
             has_pairs = any("next_image" in t for t in targets)
 
             feat = self._extract_features(batched)
-            pred_hm, pred_off, pred_wh = self._predict_heads(feat)
+            pred_hm, hm_logits, pred_off, pred_wh = self._predict_heads(feat)
             _, _, feat_h, feat_w = pred_hm.shape
             stride = self.down_ratio
 
@@ -259,7 +377,13 @@ class DirectorCenterNet(nn.Module):
             )
 
             # 3. Extract predicted regions for L_rep and L_smooth
-            pred_boxes, pred_scores, _, primary_centers = self._extract_predicted_regions_differentiable(
+            (
+                pred_boxes,
+                pred_scores,
+                _,
+                primary_centers,
+                primary_centers_soft,
+            ) = self._extract_predicted_regions_differentiable(
                 pred_hm=pred_hm,
                 pred_off=pred_off,
                 pred_wh=pred_wh,
@@ -267,6 +391,7 @@ class DirectorCenterNet(nn.Module):
                 img_w=img_w,
                 conf_thresh=self.conf_threshold,
                 k_max=self.k_max,
+                hm_logits=hm_logits,
             )
 
             # 4. L_rep (Spatial Repulsion loss)
@@ -279,8 +404,16 @@ class DirectorCenterNet(nn.Module):
                 if len(next_images) == b_size:
                     batched_next = torch.stack(next_images, dim=0)
                     feat_next = self._extract_features(batched_next)
-                    pred_hm_next, pred_off_next, pred_wh_next = self._predict_heads(feat_next)
-                    _, _, _, primary_centers_next = self._extract_predicted_regions_differentiable(
+                    (
+                        pred_hm_next,
+                        hm_logits_next,
+                        pred_off_next,
+                        pred_wh_next,
+                    ) = self._predict_heads(feat_next)
+                    (
+                        *_,
+                        primary_centers_next_soft,
+                    ) = self._extract_predicted_regions_differentiable(
                         pred_hm=pred_hm_next,
                         pred_off=pred_off_next,
                         pred_wh=pred_wh_next,
@@ -288,6 +421,7 @@ class DirectorCenterNet(nn.Module):
                         img_w=img_w,
                         conf_thresh=self.conf_threshold,
                         k_max=self.k_max,
+                        hm_logits=hm_logits_next,
                     )
                     # exclude replay-final windows, which pair with themselves
                     next_valid = torch.tensor(
@@ -295,8 +429,14 @@ class DirectorCenterNet(nn.Module):
                         dtype=torch.bool,
                         device=device,
                     )
+                    # Soft centres on both sides: the decoded (cell + offset)
+                    # centre is not a function of the heatmap, so using it here
+                    # would route this loss into the offset head only.
                     loss_smooth = trajectory_smoothness_loss(
-                        primary_centers, primary_centers_next, valid_mask=next_valid
+                        primary_centers_soft,
+                        primary_centers_next_soft,
+                        valid_mask=next_valid,
+                        huber_delta=self.smooth_huber_delta,
                     )
                 else:
                     loss_smooth = torch.tensor(0.0, device=device)
@@ -345,17 +485,22 @@ class DirectorCenterNet(nn.Module):
                 "loss_centernet_hm": self.loss_weights["lambda_hcm"] * loss_hcm,
                 "loss_rmc": self.loss_weights["lambda_rmc"] * loss_rmc,
                 "loss_rep": self.loss_weights["lambda_rep"] * loss_rep,
-                "loss_smooth": self.loss_weights["lambda_sm"] * loss_smooth,
+                "loss_smooth": (
+                    self.loss_weights["lambda_sm"] * self.smooth_warmup_scale() * loss_smooth
+                ),
                 "loss_off": self.loss_weights["lambda_off"] * loss_off,
                 "loss_wh": self.loss_weights["lambda_sz"] * loss_sz,
             }
 
         else:
-            # Inference mode
+            # Inference mode. hm_logits is deliberately not passed: the soft
+            # centre exists only to carry gradient, and the emitted boxes stay
+            # the decoded (peak cell + offset head) ones, unchanged by this
+            # revision.
             feat = self._extract_features(batched)
-            pred_hm, pred_off, pred_wh = self._predict_heads(feat)
+            pred_hm, _hm_logits, pred_off, pred_wh = self._predict_heads(feat)
 
-            pred_boxes, pred_scores, pred_labels, _ = self._extract_predicted_regions_differentiable(
+            pred_boxes, pred_scores, pred_labels, _, _ = self._extract_predicted_regions_differentiable(
                 pred_hm=pred_hm,
                 pred_off=pred_off,
                 pred_wh=pred_wh,
