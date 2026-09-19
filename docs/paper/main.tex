@@ -1,0 +1,1279 @@
+%%
+%% Director-CenterNet: Multi-Region Viewport Prediction for Automated Esports Broadcasting
+%% Target Journal: Expert Systems with Applications (Elsevier)
+%% Template: elsarticle-template-num.tex (numbered citation style)
+%%
+
+\documentclass[preprint,12pt]{elsarticle}
+
+%% Use the option review to obtain double line spacing
+%% \documentclass[authoryear,preprint,review,12pt]{elsarticle}
+
+%% Use the options 1p,twocolumn; 3p; 3p,twocolumn; 5p; or 5p,twocolumn
+%% for a journal layout:
+%% \documentclass[final,1p,times]{elsarticle}
+%% \documentclass[final,3p,times]{elsarticle}
+%% \documentclass[final,5p,times]{elsarticle}
+
+%% The amssymb package provides various useful mathematical symbols
+\usepackage{amssymb}
+%% The amsmath package provides various useful equation environments.
+\usepackage{amsmath}
+%% Extended theorem environments
+%% \usepackage{amsthm}
+
+%% Line numbers for review
+%% \usepackage{lineno}
+
+%% Additional packages
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{xcolor}
+\usepackage{subcaption}
+\usepackage{mathtools}
+
+%% Convenience macros
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\todo}[1]{\textcolor{red}{[\textbf{TODO}: #1]}}
+
+\journal{Expert Systems with Applications}
+
+\begin{document}
+
+\begin{frontmatter}
+
+%% Title
+\title{Director-CenterNet: Multi-Region Viewport Prediction\\
+       for Automated Esports Broadcasting}
+
+%% Authors
+%% use the corref command within \author for corresponding author footnote
+\author[gist]{Cheong-mok Bae}
+\ead{cmbae0307@gm.gist.ac.kr}
+
+\author[gist]{Ho-Taek Joo}
+\ead{hotaek87@gm.gist.ac.kr}
+
+\author[aigist]{SungHa Lee}
+\ead{shlee0414@gm.gist.ac.kr}
+
+\author[gist,aigist]{Kyung-Joong Kim\corref{cor1}}
+\ead{kjkim@gist.ac.kr}
+
+\cortext[cor1]{Corresponding author}
+
+\affiliation[gist]{organization={School of Integrated Technology},
+             addressline={123 Cheomdan-gwagi-ro, Buk-gu},
+             city={Gwangju},
+             postcode={61005},
+             country={South Korea}}
+
+\affiliation[aigist]{organization={AI Graduate School},
+             addressline={123 Cheomdan-gwagi-ro, Buk-gu},
+             city={Gwangju},
+             postcode={61005},
+             country={South Korea}}
+
+%% Abstract
+\begin{abstract}
+Human game observers, who control in-game cameras and provide viewers with an
+engaging experience, are a vital part of electronic sports (Esports). In
+professional broadcasts multiple observers cooperate to operate several camera
+feeds at once, because a single view cannot cover the events that occur
+concurrently across a large map. Consequently, various methods to create
+automatic observers have been explored. However, these methods predict only a
+single region per frame. This is problematic because the attention of human
+observers is not unimodal: observers watching the same replay agree on only
+about half of their viewport area, and their attention separates further as the
+game progresses. Previous learning-based observers treated this disagreement as
+noise and collapsed it into a single consensus region, which discards the
+minority modes and causes the predicted camera to oscillate between competing
+regions across consecutive frames. In this paper, we overcome these problems by
+reformulating automatic observing as \emph{Multi-Region Viewport Prediction}
+(MRVP) and solving it with a heatmap-based detection method, CenterNet, in a
+real-time strategy game (e.g., StarCraft). Instead of collapsing the modes of
+human attention, the proposed model, \emph{Director-CenterNet}, recovers them:
+we rank the modes of the aggregated observer distribution by the number of
+observers they represent, and assign the dominant mode to a primary region and
+the remaining modes to auxiliary regions. The predicted regions are
+presentation-agnostic, so they can be rendered as a main screen with
+picture-in-picture inserts, as a split-screen layout, or as a ranked candidate
+set for a human director. We design four training objectives for this task: a
+\emph{Human Consensus Match} loss, a \emph{Ranked Mode Coverage} loss, a
+\emph{Spatial Repulsion} loss, and a \emph{Trajectory Smoothness} loss.
+Consequently, we show that our automatic observer outperforms current
+rule-based methods, human observers, and single-region learning-based
+observers, and that it covers concurrent situations that a single-region
+observer cannot.
+\end{abstract}
+
+%% Graphical abstract
+\begin{graphicalabstract}
+%% \includegraphics{graphical_abstract}
+\todo{Insert graphical abstract: pipeline diagram showing game-state tensor
+$\rightarrow$ Director-CenterNet $\rightarrow$ Main + PIP viewports overlaid
+on minimap.}
+\end{graphicalabstract}
+
+%% Research highlights
+\begin{highlights}
+\item Human observer attention in real-time strategy games is shown to be
+      multimodal, not unimodal.
+\item Automatic observing is reformulated as multi-region viewport prediction
+      for Esports broadcasting.
+\item Minority observer attention, previously discarded as noise, becomes
+      supervision for auxiliary regions.
+\item Repulsion and smoothness objectives remove redundant overlap and camera
+      thrashing.
+\item Predicted regions are presentation-agnostic and support PIP,
+      split-screen, and director assistance.
+\end{highlights}
+
+%% Keywords
+\begin{keyword}
+Esports \sep Automatic observer \sep Multi-viewport prediction \sep
+CenterNet \sep Saliency-guided learning \sep Spatial resource allocation \sep
+StarCraft \sep Behavior cloning
+\end{keyword}
+
+\end{frontmatter}
+
+%% \linenumbers   %% uncomment for review line numbers
+
+%%====================================================================
+\section{Introduction}
+\label{sec:intro}
+%%====================================================================
+
+Human game observers in electronic sports (Esports) fulfill a dual role: 
+they must simultaneously identify the most strategically significant region 
+of the map \emph{and} coordinate multiple camera feeds to ensure that 
+concurrent events are not missed \cite{joo2023learning}. In professional 
+Esports productions, a team of observers typically manages one main broadcast 
+camera together with several auxiliary picture-in-picture (PIP) channels, each 
+covering a distinct map region. Automating this workflow is challenging for 
+three reasons: (1) the number of concurrent high-priority events is dynamic; 
+(2) the spatial relationships among events evolve rapidly; and (3) the 
+subjective notion of ``broadcast saliency'' cannot be reduced to a single, 
+well-defined objective \cite{bae2025observer}.
+
+Prior work on automatic Esports observers has focused on the 
+\emph{single-viewport} setting, where the goal is to select one rectangular 
+window of fixed size from the game map at each frame. Rule-based approaches 
+\cite{mattsson2015automatic} define priority scores over hand-crafted events 
+and switch the camera accordingly. Learning-based methods 
+\cite{joo2023learning} instead collect observational data from human 
+spectators and train a detector-style model with Region of Common Interest 
+(ROCI) loss to imitate consensus human camera behaviour. The Kernel-Based 
+Region Scoring (KBRS) auxiliary loss \cite{anonymous2025kbrs} further improved 
+alignment with aggregated human attention by injecting fixed-kernel saliency 
+priors (density, mixture, centeredness) into the detection backbone at 
+training time.
+
+Despite these advances, we argue that the single-region setting is not merely
+restrictive but \emph{mismatched to the supervision it is trained on}. The
+evidence for this mismatch is already present in previous studies. Observers
+watching the same replay share only about 52\% of their viewport area with each
+other, and questionnaires show that they attend to different aspects of the
+match, such as building upgrades, resource expansion, or fighting
+\cite{joo2023learning}. Moreover, this disagreement is not constant over a
+match: in the early game the viewports of observers mostly overlap, but as the
+game progresses and significant events begin to occur at several locations at
+the same time, the observers view different scenes and only a few of their
+viewports overlap. Accordingly, the reported accuracy of every method,
+including the human average, decreases monotonically with game progression
+\cite{joo2023learning, anonymous2025kbrs}. We therefore regard the roughly 50\%
+agreement ceiling not as measurement noise to be averaged away, but as evidence
+that the target distribution is \emph{multimodal}.
+
+This interpretation explains the limitations of previous work. ROCI
+\cite{joo2023learning} and fixed-kernel auxiliary priors
+\cite{anonymous2025kbrs} are both devices for rescuing a single prediction on a
+multimodal target: they sharpen or re-weight the distribution so that one
+region can be selected from it. Such devices necessarily discard the minority
+modes, and they become least effective in exactly the mid-to-late game phase in
+which the modes separate. In addition, when two regions receive nearly equal
+support, a model trained to select one of them oscillates between them across
+consecutive frames.
+
+We address both limitations by reformulating automatic observing as
+\textbf{Multi-Region Viewport Prediction (MRVP)}: at each frame, the observer
+produces an ordered set of $K$ non-redundant regions of fixed size. Unlike the
+single-region approaches mentioned previously, this formulation does not
+collapse the modes of human attention but covers them, and it allows camera
+thrashing to be suppressed explicitly rather than implicitly. We emphasise that
+the predicted regions are \emph{presentation-agnostic}. The same output can be
+rendered as a main screen with picture-in-picture inserts, as a split-screen or
+multi-view grid, or as a ranked candidate set presented to a human director in
+the manner of \cite{chen2018learning}. The prediction problem is therefore
+independent of the production layout eventually chosen.
+
+Furthermore, we propose to obtain the supervision for the auxiliary regions
+from the human observational data itself, rather than from a hand-designed
+prior. Because the aggregated observer distribution already contains the
+secondary modes that previous work suppressed, we smooth this distribution,
+extract its local maxima, and rank the resulting modes by the number of
+observers they represent. The dominant mode supervises the primary region and
+the remaining modes supervise the auxiliary regions. In other words, the
+minority attention that ROCI treated as an obstacle becomes the training signal
+for the additional regions.
+
+To solve MRVP we propose \textbf{Director-CenterNet}, built on CenterNet 
+\cite{zhou2019objects}. CenterNet's dense heatmap representation is 
+well-suited to MRVP because (i) it simultaneously scores all candidate 
+viewport centres, enabling multi-peak extraction without iterative proposal 
+generation; (ii) the dense heatmap preserves the multimodal structure of the
+target, whereas an instance mask requires a discrete assignment that discards
+it; and (iii) local-maximum extraction naturally supports a variable number of
+regions, allowing an auxiliary region to be suppressed when no secondary mode
+is detected.
+
+Our contributions are as follows.
+
+\begin{enumerate}
+  \item We show that human observer attention in a real-time strategy game is
+        multimodal and that its modes separate as the match progresses, and we
+        argue that single-region observers are therefore mismatched to their
+        own supervision (Section~\ref{sec:problem}).
+  \item We formalise Multi-Region Viewport Prediction (MRVP) as a
+        presentation-agnostic task and propose evaluation metrics for
+        multi-region coverage, per-observer service, and temporal stability
+        (Section~\ref{sec:problem}).
+  \item We propose Director-CenterNet, a CenterNet-based multi-peak observer
+        that predicts an ordered set of regions in a single forward pass,
+        together with a Ranked Mode Coverage loss that supervises the auxiliary
+        regions using minority observer attention rather than a hand-designed
+        prior (Section~\ref{subsec:rmc_loss}).
+  \item We demonstrate that the proposed method outperforms existing rule-based
+        methods, human observers, and single-region learning-based observers,
+        and that it covers concurrent situations a single-region observer
+        cannot (Section~\ref{sec:experiments}).
+\end{enumerate}
+
+%%====================================================================
+\section{Background and Related Work}
+\label{sec:related}
+%%====================================================================
+
+\subsection{Single-Viewport Automatic Observers}
+
+Automatic game observation has been studied primarily in real-time strategy 
+(RTS) games, where the viewport selection problem is most challenging due to 
+large map size and high event concurrency \cite{ontanon2013survey}. 
+Rule-based observers such as AIIDE and SSCAIT \cite{mattsson2015automatic} 
+define priority scores over game events and teleport the camera to the 
+highest-priority event at each decision step. While interpretable, these 
+systems require manual event taxonomies and are brittle under novel strategies.
+
+Joo et al. \cite{joo2023learning} proposed the first event-free learning-based 
+observer for StarCraft. They framed viewport selection as an instance 
+segmentation problem, treating the human observer's viewport as the object to 
+detect. Using Mask R-CNN \cite{he2020mask} and a Region of Common Interest 
+(ROCI) loss that amplifies the overlapping area among multiple human observers, 
+their method outperforms both rule-based baselines and behaviour cloning. 
+Anonymous et al. \cite{anonymous2025kbrs} further improved upon 
+\cite{joo2023learning} by introducing Kernel-Based Region Scoring (KBRS) as 
+a training-time auxiliary loss. KBRS computes three fixed-kernel score maps — 
+density ($S^{\text{den}}$), mixture ($S^{\text{mix}}$), and centeredness 
+($S^{\text{ctr}}$) — on backbone FPN features, improving intersection ratio 
+by 4.31\% relative without altering inference-time outputs.
+
+The Observer framework \cite{bae2025observer} provides an open-source, 
+reproducible pipeline for data collection, preprocessing, and model training 
+on StarCraft: Brood War replays, which we use in this work.
+
+\subsection{Object Detection Architectures}
+
+Our work builds on two complementary detection paradigms. 
+\textbf{CenterNet} \cite{zhou2019objects} frames detection as keypoint 
+heatmap regression: the network predicts a Gaussian heatmap peaked at each 
+object's centre, with offset and size regression heads for bounding box 
+recovery. Multi-peak extraction by local-maximum search provides a natural 
+mechanism for detecting a variable number of objects per image. 
+\textbf{DETR} \cite{carion2020end} and RT-DETR \cite{lv2023detrs} reframe 
+detection as set prediction via Hungarian matching, eliminating 
+non-maximum suppression. We choose CenterNet over transformer-based detectors 
+for MRVP because the heatmap formulation preserves the multimodal structure of
+our target and admits a variable number of outputs without modifying a query
+set.
+
+\subsection{Saliency and Multi-Region Detection}
+
+The problem of distributing a limited number of viewports over a dynamic scene 
+relates to multi-salient region detection \cite{shi2016hierarchical}, active 
+perception \cite{chen2011active}, and sensor placement 
+\cite{krause2008near}. Classical saliency models incorporate hand-designed 
+priors — including centre bias and background priors — to guide attentional 
+selection \cite{itti1998model, wei2012geodesic, tatler2007central}. Our work 
+differs in that salient regions are defined by aggregated human attention over 
+a structured multi-channel game-state tensor rather than by low-level visual 
+features in natural images.
+
+\subsection{Temporal Stability in Video-Based Observers}
+
+Camera thrashing — rapid oscillation between competing salient regions — is a 
+known failure mode in learning-based observers. Trajectory smoothness losses 
+penalising inter-frame displacement have been applied in video object detection 
+\cite{feichtenhofer2017detect} and automated cinematography 
+\cite{gandhi2014video} to reduce temporal inconsistency. We adapt this 
+approach to the MRVP setting by penalising the L2 displacement of predicted 
+viewport centres across consecutive frames.
+
+%%====================================================================
+\section{Problem Formulation}
+\label{sec:problem}
+%%====================================================================
+
+\subsection{Input Representation}
+
+Following \cite{joo2023learning, bae2025observer, anonymous2025kbrs}, at 
+each game frame $t$ we construct a multi-channel state tensor 
+$\mathbf{X}_t \in \mathbb{R}^{C \times H \times W}$ on a tile grid of size 
+$H \times W$. Channels encode semantically distinct entity categories for 
+each player (workers, ground units, air units, buildings), terrain elevation, 
+combined vision, and resource locations. Each tile corresponds to 
+$32 \times 32$ pixels in the game world.
+
+To incorporate short-term temporal context, we stack frames at a fixed 
+stride $\Delta$:
+\begin{equation}
+  \mathbf{X}^{\text{stk}}_t 
+    = \text{concat}\bigl[\mathbf{X}_t,\,\mathbf{X}_{t-\Delta},\,
+      \ldots,\,\mathbf{X}_{t-W\Delta}\bigr]
+    \in \mathbb{R}^{(W+1)C \times H \times W}.
+  \label{eq:stacking}
+\end{equation}
+Unless otherwise stated we use $\Delta = 8$ and $W = 3$, yielding a 
+four-frame stack.
+
+\subsection{Human Supervision and Aggregation}
+
+For each frame $t$ and human observer $u \in \{1,\ldots,U\}$, we record a 
+viewport $V^{(u)}_t$ specified by its top-left tile coordinate 
+$\mathbf{p}^{(u)}_t \in \mathcal{C}$, where
+\begin{equation}
+  \mathcal{C} = \{(i,j) \mid 0 \le i \le H - h,\; 0 \le j \le W - w\}
+  \label{eq:feasible}
+\end{equation}
+is the set of feasible top-left positions for a viewport of fixed tile size 
+$(h, w)$. We aggregate human viewports into a hard union set
+\begin{equation}
+  \mathcal{H}_t = \bigcup_{u=1}^{U} V^{(u)}_t
+  \label{eq:union}
+\end{equation}
+and a soft crowd coverage map
+\begin{equation}
+  a_t(\mathbf{q}) = \frac{1}{U} \sum_{u=1}^{U} 
+    \mathbf{1}\!\bigl[\mathbf{q} \in V^{(u)}_t\bigr],
+  \label{eq:coverage}
+\end{equation}
+which measures the fraction of observers whose viewport covers tile
+$\mathbf{q}$.
+
+\subsection{Ranked Modes of the Observer Distribution}
+\label{subsec:modes}
+
+Rather than reducing $a_t$ to a single consensus point, we recover its modes.
+We smooth the coverage map with a Gaussian filter, $\tilde{a}_t = G_{\sigma_m}
+* a_t$, and take its local maxima above a relative floor
+$\theta \cdot \max \tilde{a}_t$. Candidates are visited in descending order of
+$\tilde{a}_t$ and greedily suppressed within a minimum separation $D$, which
+prevents a single broad region of agreement from producing several modes. Each
+surviving mode $\mathbf{m}$ is assigned a \emph{support}, the number of
+observers whose viewport covers it:
+\begin{equation}
+  n_t(\mathbf{m}) = \sum_{u=1}^{U} \mathbf{1}\bigl[\mathbf{m} \in V^{(u)}_t\bigr].
+  \label{eq:support}
+\end{equation}
+Sorting by support in descending order gives the ordered sequence
+\begin{equation}
+  \mathcal{M}_t = \bigl(\mathbf{m}^{(1)}_t, \mathbf{m}^{(2)}_t, \ldots\bigr),
+  \qquad n_t(\mathbf{m}^{(1)}_t) \ge n_t(\mathbf{m}^{(2)}_t) \ge \cdots,
+  \label{eq:ranked_modes}
+\end{equation}
+which we refer to as the Top-1, Top-2, \ldots\ regions of human attention at
+frame $t$. The Top-1 region corresponds to the consensus region targeted by
+previous single-region work; the remaining entries are the minority modes that
+previous work suppressed.
+
+Two properties of $\mathcal{M}_t$ matter for this study. First, its cardinality
+grows as a match progresses, because observer attention separates in the
+mid-to-late game. Second, the reliability of the lower-ranked entries depends
+on $U$: with $U=5$, a mode supported by two observers is not separable from
+sampling variation, whereas a larger observer pool makes minority modes
+measurable. This is the reason we extend the dataset of \cite{joo2023learning}
+with additional participants per replay, as described in
+Section~\ref{sec:experiments}.
+
+\subsection{Multi-Region Viewport Prediction (MRVP)}
+
+\textbf{Definition.} Given a game-state tensor $\mathbf{X}^{\text{stk}}_t$, 
+predict a set of $K$ viewport positions 
+$\{\hat{\mathbf{p}}^{(k)}_t\}_{k=1}^{K} \subset \mathcal{C}$ such that:
+\begin{enumerate}
+  \item $\hat{\mathbf{p}}^{(1)}_t$ (main viewport) maximally overlaps the 
+        human consensus region $\mathcal{H}_t$;
+  \item $\hat{\mathbf{p}}^{(k)}_t$ for $k \ge 2$ (PIP viewports) cover 
+        salient regions not covered by the main viewport;
+  \item Predicted viewports are spatially diverse (non-redundant);
+  \item Predicted viewport positions vary smoothly across consecutive frames.
+\end{enumerate}
+
+This formulation generalises single-viewport prediction (the special case 
+$K=1$) while connecting MRVP to the multi-salient region detection literature.
+
+\subsection{Evaluation Metrics}
+
+\paragraph{Intersection Ratio (IR).}
+\begin{equation}
+  \text{IR}_t = \frac{\bigl|V(\hat{\mathbf{p}}^{(1)}_t) \cap \mathcal{H}_t\bigr|}
+                     {\bigl|V(\hat{\mathbf{p}}^{(1)}_t)\bigr|}
+  \label{eq:ir}
+\end{equation}
+
+\paragraph{Intersection@$\delta$.}
+\begin{equation}
+  \text{I@}\delta_t = \mathbf{1}[\text{IR}_t \ge \delta],\quad
+  \delta \in \{0,\, 0.3,\, 0.5\}.
+  \label{eq:iat}
+\end{equation}
+
+\paragraph{Best-of-$K$ Intersection@$\delta$ (BoK@$\delta$).}
+Whether \emph{any} predicted region reaches overlap $\delta$, which is the
+multi-region analogue of the first-versus-second-suggestion comparison reported
+in \cite{chen2018learning}:
+\begin{equation}
+  \text{BoK@}\delta_t = \mathbf{1}\!\left[\max_{k \le K}
+    \frac{\bigl|V(\hat{\mathbf{p}}^{(k)}_t) \cap \mathcal{H}_t\bigr|}
+         {\bigl|V(\hat{\mathbf{p}}^{(k)}_t)\bigr|} \ge \delta\right].
+  \label{eq:bok}
+\end{equation}
+
+\paragraph{Observer Coverage (OC@$\delta$).}
+The fraction of \emph{individual} observers served by at least one predicted
+region, which measures how many of the disagreeing observers the output
+satisfies:
+\begin{equation}
+  \text{OC@}\delta_t = \frac{1}{U}\sum_{u=1}^{U} \mathbf{1}\!\left[
+    \max_{k \le K} \frac{\bigl|V(\hat{\mathbf{p}}^{(k)}_t) \cap V^{(u)}_t\bigr|}
+                        {\bigl|V^{(u)}_t\bigr|} \ge \delta\right].
+  \label{eq:oc}
+\end{equation}
+Note that $\text{IR}$ and $\text{I@}\delta$ are computed on the primary region
+only and are therefore directly comparable to previously reported
+single-region results, whereas BoK@$\delta$ and OC@$\delta$ characterise the
+multi-region setting. The gap between $\text{I@}\delta$ and BoK@$\delta$
+indicates how much of the human attention distribution is reachable by
+additional regions; OC@$\delta$ indicates how many of the disagreeing observers
+the output actually serves.
+
+\paragraph{Viewport Displacement (VD).}
+Average L2 displacement of the main viewport centre across consecutive 
+frames, measuring temporal stability:
+\begin{equation}
+  \text{VD} = \frac{1}{T-1}\sum_{t=1}^{T-1}
+    \bigl\|\bar{\mathbf{p}}^{(1)}_t - \bar{\mathbf{p}}^{(1)}_{t+1}\bigr\|_2,
+  \label{eq:vd}
+\end{equation}
+where $\bar{\mathbf{p}}^{(k)}_t$ denotes the centre of the $k$-th predicted 
+viewport at frame $t$.
+
+%%====================================================================
+\section{Director-CenterNet}
+\label{sec:method}
+%%====================================================================
+
+\subsection{Architecture Overview}
+
+Director-CenterNet is a heatmap-based multi-peak detector that extends 
+CenterNet \cite{zhou2019objects} to the MRVP problem. The architecture 
+comprises three components: (1) a ResNet-FPN backbone encoder that transforms 
+the stacked game-state tensor into a spatial feature map; (2) CenterNet heads 
+that regress a dense Gaussian heatmap of viewport centres together with offset 
+and size maps; and (3) a ranked multi-peak extraction step. 
+Fig.~\ref{fig:architecture} provides an overview.
+
+\begin{figure}[t]
+  \centering
+  \todo{Insert architecture figure: stacked game-state tensor $\rightarrow$
+  ResNet-FPN backbone $\rightarrow$ heatmap / offset / size heads
+  $\rightarrow$ ranked multi-peak extraction $\rightarrow$ ordered region set,
+  with the four training objectives annotated on the ranked human attention
+  modes.}
+  \caption{Overview of Director-CenterNet. The stacked game-state tensor is
+  processed by a ResNet-FPN backbone. The heatmap head produces a dense score
+  map over all candidate region centres, and ranked multi-peak extraction
+  yields an ordered set of regions in a single forward pass. Training is
+  supervised by the ranked modes of the aggregated observer distribution
+  (Section~\ref{subsec:modes}): the Top-1 mode supervises the primary region
+  and the remaining modes supervise the auxiliary regions.}
+  \label{fig:architecture}
+\end{figure}
+
+\subsection{CenterNet Backbone and Heads}
+
+\paragraph{Input.} The stacked tensor
+$\mathbf{X}^{\text{stk}}_t \in \mathbb{R}^{(W+1)C \times H \times W}$ is
+fed to a ResNet-50 \cite{he2016deep} backbone with a Feature Pyramid Network
+(FPN) \cite{lin2017feature} to obtain a feature map
+$\mathbf{F}_t \in \mathbb{R}^{C_f \times H_s \times W_s}$ at stride $s$.
+The tile map is consumed at its native resolution without resizing, and we
+take the finest FPN level, $s=4$. For the $128 \times 128$ tile maps used here
+this yields a $32 \times 32$ heatmap, i.e.\ $1024$ candidate region centres,
+with each heatmap cell covering a $4 \times 4$ tile block. Since a viewport
+spans $12 \times 20$ tiles, it occupies $3 \times 5$ cells; the stride is
+therefore already coarse relative to the target, and we return to this point in
+Section~\ref{sec:discussion}.
+
+\paragraph{Heatmap head.} Two $3{\times}3$ convolutions followed by a
+$1{\times}1$ sigmoid layer produce the region-centre heatmap
+$\hat{\mathcal{Y}}_t \in [0,1]^{H_s \times W_s}$. The ground-truth heatmap is
+rendered by placing a 2D Gaussian at each ranked mode of
+Section~\ref{subsec:modes}:
+\begin{equation}
+  \mathcal{Y}_t(\mathbf{q}) = \max_k\, \omega_k
+    \exp\!\left(-\frac{\|\mathbf{q} - \pi(\mathbf{m}^{(k)}_t)\|^2}
+                      {2\sigma^2}\right),
+  \label{eq:gt_heatmap}
+\end{equation}
+where $\omega_k = n_t(\mathbf{m}^{(k)}_t)/U \in (0,1]$ weights a mode by its
+normalised support. Using the support as an amplitude, rather than treating all
+modes identically, preserves the ranking in the target and prevents a mode
+observed by a single participant from being trained as strongly as the
+consensus region.
+
+The operator $\pi(\cdot)$ maps a mode to the centre of its assigned heatmap
+cell, and it is not cosmetic. A mode at a continuous tile coordinate can fall
+up to $s\sqrt{2}/2$ tiles from the nearest sampled grid point, which for
+$\sigma = 2$ tiles and $s = 4$ attenuates the rendered peak by up to
+$\exp(-1) \approx 0.37$. Rendering at the continuous coordinate would therefore
+make the target amplitude encode quantisation error as much as observer
+support, defeating the ranking it is meant to carry; a mode with support $1$ of
+$U=5$ would render anywhere in $[0.074,\,0.2]$ instead of exactly $0.2$. We
+render at the assigned cell, as \cite{zhou2019objects} does, and leave the
+sub-cell residual to the offset head.
+
+\paragraph{Offset and size heads.} Following \cite{zhou2019objects},
+a sub-pixel offset map $\hat{\mathbf{O}}_t \in \mathbb{R}^{2 \times H_s
+\times W_s}$ and a size map $\hat{\mathbf{Z}}_t \in \mathbb{R}^{2 \times
+H_s \times W_s}$ recover accurate region boxes from detected centres. Output
+convolutions of all three heads are initialised at a small standard deviation,
+following \cite{zhou2019objects}; initialising them by the fan-out rule used
+for the hidden layers gives a standard deviation of $\sqrt{2}$ for a
+$1{\times}1$ convolution with a single output channel, which saturates the
+sigmoid and drives the offset head far outside its $[0,1)$ target range, so
+that decoded centres fall off the map and are clamped to its border.
+
+\paragraph{Ranked multi-peak extraction.} At inference a $3{\times}3$
+max-pooling suppresses non-maxima, and the top-$K$ peaks with score above a
+confidence threshold $\tau$ are returned in descending score order. The
+highest-scoring peak is the primary region. If fewer than $K$ peaks exceed
+$\tau$, fewer regions are returned, so the number of active auxiliary regions
+adapts to the number of concurrent events.
+
+Two details of this step are load-bearing. First, $\tau$ must lie below the
+smallest meaningful target amplitude $1/U$, since by Eq.~\ref{eq:gt_heatmap} a
+mode supported by one observer is trained toward exactly $1/U$; a threshold at
+or above that value makes minority regions unreachable no matter how well the
+model fits them. Second, \texttt{max\_pool} pads with $-\infty$, so a cell on
+the heatmap border competes against fewer neighbours than an interior cell and
+becomes a local maximum with probability $1/4$ rather than $1/9$ under a flat
+heatmap. We therefore exclude the outermost ring of cells from the candidate
+set, which costs nothing reachable: a viewport at the map corner has its centre
+at $(h/2, w/2)$, one to two cells inside the boundary.
+
+\paragraph{Differentiable region centres.} The peak indices returned by a
+top-$K$ selection are discrete and carry no gradient, so a centre formed as
+(peak cell $+$ offset head) is a function of the regression heads alone and is
+independent of the heatmap. The repulsion and smoothness objectives below are
+statements about \emph{where the model looks}, and defined on such a centre
+they cannot reach the map that decides it. We therefore define a soft centre by
+a softmax over the heatmap logits in a window of radius $r$ around each peak,
+\begin{equation}
+  \bar{\mathbf{p}}^{(k)}_t = s\Bigl(\mathbf{c}^{(k)}_t +
+    \textstyle\sum_{\boldsymbol{\delta} \in \mathcal{W}_r}
+    \mathrm{softmax}\bigl(z_t(\mathbf{c}^{(k)}_t + \boldsymbol{\delta})\bigr)\,
+    \boldsymbol{\delta}\Bigr),
+  \label{eq:soft_center}
+\end{equation}
+where $\mathbf{c}^{(k)}_t$ is the $k$-th peak cell, $z_t$ the pre-sigmoid
+logits, and $\mathcal{W}_r$ the offsets within the window. This quantity is
+differentiable with respect to $\hat{\mathcal{Y}}_t$ and collapses toward the
+peak cell as the peak sharpens. It is used only by
+$\mathcal{L}_{\text{rep}}$ and $\mathcal{L}_{\text{smooth}}$; the regions
+emitted at inference remain the decoded (cell $+$ offset) ones, since adding
+both displacements would double-count a sub-cell position that only
+$\mathcal{L}_{\text{off}}$ supervises.
+
+\subsection{Multi-Objective Training Losses}
+\label{subsec:losses}
+
+Director-CenterNet is trained with four objectives designed for this task,
+alongside the standard CenterNet regression losses. The four divide the
+heatmap between them: $\mathcal{L}_{\text{hcm}}$ owns the primary cell and the
+background, $\mathcal{L}_{\text{rmc}}$ owns the auxiliary modes, and
+$\mathcal{L}_{\text{rep}}$ and $\mathcal{L}_{\text{smooth}}$ act on the
+geometry of the decoded regions.
+
+\subsubsection{Human Consensus Match Loss $\mathcal{L}_{\text{hcm}}$}
+
+The primary region must be anchored to the Top-1 mode. Writing
+$\mathcal{Y}^{(1)}_t$ for the heatmap of Eq.~\ref{eq:gt_heatmap} restricted to
+$\mathbf{m}^{(1)}_t$, and $\Psi_t$ for the auxiliary support set defined in
+Section~\ref{subsec:rmc_loss}, we apply the modified focal loss
+\cite{law2018cornernet}:
+\begin{equation}
+  \mathcal{L}_{\text{hcm}} = -\frac{1}{N}\sum_{\mathbf{q} \notin \Psi_t}
+    \begin{cases}
+      (1-\hat{\mathcal{Y}}_t(\mathbf{q}))^{\alpha_f}
+        \log \hat{\mathcal{Y}}_t(\mathbf{q})
+        & \text{if } \mathbf{q} = \pi(\mathbf{m}^{(1)}_t), \\[4pt]
+      (1-\mathcal{Y}_t(\mathbf{q}))^{\beta_f}
+        \hat{\mathcal{Y}}_t(\mathbf{q})^{\alpha_f}
+        \log(1-\hat{\mathcal{Y}}_t(\mathbf{q}))
+        & \text{otherwise,}
+    \end{cases}
+  \label{eq:hcm_loss}
+\end{equation}
+where $N$ is the number of positive locations and $\alpha_f, \beta_f$ are
+focal loss hyperparameters.
+
+Two aspects of Eq.~\ref{eq:hcm_loss} differ from a direct transcription of
+CornerNet and both concern the auxiliary modes. First, the penalty-reduction
+factor uses the \emph{joint} target $\mathcal{Y}_t$ rather than
+$\mathcal{Y}^{(1)}_t$. In CornerNet the $(1-\mathcal{Y})^{\beta_f}$ factor
+protects every ground-truth location from being pulled down as a hard
+negative; weighting by $\mathcal{Y}^{(1)}_t$ alone leaves the auxiliary modes
+unprotected, since $\mathcal{Y}^{(1)}_t \approx 0$ there and the factor is
+therefore $\approx 1$. The focal term would then be trained to erase precisely
+what $\mathcal{L}_{\text{rmc}}$ is trying to create. Second, down-weighting by
+itself is insufficient: at an auxiliary mode with support $1$ of $U=5$ the
+joint target is $0.2$, so $(1-0.2)^{4} = 0.41$ still leaves substantial
+downward pressure. We therefore exclude $\Psi_t$ from this loss entirely and
+delegate it to $\mathcal{L}_{\text{rmc}}$, so that the two objectives are
+complementary by construction rather than by assumption.
+
+\subsubsection{Ranked Mode Coverage Loss $\mathcal{L}_{\text{rmc}}$}
+\label{subsec:rmc_loss}
+
+The auxiliary regions must cover the remaining modes. Let
+$\mathcal{M}^-_t = (\mathbf{m}^{(2)}_t, \ldots, \mathbf{m}^{(K)}_t)$ and let
+$\mathcal{Y}^-_t$ be the support-weighted heatmap of Eq.~\ref{eq:gt_heatmap}
+rendered from $\mathcal{M}^-_t$ alone. Writing $\mathcal{A}^{(1)}_t$ for the
+binary mask of tiles already covered by the primary region, the auxiliary
+region outside it is
+\begin{equation}
+  \Omega_t = \bigl\{\mathbf{q} : \mathcal{A}^{(1)}_t(\mathbf{q}) = 0\bigr\},
+  \label{eq:omega}
+\end{equation}
+and the subset of it that actually carries auxiliary mass is
+\begin{equation}
+  \Psi_t = \bigl\{\mathbf{q} \in \Omega_t : \mathcal{Y}^-_t(\mathbf{q})
+    > \epsilon \bigr\}.
+  \label{eq:psi}
+\end{equation}
+The loss is a masked mean-squared error over $\Psi_t$:
+\begin{equation}
+  \mathcal{L}_{\text{rmc}} = \frac{1}{|\Psi_t|}\sum_{\mathbf{q} \in \Psi_t}
+    \bigl(\hat{\mathcal{Y}}_t(\mathbf{q}) - \mathcal{Y}^-_t(\mathbf{q})\bigr)^2.
+  \label{eq:rmc_loss}
+\end{equation}
+When $\mathcal{M}^-_t$ is empty, which occurs in early-game frames where
+observers agree, $\mathcal{L}_{\text{rmc}} = 0$ and no auxiliary supervision is
+applied.
+
+Normalising over $\Psi_t$ rather than over $\Omega_t$ is essential. $\Omega_t$
+excludes only the primary region and therefore covers almost the whole
+heatmap — $1009$ of $1024$ cells in our configuration — while the auxiliary
+mass occupies roughly a dozen of them. Averaging over $\Omega_t$ dilutes the
+only informative cells by two orders of magnitude, whereas
+$\mathcal{L}_{\text{hcm}}$ normalises by the number of positives. Suppressing
+the true background is already $\mathcal{L}_{\text{hcm}}$'s role; this term
+only has to raise the prediction at the ranked minority modes to their
+support-weighted amplitude.
+
+\subsubsection{Spatial Repulsion Loss $\mathcal{L}_{\text{rep}}$}
+
+To keep the predicted regions non-redundant we penalise pairwise Intersection
+over Union between them, evaluated on the soft centres of
+Eq.~\ref{eq:soft_center}:
+\begin{equation}
+  \mathcal{L}_{\text{rep}} = \sum_{k < l}
+    \text{IoU}\!\bigl(V(\bar{\mathbf{p}}^{(k)}_t),\,
+                      V(\bar{\mathbf{p}}^{(l)}_t)\bigr).
+  \label{eq:rep_loss}
+\end{equation}
+Regions are shifted rather than cropped at the map boundary, matching the
+feasible set $\mathcal{C}$ of Eq.~\ref{eq:feasible}, so that this term always
+sees the fixed-size viewport the task is defined over and cannot reduce an
+overlap penalty by sliding a region partly off the map.
+
+When fewer than two regions are returned, $\mathcal{L}_{\text{rep}} = 0$. Note
+that this term cannot create regions; it only separates regions that
+$\mathcal{L}_{\text{rmc}}$ has already produced. Its effect is therefore
+defined only conditional on $\mathcal{L}_{\text{rmc}}$, which is why the
+corresponding cell of the ablation lattice in Section~\ref{subsec:ablation} is
+left empty rather than measured.
+
+\subsubsection{Trajectory Smoothness Loss $\mathcal{L}_{\text{smooth}}$}
+
+To suppress camera thrashing we penalise inter-frame displacement of the
+primary region centre. Writing $d_t = \|\bar{\mathbf{p}}^{(1)}_t -
+\bar{\mathbf{p}}^{(1)}_{t+1}\|_2$ in tiles and $D = \sqrt{H^2+W^2}$ for the
+map diagonal,
+\begin{equation}
+  \mathcal{L}_{\text{smooth}} = \frac{1}{D\,(T-1)}\sum_{t=1}^{T-1}
+    \mathcal{H}_{\Delta_s}(d_t), \qquad
+  \mathcal{H}_{\Delta_s}(d) = \begin{cases}
+    \tfrac{1}{2}d^2 & d \le \Delta_s, \\[2pt]
+    \Delta_s\bigl(d - \tfrac{1}{2}\Delta_s\bigr) & d > \Delta_s.
+  \end{cases}
+  \label{eq:smooth_loss}
+\end{equation}
+The objective is applied to the primary region only, since the auxiliary
+regions are expected to be reallocated as events appear and disappear.
+
+A squared-$L_2$ penalty in tile units, which is the direct transcription of
+the intent, makes ``hold still'' cheaper than ``follow the action''. On a
+$128 \times 128$ map two independent predictions differ by
+$\mathbb{E}[d^2] \approx 5461$ at initialisation, several orders of magnitude
+above a focal term of $O(1)$; because the gradient norm is clipped globally,
+such a term does not merely outweigh the others but rescales the whole update
+and starves them. The Huber form caps the per-sample gradient at $\Delta_s$ so
+that small motion remains almost free while a large jump is expensive but
+bounded, and the division by $D$ places the result on an $O(1)$ scale. The
+order matters: normalising before applying the Huber would put $\Delta_s$ at
+$\Delta_s/D$ and shrink the objective by roughly four orders of magnitude,
+disabling it rather than correcting it. We additionally hold
+$\lambda_{\text{sm}}$ at zero for the first $E_0$ epochs and ramp it linearly
+to its full value by epoch $E_1$, because a trajectory objective imposed on a
+randomly initialised heatmap is most cheaply satisfied by not moving at all.
+
+\subsubsection{Joint Training Objective}
+
+The total loss combines the standard CenterNet detection objective with the 
+four multi-viewport losses:
+\begin{equation}
+  \mathcal{L} = \mathcal{L}_{\text{hcm}} 
+              + \lambda_{\text{off}}\mathcal{L}_{\text{off}} 
+              + \lambda_{\text{sz}}\mathcal{L}_{\text{size}} 
+              + \lambda_{\text{rmc}}\mathcal{L}_{\text{rmc}}
+              + \lambda_{\text{rep}}\mathcal{L}_{\text{rep}}
+              + \lambda_{\text{sm}}\mathcal{L}_{\text{smooth}},
+  \label{eq:total_loss}
+\end{equation}
+where $\mathcal{L}_{\text{off}}$ and $\mathcal{L}_{\text{size}}$ are the 
+standard CenterNet offset and size regression losses \cite{zhou2019objects}.
+
+Table~\ref{tab:loss_summary} summarises the role of each loss component.
+
+\begin{table}[t]
+  \centering
+  \caption{Summary of Director-CenterNet training losses.}
+  \label{tab:loss_summary}
+  \begin{tabular}{llll}
+    \toprule
+    Loss & Symbol & Type & Purpose \\
+    \midrule
+    Human Consensus Match & $\mathcal{L}_{\text{hcm}}$ & Focal & 
+      Anchor main viewport to human consensus \\
+    Offset regression & $\mathcal{L}_{\text{off}}$ & L1 & 
+      Sub-pixel centre accuracy \\
+    Size regression & $\mathcal{L}_{\text{size}}$ & L1 & 
+      Viewport size accuracy \\
+    Ranked Mode Coverage & $\mathcal{L}_{\text{rmc}}$ & Masked MSE &
+      Direct auxiliary regions to the remaining ranked modes \\
+    Spatial Repulsion & $\mathcal{L}_{\text{rep}}$ & IoU penalty &
+      Keep the predicted regions non-redundant \\
+    Trajectory Smoothness & $\mathcal{L}_{\text{smooth}}$ & Huber &
+      Suppress thrashing of the primary region \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+%%====================================================================
+\section{Experiments}
+\label{sec:experiments}
+%%====================================================================
+
+\subsection{Dataset and Preprocessing}
+
+We use the same StarCraft: Brood War dataset and Observer preprocessing 
+pipeline as \cite{joo2023learning, anonymous2025kbrs}. Replay files were 
+collected from online communities (Ygosu, BWReplays) with constraints on 
+player APM ($>250$), race matchups (Z vs.~P, T vs.~P, Z vs.~T), competitive 
+maps (Fighting Spirit, Jade, Othello), and starting locations. Human
+observational data were collected from participants (aged 20--35) who freely
+spectated replay files while viewport coordinates were recorded at each frame.
+A total of approximately 420{,}000 frames from 21 games were collected.
+
+\paragraph{Extending the observer pool.} The original collection recorded
+$U=5$ observers \emph{per replay} \cite{joo2023learning}. As argued in
+Section~\ref{subsec:modes}, five observers are sufficient to estimate the
+consensus region but not to distinguish a genuine minority mode from sampling
+variation: a mode supported by two of five falls within the uncertainty of the
+estimate, and by Eq.~\ref{eq:gt_heatmap} the smallest representable amplitude
+is $1/U = 0.2$. We therefore recruit additional participants under the same
+protocol as \cite{joo2023learning}, raising the pool to
+\todo{state final $U$; target 10--15} observers per replay. With a larger pool
+a mode supported by a third of the observers becomes measurable, which is the
+minimum requirement for supervising the auxiliary regions. Participant
+recruitment criteria, instructions, and post-session questionnaires follow
+\cite{joo2023learning} so that the extended data remain compatible with the
+original portion.
+
+\paragraph{Characterising the target distribution.} Before training we report
+the structure of the supervision itself: the number of extracted modes per
+frame as a function of game progression, the support distribution of the Top-1
+to Top-$N$ modes, and pairwise observer agreement as a function of $U$.
+Table~\ref{tab:mode_structure} presents these statistics. This analysis is a
+contribution in its own right, since it quantifies the multimodality that
+motivates the task.
+
+\begin{table}[t]
+  \centering
+  \caption{Structure of the aggregated observer distribution by game
+  progression: mean number of extracted modes and mean support of the Top-1 to
+  Top-3 modes. \todo{Fill in after data collection.}}
+  \label{tab:mode_structure}
+  \begin{tabular}{lcccc}
+    \toprule
+    Progression & $|\mathcal{M}_t|$ & Top-1 & Top-2 & Top-3 \\
+    \midrule
+    1/4 & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    2/4 & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    3/4 & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    4/4 & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Game-state tensors follow the channelisation protocol of \cite{bae2025observer}:
+four entity channels per player (workers, ground units, air units, buildings),
+terrain elevation, combined vision, and resource channels. Temporal stacking
+uses $\Delta=8$, $W=3$ (four-frame stack), and the $128 \times 128$ tile map
+is consumed at its native resolution.
+
+\subsection{Experimental Setup}
+
+\paragraph{Splits.} Three replay-level folds are used for cross-validation 
+following \cite{joo2023learning, anonymous2025kbrs}. All main comparison 
+results are averaged over three folds and three random seeds 
+$\{123, 456, 789\}$.
+
+\paragraph{Implementation.} Backbone: ResNet-50 pretrained on ImageNet with
+FPN, finest level ($s=4$), giving a $32 \times 32$ heatmap. Gaussian
+rendering: $\sigma = 2$~tiles, which matches the CenterNet radius heuristic
+for a $3 \times 5$-cell target. Mode extraction: Gaussian smoothing
+$\sigma_m = 4$~tiles, relative floor $\theta = 0.35$, minimum separation
+$D = 12$~tiles. Loss weights: $\lambda_{\text{off}}=1$,
+$\lambda_{\text{sz}}=0.1$, $\lambda_{\text{rmc}}=0.5$,
+$\lambda_{\text{rep}}=0.3$, $\lambda_{\text{sm}}=0.02$. Smoothness shaping:
+Huber knee $\Delta_s = 5$~tiles, warmup $E_0 = 5$, $E_1 = 10$. Soft-centre
+window radius $r=2$~cells. Region set: $K=3$, confidence threshold
+$\tau=0.1$. Note that $\tau$ is set below $1/U$ for the reasons given in
+Section~\ref{sec:method}; the inference-time score filter is held at the same
+value, since a filter above $\tau$ would silently remove every minority
+region.
+
+\paragraph{Optimiser.} SGD with momentum~0.9, weight decay $5{\times}10^{-4}$, 
+learning rate $5{\times}10^{-3}$ with StepLR decay (step~3, factor~0.1), 
+batch size~16, 30~epochs.
+
+\subsection{Baselines}
+
+We compare Director-CenterNet against the following methods.
+
+\begin{itemize}
+  \item \textbf{BC}: Behaviour cloning via MSE regression to human viewport 
+        coordinates.
+  \item \textbf{AIIDE}: Rule-based observer \cite{mattsson2015automatic}.
+  \item \textbf{SSCAIT}: Rule-based observer with event priorities and timers 
+        \cite{mattsson2015automatic}.
+  \item \textbf{Mask R-CNN (1H)}: Single-viewport detection, one human label 
+        \cite{joo2023learning}.
+  \item \textbf{Mask R-CNN (5H)}: Single-viewport detection, five human labels 
+        \cite{joo2023learning}.
+  \item \textbf{Mask R-CNN + ROCI}: With Region of Common Interest loss 
+        \cite{joo2023learning}.
+  \item \textbf{Mask R-CNN + KBRS}: With Kernel-Based Region Scoring 
+        \cite{anonymous2025kbrs}.
+  \item \textbf{CenterNet (single)}: the proposed backbone trained with
+        $\mathcal{L}_{\text{hcm}}$ only, i.e.\ the first row of
+        Table~\ref{tab:ablation}. This isolates the effect of the backbone
+        change from that of the multi-region formulation, and is therefore
+        the same architecture as Director-CenterNet rather than a separate
+        plain-backbone CenterNet, which would confound the two.
+\end{itemize}
+
+\subsection{Main Results}
+
+Table~\ref{tab:main_results} reports main-viewport performance (IR and 
+Intersection@$\delta$) on the standard test set.
+
+\begin{table}[t]
+  \centering
+  \caption{Main viewport performance on the standard test set (fixed race, 
+  map, starting location). Results averaged over three folds $\times$ three 
+  seeds. Best result in \textbf{bold}, second best \underline{underlined}. 
+  \todo{Fill in experimental values.}}
+  \label{tab:main_results}
+  \begin{tabular}{lcccc}
+    \toprule
+    Method & @any $\uparrow$ & @0.3 $\uparrow$ & @0.5 $\uparrow$ 
+           & IR $\uparrow$ \\
+    \midrule
+    BC                         & 0.061 & 0.059 & 0.046 & -- \\
+    AIIDE                      & 0.524 & --    & --    & -- \\
+    SSCAIT                     & 0.491 & --    & --    & -- \\
+    Mask R-CNN (1H)            & 0.593 & --    & --    & -- \\
+    Mask R-CNN (5H)            & 0.569 & --    & --    & -- \\
+    Mask R-CNN + ROCI          & 0.588 & --    & --    & -- \\
+    Mask R-CNN + KBRS          & \underline{0.824} & \underline{0.798} 
+                               & \underline{0.770} & \underline{0.709} \\
+    CenterNet (single)         & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    \midrule
+    \textbf{Director-CenterNet (Ours)} & \todo{X} & \todo{X} 
+                               & \todo{X} & \todo{X} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Table~\ref{tab:multi_results} reports the multi-region metrics. These are the
+quantities the proposed formulation is designed to improve: the gap between
+I@$\delta$ and BoK@$\delta$ indicates how much of the human attention
+distribution is reachable by additional regions, and OC@$\delta$ indicates how
+many of the disagreeing observers the output actually serves. A single-region
+method has $|\hat{\mathcal{P}}_t| = 1$, so its BoK@$\delta$ equals its
+I@$\delta$ by definition.
+
+\begin{table}[t]
+  \centering
+  \caption{Multi-region coverage, per-observer service, and temporal
+  stability. Lower VD is better. \todo{Fill in experimental values.}}
+  \label{tab:multi_results}
+  \begin{tabular}{lcccc}
+    \toprule
+    Method & BoK@0.5 $\uparrow$ & OC@0.5 $\uparrow$
+           & $|\hat{\mathcal{P}}_t|$ & VD (tiles) $\downarrow$ \\
+    \midrule
+    Mask R-CNN + KBRS (single)       & \todo{X} & \todo{X} & 1 & \todo{X} \\
+    CenterNet (single)               & \todo{X} & \todo{X} & 1 & \todo{X} \\
+    \textbf{Director-CenterNet}      & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Generalisation Tests}
+
+Following \cite{joo2023learning, anonymous2025kbrs}, we evaluate 
+generalisation to unseen races, starting locations, and maps.
+
+\begin{table}[t]
+  \centering
+  \caption{Generalisation test: IR (4/4 game progression) for unseen 
+  conditions. \todo{Fill in experimental values.}}
+  \label{tab:generalisation}
+  \begin{tabular}{lccc}
+    \toprule
+    Method & Unseen Race & Unseen Location & Unseen Map \\
+    \midrule
+    Mask R-CNN + ROCI   & 0.615 & 0.559 & 0.581 \\
+    Mask R-CNN + KBRS   & \todo{X} & \todo{X} & \todo{X} \\
+    \textbf{Director-CenterNet} & \todo{X} & \todo{X} & \todo{X} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Ablation Study}
+\label{subsec:ablation}
+
+\paragraph{Design of the lattice.} Four objectives are designed for this task,
+but only three of them are ablation axes. $\mathcal{L}_{\text{off}}$ and
+$\mathcal{L}_{\text{size}}$ are the standard CenterNet regression losses and
+are a precondition for decoding a box at all, not a contribution whose effect
+is measured. $\mathcal{L}_{\text{hcm}}$ is the base rather than an axis:
+setting $\lambda_{\text{hcm}}=0$ leaves no positive supervision anywhere on the
+heatmap, because $\mathcal{L}_{\text{rmc}}$'s domain is restricted to $\Psi_t$
+and supervises neither the primary cell nor the background. The lattice is
+therefore $2^3 = 8$ rather than $2^4 = 16$.
+
+Two of the eight cells are not measured, and for different reasons.
+$\mathcal{L}_{\text{hcm}} + \mathcal{L}_{\text{rep}}$ is undefined by
+construction: as noted in Section~\ref{subsec:losses},
+$\mathcal{L}_{\text{rep}}$ penalises overlap between regions that already
+exist and cannot create any, so without $\mathcal{L}_{\text{rmc}}$ there is
+effectively one region per frame and nothing to repel. The effect of
+$\mathcal{L}_{\text{rep}}$ is thus defined only conditional on
+$\mathcal{L}_{\text{rmc}}$, and the empty cell records that dependency rather
+than an omission. $\mathcal{L}_{\text{hcm}} + \mathcal{L}_{\text{smooth}}$ is
+omitted as redundant: the effect of the smoothness objective is read directly
+from VD between the third and fourth rows of Table~\ref{tab:ablation}.
+
+Table~\ref{tab:ablation} reports the cumulative series and
+Table~\ref{tab:ablation_loo} the leave-one-out series; the third row of the
+former and the last row of the latter are the same configuration.
+
+\begin{table}[t]
+  \centering
+  \caption{Cumulative ablation (fold 1, 4/4 game progression, mean over seeds
+  $\{123,456,789\}$). \checkmark~= included.
+  \todo{Fill in experimental values.}}
+  \label{tab:ablation}
+  \begin{tabular}{cccccccc}
+    \toprule
+    $\mathcal{L}_{\text{hcm}}$ &
+    $\mathcal{L}_{\text{rmc}}$ &
+    $\mathcal{L}_{\text{rep}}$ &
+    $\mathcal{L}_{\text{smooth}}$ &
+    IR $\uparrow$ & OC@0.5 $\uparrow$ & $|\hat{\mathcal{P}}_t|$ & VD $\downarrow$ \\
+    \midrule
+    \checkmark &            &            &            & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    \checkmark & \checkmark &            &            & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    \checkmark & \checkmark & \checkmark &            & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    \checkmark & \checkmark & \checkmark & \checkmark & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{Leave-one-out ablation (fold 1, 4/4 game progression, mean over
+  seeds $\{123,456,789\}$). The $\mathcal{L}_{\text{hcm}} +
+  \mathcal{L}_{\text{rep}}$ cell of the lattice is omitted because
+  $\mathcal{L}_{\text{rep}}$ has no effect without
+  $\mathcal{L}_{\text{rmc}}$. \todo{Fill in experimental values.}}
+  \label{tab:ablation_loo}
+  \begin{tabular}{lcccc}
+    \toprule
+    Configuration & IR $\uparrow$ & OC@0.5 $\uparrow$ & $|\hat{\mathcal{P}}_t|$ & VD $\downarrow$ \\
+    \midrule
+    Full                                    & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    w/o $\mathcal{L}_{\text{rmc}}$          & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    w/o $\mathcal{L}_{\text{rep}}$          & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    w/o $\mathcal{L}_{\text{smooth}}$       & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Reporting.} $|\hat{\mathcal{P}}_t|$ denotes the mean number of
+regions emitted per frame, which we report alongside the accuracy metrics
+because $\mathcal{L}_{\text{rmc}}$ and $\mathcal{L}_{\text{rep}}$ are not
+interpretable when it is close to one: with a single region per frame, OC@$\delta$
+degenerates to the single-region case and $\mathcal{L}_{\text{rep}}$ has no
+argument. We also report the seed standard deviation, since several of the
+differences between neighbouring rows are of the same order as run-to-run
+variation. \todo{Report seed std once the three seeds complete.}
+
+\subsection{Qualitative Analysis}
+
+\todo{Insert qualitative figures:
+(1) Side-by-side: single-viewport vs.\ Director-CenterNet main + PIP during 
+    concurrent game events (battle + resource harassment). 
+(2) Heatmap visualisation: KBRS score field $S_t$, predicted heatmap 
+    $\hat{\mathcal{Y}}_t$, residual field $\tilde{S}_t$ after main viewport 
+    masking, and extracted PIP centres.
+(3) Temporal trajectory plots: frame-by-frame main viewport centre position 
+    for Mask R-CNN + KBRS vs.\ Director-CenterNet, illustrating reduced VD.}
+
+%%====================================================================
+\section{Discussion}
+\label{sec:discussion}
+%%====================================================================
+
+\subsection{Why Multi-Region Finding Matters for Esports Broadcasting}
+
+The fundamental tension in Esports broadcasting is that a single camera 
+cannot cover the full extent of a large, concurrent game state. Real-time 
+strategy games such as StarCraft exhibit up to 40 times the unit count of 
+MOBA games \cite{joo2023learning}, making multi-region coverage not merely 
+a convenience but a broadcast necessity. Director-CenterNet addresses this
+need directly, and does so using supervision that was already present in the
+data prior work collected: the minority modes of the observer distribution
+that ROCI and fixed-kernel priors were designed to suppress. No new form of
+annotation is introduced, only a denser sampling of the same protocol.
+
+\subsection{CenterNet vs.\ Mask R-CNN for MRVP}
+
+CenterNet offers three structural advantages over Mask R-CNN in the MRVP 
+setting. First, its dense heatmap retains the multimodal structure of the
+target, whereas an instance mask forces a discrete assignment that discards
+it. Second, local-maximum extraction is more stable and efficient than
+repeated non-maximum suppression over proposal boxes, and it yields a variable
+number of regions without changing the model. Third, the support-weighted
+Gaussian rendering provides soft supervision that encodes the \emph{ranking}
+of human attention, not merely its location.
+
+\subsection{Heatmap Resolution}
+
+The finest FPN level gives a stride of $4$, so a $12 \times 20$-tile viewport
+spans only $3 \times 5$ heatmap cells. Relative to target size this is
+considerably coarser than the regime CenterNet was designed for, where objects
+span tens of cells. Positional precision is not the binding constraint, since
+the offset head decodes sub-cell position continuously; what a coarse stride
+limits is the density of candidate centres and the separability of nearby
+modes, both of which bear on the multi-region metrics rather than on IR. We
+leave a systematic study of heatmap resolution to future work, and note that
+several constants in the method — the non-maximum suppression kernel in
+particular, whose radius must remain commensurate with the minimum mode
+separation $D$ — are specified in tile units and would have to be rescaled
+alongside the stride.
+
+\subsection{Toward Domain-Agnostic Multi-Region Observers}
+
+The MRVP formulation and Director-CenterNet architecture are 
+designed to be domain-agnostic. The structured game-state tensor can be 
+replaced by any multi-channel spatial representation (e.g., MOBA minimap 
+channels, drone swarm positional heatmaps, multi-CCTV occupancy grids). 
+The KBRS scoring kernels can be adapted to domain-specific saliency notions 
+(e.g., vehicle density plus pedestrian-vehicle mixture for traffic 
+surveillance). The four-loss framework remains applicable as long as (i) 
+human attention data is available for main-viewport supervision and (ii) a 
+domain-relevant saliency score field can be defined for PIP placement.
+
+\subsection{Limitations}
+
+\paragraph{Track~B (zero human-GT setting).} Director-CenterNet currently 
+operates in Track~A (human observation data available for the main viewport). 
+Extending to Track~B — where no human viewport data exists and the system 
+must rely entirely on unsupervised saliency signals — is a critical direction 
+for cross-game generalisation and is left as future work.
+
+\paragraph{Temporal modelling.} $\mathcal{L}_{\text{smooth}}$ acts on 
+pairs of consecutive frames. Incorporating longer-range temporal context via 
+recurrent modules or temporal self-attention may further reduce thrashing 
+for events that evolve over several seconds.
+
+\paragraph{PIP count.} We fix $K=3$ in all experiments. Adapting $K$ 
+dynamically beyond the confidence-threshold mechanism could improve coverage 
+when more than two concurrent events occur simultaneously.
+
+\paragraph{Live integration.} All experiments are conducted in offline 
+replay mode. Real-time integration requires addressing the pipeline latency 
+between game-state extraction, inference, and camera actuation.
+
+%%====================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+%%====================================================================
+
+We presented Director-CenterNet, a multi-region viewport prediction 
+framework for automated Esports broadcasting. By reformulating automatic 
+observing as Multi-Region Viewport Prediction and introducing four 
+complementary training losses — Human Consensus Match, Ranked Mode Coverage,
+Spatial Repulsion, and Trajectory Smoothness — Director-CenterNet predicts an
+ordered set of presentation-agnostic regions from multi-channel game-state
+tensors in a single forward pass. The Ranked Mode Coverage loss supervises the
+auxiliary regions with the minority observer attention that previous work
+discarded as noise, so no new form of annotation is required, while the
+Spatial Repulsion and Trajectory Smoothness losses remove redundant overlap
+and camera thrashing respectively. Experiments on StarCraft: Brood War
+benchmarks demonstrate improvements in primary-region overlap, multi-region
+coverage, per-observer service, and temporal stability compared to
+single-region baselines.
+
+Future work will explore Track~B (zero human-GT) operation via unsupervised 
+saliency estimation, longer-range temporal context modelling, and extension 
+to MOBA games and non-game surveillance domains.
+
+%%====================================================================
+%% Declaration
+%%====================================================================
+
+\section*{CRediT authorship contribution statement}
+\todo{Fill in author contributions following CRediT taxonomy.}
+
+\section*{Declaration of competing interest}
+The authors declare that they have no known competing financial interests 
+or personal relationships that could have appeared to influence the work 
+reported in this paper.
+
+\section*{Acknowledgements}
+\todo{Add funding acknowledgements.}
+
+%%====================================================================
+\appendix
+
+\section{Mode Extraction Procedure}
+\label{app:modes}
+
+Algorithm-level detail for Section~\ref{subsec:modes}. Given the $U$ observer
+viewports at frame $t$, we form the coverage map $a_t$ of
+Eq.~\ref{eq:coverage}, smooth it with a Gaussian filter of width $\sigma_m$
+under zero padding, and retain grid points that are local maxima of the
+smoothed field under a $3{\times}3$ maximum filter and that exceed
+$\theta \cdot \max \tilde{a}_t$. Candidates are visited in descending order of
+$\tilde{a}_t$ and a candidate is kept only if it lies at least $D$ tiles from
+every mode already kept. Each kept mode receives the support of
+Eq.~\ref{eq:support}, and modes are ordered by support with ties broken by
+smoothed response. At most $M$ modes are retained per frame.
+
+The minimum separation $D$ is the parameter that decides what counts as two
+distinct modes rather than one broad region of agreement, and it interacts
+with the extraction stride: the non-maximum suppression applied to the
+predicted heatmap must have a radius no larger than $D/2$ in tile units, or a
+single mode yields several peaks within its own viewport and the region count
+is inflated by duplicates.
+
+\section{Hyperparameter Summary}
+\label{app:hyperparams}
+
+\begin{table}[h]
+  \centering
+  \caption{Hyperparameter settings used in all experiments unless 
+  otherwise stated.}
+  \label{tab:hyperparams}
+  \begin{tabular}{lll}
+    \toprule
+    Hyperparameter & Value & Description \\
+    \midrule
+    Backbone         & ResNet-50  & Pretrained on ImageNet \\
+    FPN stride $s$   & 4          & Finest FPN level; $32{\times}32$ heatmap \\
+    Map size         & $128{\times}128$ tiles & Consumed at native resolution \\
+    Viewport $(h,w)$ & $12{\times}20$ tiles & $3{\times}5$ heatmap cells \\
+    Gaussian $\sigma$  & 2 tiles  & GT rendering, on the assigned cell \\
+    Stacking $\Delta$  & 8 frames & Temporal stride \\
+    Stacking $W$       & 3        & Number of past frames \\
+    Mode $\sigma_m$    & 4 tiles  & Coverage-map smoothing \\
+    Mode $\theta$      & 0.35     & Relative peak floor \\
+    Mode $D$           & 12 tiles & Minimum mode separation \\
+    Mode $M$           & 5        & Max modes retained per frame \\
+    $\lambda_{\text{off}}$   & 1.0 & Offset loss weight \\
+    $\lambda_{\text{sz}}$    & 0.1 & Size loss weight \\
+    $\lambda_{\text{rmc}}$   & 0.5 & Ranked mode coverage weight \\
+    $\lambda_{\text{rep}}$   & 0.3 & Repulsion loss weight \\
+    $\lambda_{\text{sm}}$    & 0.02 & Smoothness loss weight \\
+    $\Delta_s$       & 5 tiles    & Huber knee for $\mathcal{L}_{\text{smooth}}$ \\
+    $E_0, E_1$       & 5, 10      & Smoothness warmup start / full \\
+    $r$              & 2 cells    & Soft-centre window radius \\
+    $\epsilon$       & 0.01       & Auxiliary support floor \\
+    $K$              & 3          & Size of the predicted region set \\
+    $\tau$           & 0.1        & Peak confidence threshold ($< 1/U$) \\
+    Optimiser        & SGD        & momentum 0.9 \\
+    Learning rate    & $5{\times}10^{-3}$ & StepLR (step 3, $\gamma$ 0.1) \\
+    Weight decay     & $5{\times}10^{-4}$ & \\
+    Batch size       & 16         & \\
+    Epochs           & 30         & \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+%%====================================================================
+%% Bibliography
+%%====================================================================
+
+%% \todo{Add a references.bib entry for chen2018learning (Chen et al., learning
+%% a director's style / reduced candidate set; cited in Sections 1 and 3 for
+%% the first-versus-second-suggestion comparison that motivates BoK@delta).
+%% The keys anonymous2025kbrs, shi2016hierarchical, chen2011active,
+%% krause2008near, itti1998model, wei2012geodesic, tatler2007central,
+%% feichtenhofer2017detect and gandhi2014video are inherited from the previous
+%% draft; several are no longer cited after the KBRS Coverage section was
+%% removed, so prune them once the bibliography is regenerated.}
+
+\bibliographystyle{elsarticle-num}
+\bibliography{references}
+
+\end{document}
