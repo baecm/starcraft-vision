@@ -1,0 +1,174 @@
+\relax 
+\emailauthor{cmbae0307@gm.gist.ac.kr}{Cheong-mok Bae}
+\emailauthor{hotaek87@gm.gist.ac.kr}{Ho-Taek Joo}
+\emailauthor{shlee0414@gm.gist.ac.kr}{SungHa Lee}
+\emailauthor{kjkim@gist.ac.kr}{Kyung-Joong Kim\corref {cor1}}
+\Newlabel{cor1}{1}
+\Newlabel{gist}{a}
+\Newlabel{aigist}{b}
+\citation{joo2023learning}
+\citation{bae2025observer}
+\citation{mattsson2015automatic}
+\citation{joo2023learning}
+\citation{anonymous2025kbrs}
+\citation{joo2023learning}
+\citation{joo2023learning,anonymous2025kbrs}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{2}{}\protected@file@percent }
+\newlabel{sec:intro}{{1}{2}{}{section.1}{}}
+\citation{joo2023learning}
+\citation{anonymous2025kbrs}
+\citation{chen2018learning}
+\citation{zhou2019objects}
+\citation{ontanon2013survey}
+\citation{mattsson2015automatic}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Background and Related Work}{4}{}\protected@file@percent }
+\newlabel{sec:related}{{2}{4}{}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Single-Viewport Automatic Observers}{4}{}\protected@file@percent }
+\citation{joo2023learning}
+\citation{he2020mask}
+\citation{anonymous2025kbrs}
+\citation{bae2025observer}
+\citation{zhou2019objects}
+\citation{carion2020end}
+\citation{lv2023detrs}
+\citation{shi2016hierarchical}
+\citation{chen2011active}
+\citation{krause2008near}
+\citation{itti1998model,wei2012geodesic,tatler2007central}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Object Detection Architectures}{5}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Saliency and Multi-Region Detection}{5}{}\protected@file@percent }
+\citation{feichtenhofer2017detect}
+\citation{gandhi2014video}
+\citation{joo2023learning,bae2025observer,anonymous2025kbrs}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Temporal Stability in Video-Based Observers}{6}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Problem Formulation}{6}{}\protected@file@percent }
+\newlabel{sec:problem}{{3}{6}{}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Input Representation}{6}{}\protected@file@percent }
+\newlabel{eq:stacking}{{1}{6}{}{equation.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Human Supervision and Aggregation}{6}{}\protected@file@percent }
+\newlabel{eq:feasible}{{2}{6}{}{equation.2}{}}
+\newlabel{eq:union}{{3}{6}{}{equation.3}{}}
+\citation{joo2023learning}
+\newlabel{eq:coverage}{{4}{7}{}{equation.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Ranked Modes of the Observer Distribution}{7}{}\protected@file@percent }
+\newlabel{subsec:modes}{{3.3}{7}{}{subsection.3.3}{}}
+\newlabel{eq:support}{{5}{7}{}{equation.5}{}}
+\newlabel{eq:ranked_modes}{{6}{7}{}{equation.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Multi-Region Viewport Prediction (MRVP)}{7}{}\protected@file@percent }
+\citation{chen2018learning}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Evaluation Metrics}{8}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Intersection Ratio (IR).}{8}{}\protected@file@percent }
+\newlabel{eq:ir}{{7}{8}{}{equation.7}{}}
+\@writefile{toc}{\contentsline {paragraph}{Intersection@$\delta $.}{8}{}\protected@file@percent }
+\newlabel{eq:iat}{{8}{8}{}{equation.8}{}}
+\@writefile{toc}{\contentsline {paragraph}{Best-of-$K$ Intersection@$\delta $ (BoK@$\delta $).}{8}{}\protected@file@percent }
+\newlabel{eq:bok}{{9}{8}{}{equation.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{Observer Coverage (OC@$\delta $).}{8}{}\protected@file@percent }
+\newlabel{eq:oc}{{10}{8}{}{equation.10}{}}
+\citation{zhou2019objects}
+\citation{he2016deep}
+\citation{lin2017feature}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Overview of Director-CenterNet. The stacked game-state tensor is processed by a ResNet-FPN backbone. The heatmap head produces a dense score map over all candidate region centres, and ranked multi-peak extraction yields an ordered set of regions in a single forward pass. Training is supervised by the ranked modes of the aggregated observer distribution (Section~\ref {subsec:modes}): the Top-1 mode supervises the primary region and the remaining modes supervise the auxiliary regions.}}{9}{}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{fig:architecture}{{1}{9}{}{figure.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Viewport Displacement (VD).}{9}{}\protected@file@percent }
+\newlabel{eq:vd}{{11}{9}{}{equation.11}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Director-CenterNet}{9}{}\protected@file@percent }
+\newlabel{sec:method}{{4}{9}{}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Architecture Overview}{9}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}CenterNet Backbone and Heads}{9}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Input.}{9}{}\protected@file@percent }
+\citation{zhou2019objects}
+\citation{zhou2019objects}
+\citation{zhou2019objects}
+\@writefile{toc}{\contentsline {paragraph}{Heatmap head.}{10}{}\protected@file@percent }
+\newlabel{eq:gt_heatmap}{{12}{10}{}{equation.12}{}}
+\@writefile{toc}{\contentsline {paragraph}{Offset and size heads.}{10}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Ranked multi-peak extraction.}{10}{}\protected@file@percent }
+\citation{law2018cornernet}
+\@writefile{toc}{\contentsline {paragraph}{Differentiable region centres.}{11}{}\protected@file@percent }
+\newlabel{eq:soft_center}{{13}{11}{}{equation.13}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Multi-Objective Training Losses}{11}{}\protected@file@percent }
+\newlabel{subsec:losses}{{4.3}{11}{}{subsection.4.3}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.3.1}Human Consensus Match Loss $\mathcal  {L}_{\text  {hcm}}$}{11}{}\protected@file@percent }
+\newlabel{eq:hcm_loss}{{14}{12}{}{equation.14}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.3.2}Ranked Mode Coverage Loss $\mathcal  {L}_{\text  {rmc}}$}{12}{}\protected@file@percent }
+\newlabel{subsec:rmc_loss}{{4.3.2}{12}{}{subsubsection.4.3.2}{}}
+\newlabel{eq:omega}{{15}{12}{}{equation.15}{}}
+\newlabel{eq:psi}{{16}{12}{}{equation.16}{}}
+\newlabel{eq:rmc_loss}{{17}{12}{}{equation.17}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.3.3}Spatial Repulsion Loss $\mathcal  {L}_{\text  {rep}}$}{13}{}\protected@file@percent }
+\newlabel{eq:rep_loss}{{18}{13}{}{equation.18}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.3.4}Trajectory Smoothness Loss $\mathcal  {L}_{\text  {smooth}}$}{13}{}\protected@file@percent }
+\newlabel{eq:smooth_loss}{{19}{13}{}{equation.19}{}}
+\citation{zhou2019objects}
+\citation{joo2023learning,anonymous2025kbrs}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Summary of Director-CenterNet training losses.}}{14}{}\protected@file@percent }
+\newlabel{tab:loss_summary}{{1}{14}{}{table.1}{}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {4.3.5}Joint Training Objective}{14}{}\protected@file@percent }
+\newlabel{eq:total_loss}{{20}{14}{}{equation.20}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Experiments}{14}{}\protected@file@percent }
+\newlabel{sec:experiments}{{5}{14}{}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Dataset and Preprocessing}{14}{}\protected@file@percent }
+\citation{joo2023learning}
+\citation{joo2023learning}
+\citation{joo2023learning}
+\citation{bae2025observer}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Structure of the aggregated observer distribution by game progression: mean number of extracted modes and mean support of the Top-1 to Top-3 modes. \textcolor {red}{[\textbf  {TODO}: Fill in after data collection.]}}}{15}{}\protected@file@percent }
+\newlabel{tab:mode_structure}{{2}{15}{}{table.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Extending the observer pool.}{15}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Characterising the target distribution.}{15}{}\protected@file@percent }
+\citation{joo2023learning,anonymous2025kbrs}
+\citation{mattsson2015automatic}
+\citation{mattsson2015automatic}
+\citation{joo2023learning}
+\citation{joo2023learning}
+\citation{joo2023learning}
+\citation{anonymous2025kbrs}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Experimental Setup}{16}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Splits.}{16}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Implementation.}{16}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Optimiser.}{16}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Baselines}{16}{}\protected@file@percent }
+\citation{joo2023learning,anonymous2025kbrs}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Main viewport performance on the standard test set (fixed race, map, starting location). Results averaged over three folds $\times $ three seeds. Best result in \textbf  {bold}, second best \underline  {underlined}. \textcolor {red}{[\textbf  {TODO}: Fill in experimental values.]}}}{17}{}\protected@file@percent }
+\newlabel{tab:main_results}{{3}{17}{}{table.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Main Results}{17}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Generalisation Tests}{17}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Multi-region coverage, per-observer service, and temporal stability. Lower VD is better. \textcolor {red}{[\textbf  {TODO}: Fill in experimental values.]}}}{18}{}\protected@file@percent }
+\newlabel{tab:multi_results}{{4}{18}{}{table.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Generalisation test: IR (4/4 game progression) for unseen conditions. \textcolor {red}{[\textbf  {TODO}: Fill in experimental values.]}}}{18}{}\protected@file@percent }
+\newlabel{tab:generalisation}{{5}{18}{}{table.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.6}Ablation Study}{18}{}\protected@file@percent }
+\newlabel{subsec:ablation}{{5.6}{18}{}{subsection.5.6}{}}
+\@writefile{toc}{\contentsline {paragraph}{Design of the lattice.}{18}{}\protected@file@percent }
+\citation{joo2023learning}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Cumulative ablation (fold 1, 4/4 game progression, mean over seeds $\{123,456,789\}$). \text  {$\mathsurround \z@ \mathchar "458$}~= included. \textcolor {red}{[\textbf  {TODO}: Fill in experimental values.]}}}{19}{}\protected@file@percent }
+\newlabel{tab:ablation}{{6}{19}{}{table.6}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Leave-one-out ablation (fold 1, 4/4 game progression, mean over seeds $\{123,456,789\}$). The $\mathcal  {L}_{\text  {hcm}} + \mathcal  {L}_{\text  {rep}}$ cell of the lattice is omitted because $\mathcal  {L}_{\text  {rep}}$ has no effect without $\mathcal  {L}_{\text  {rmc}}$. \textcolor {red}{[\textbf  {TODO}: Fill in experimental values.]}}}{19}{}\protected@file@percent }
+\newlabel{tab:ablation_loo}{{7}{19}{}{table.7}{}}
+\@writefile{toc}{\contentsline {paragraph}{Reporting.}{19}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.7}Qualitative Analysis}{19}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Discussion}{20}{}\protected@file@percent }
+\newlabel{sec:discussion}{{6}{20}{}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Why Multi-Region Finding Matters for Esports Broadcasting}{20}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}CenterNet vs.\ Mask R-CNN for MRVP}{20}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Heatmap Resolution}{20}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}Toward Domain-Agnostic Multi-Region Observers}{21}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.5}Limitations}{21}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Track~B (zero human-GT setting).}{21}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Temporal modelling.}{21}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{PIP count.}{21}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Live integration.}{21}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Conclusion}{21}{}\protected@file@percent }
+\newlabel{sec:conclusion}{{7}{21}{}{section.7}{}}
+\@writefile{toc}{\let\numberline\tmptocnumberline}
+\@writefile{toc}{\contentsline {section}{\numberline {Appendix~A}Mode Extraction Procedure}{22}{}\protected@file@percent }
+\newlabel{app:modes}{{Appendix~A}{22}{}{section.1}{}}
+\bibstyle{elsarticle-num}
+\bibdata{references}
+\@writefile{toc}{\contentsline {section}{\numberline {Appendix~B}Hyperparameter Summary}{23}{}\protected@file@percent }
+\newlabel{app:hyperparams}{{Appendix~B}{23}{}{section.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {B.8}{\ignorespaces Hyperparameter settings used in all experiments unless otherwise stated.}}{24}{}\protected@file@percent }
+\newlabel{tab:hyperparams}{{B.8}{24}{}{table.8}{}}
+\gdef \@abspage@last{26}

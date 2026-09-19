@@ -164,13 +164,12 @@ Prior work on automatic Esports observers has focused on the
 window of fixed size from the game map at each frame. Rule-based approaches 
 \cite{mattsson2015automatic} define priority scores over hand-crafted events 
 and switch the camera accordingly. Learning-based methods 
-\cite{joo2023learning} instead collect observational data from human 
-spectators and train a detector-style model with Region of Common Interest 
-(ROCI) loss to imitate consensus human camera behaviour. The Kernel-Based 
-Region Scoring (KBRS) auxiliary loss \cite{anonymous2025kbrs} further improved 
-alignment with aggregated human attention by injecting fixed-kernel saliency 
-priors (density, mixture, centeredness) into the detection backbone at 
-training time.
+\cite{joo2023learning} instead collect observational data from human
+spectators and train a detector-style model with Region of Common Interest
+(ROCI) loss to imitate consensus human camera behaviour. Subsequent work added
+an auxiliary objective derived from fixed-kernel spatial priors, which improved
+agreement with aggregated human attention without changing inference-time
+outputs \cite{anonymous2025kbrs}.
 
 Despite these advances, we argue that the single-region setting is not merely
 restrictive but \emph{mismatched to the supervision it is trained on}. The
@@ -273,12 +272,12 @@ segmentation problem, treating the human observer's viewport as the object to
 detect. Using Mask R-CNN \cite{he2020mask} and a Region of Common Interest 
 (ROCI) loss that amplifies the overlapping area among multiple human observers, 
 their method outperforms both rule-based baselines and behaviour cloning. 
-Anonymous et al. \cite{anonymous2025kbrs} further improved upon 
-\cite{joo2023learning} by introducing Kernel-Based Region Scoring (KBRS) as 
-a training-time auxiliary loss. KBRS computes three fixed-kernel score maps — 
-density ($S^{\text{den}}$), mixture ($S^{\text{mix}}$), and centeredness 
-($S^{\text{ctr}}$) — on backbone FPN features, improving intersection ratio 
-by 4.31\% relative without altering inference-time outputs.
+Subsequent work added an auxiliary objective derived from fixed-kernel spatial
+priors, which improved agreement with aggregated human attention without
+changing inference-time outputs \cite{anonymous2025kbrs}. Both studies report
+that accuracy declines as the match progresses and that the viewports of
+observers become divided in the later phases — the observation this work builds
+on.
 
 The Observer framework \cite{bae2025observer} provides an open-source, 
 reproducible pipeline for data collection, preprocessing, and model training 
@@ -898,8 +897,9 @@ We compare Director-CenterNet against the following methods.
         \cite{joo2023learning}.
   \item \textbf{Mask R-CNN + ROCI}: With Region of Common Interest loss 
         \cite{joo2023learning}.
-  \item \textbf{Mask R-CNN + KBRS}: With Kernel-Based Region Scoring 
-        \cite{anonymous2025kbrs}.
+  \item \textbf{Mask R-CNN + fixed-kernel prior}: the auxiliary-prior variant
+        of \cite{anonymous2025kbrs}, the strongest previously reported
+        single-region result and our primary point of comparison.
   \item \textbf{CenterNet (single)}: the proposed backbone trained with
         $\mathcal{L}_{\text{hcm}}$ only, i.e.\ the first row of
         Table~\ref{tab:ablation}. This isolates the effect of the backbone
@@ -931,7 +931,7 @@ Intersection@$\delta$) on the standard test set.
     Mask R-CNN (1H)            & 0.593 & --    & --    & -- \\
     Mask R-CNN (5H)            & 0.569 & --    & --    & -- \\
     Mask R-CNN + ROCI          & 0.588 & --    & --    & -- \\
-    Mask R-CNN + KBRS          & \underline{0.824} & \underline{0.798} 
+    Mask R-CNN + prior         & \underline{0.824} & \underline{0.798}
                                & \underline{0.770} & \underline{0.709} \\
     CenterNet (single)         & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
     \midrule
@@ -959,7 +959,7 @@ I@$\delta$ by definition.
     Method & BoK@0.5 $\uparrow$ & OC@0.5 $\uparrow$
            & $|\hat{\mathcal{P}}_t|$ & VD (tiles) $\downarrow$ \\
     \midrule
-    Mask R-CNN + KBRS (single)       & \todo{X} & \todo{X} & 1 & \todo{X} \\
+    Mask R-CNN + prior (single)      & \todo{X} & \todo{X} & 1 & \todo{X} \\
     CenterNet (single)               & \todo{X} & \todo{X} & 1 & \todo{X} \\
     \textbf{Director-CenterNet}      & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
     \bottomrule
@@ -981,7 +981,7 @@ generalisation to unseen races, starting locations, and maps.
     Method & Unseen Race & Unseen Location & Unseen Map \\
     \midrule
     Mask R-CNN + ROCI   & 0.615 & 0.559 & 0.581 \\
-    Mask R-CNN + KBRS   & \todo{X} & \todo{X} & \todo{X} \\
+    Mask R-CNN + prior  & \todo{X} & \todo{X} & \todo{X} \\
     \textbf{Director-CenterNet} & \todo{X} & \todo{X} & \todo{X} \\
     \bottomrule
   \end{tabular}
@@ -1072,11 +1072,11 @@ variation. \todo{Report seed std once the three seeds complete.}
 \todo{Insert qualitative figures:
 (1) Side-by-side: single-viewport vs.\ Director-CenterNet main + PIP during 
     concurrent game events (battle + resource harassment). 
-(2) Heatmap visualisation: KBRS score field $S_t$, predicted heatmap 
-    $\hat{\mathcal{Y}}_t$, residual field $\tilde{S}_t$ after main viewport 
-    masking, and extracted PIP centres.
+(2) Heatmap visualisation: aggregated observer coverage $a_t$, its smoothed
+    field with the extracted ranked modes marked, the predicted heatmap
+    $\hat{\mathcal{Y}}_t$, and the extracted region centres.
 (3) Temporal trajectory plots: frame-by-frame main viewport centre position 
-    for Mask R-CNN + KBRS vs.\ Director-CenterNet, illustrating reduced VD.}
+    for Mask R-CNN + prior vs.\ Director-CenterNet, illustrating reduced VD.}
 
 %%====================================================================
 \section{Discussion}
@@ -1127,11 +1127,12 @@ The MRVP formulation and Director-CenterNet architecture are
 designed to be domain-agnostic. The structured game-state tensor can be 
 replaced by any multi-channel spatial representation (e.g., MOBA minimap 
 channels, drone swarm positional heatmaps, multi-CCTV occupancy grids). 
-The KBRS scoring kernels can be adapted to domain-specific saliency notions 
-(e.g., vehicle density plus pedestrian-vehicle mixture for traffic 
-surveillance). The four-loss framework remains applicable as long as (i) 
-human attention data is available for main-viewport supervision and (ii) a 
-domain-relevant saliency score field can be defined for PIP placement.
+The four-loss framework remains applicable wherever observational data from
+several human operators is available, since the ranked modes that supervise the
+auxiliary regions are derived from disagreement among those operators rather
+than from any game-specific quantity. Where only a single operator's data
+exists, the modes collapse and the formulation degenerates to the single-region
+case.
 
 \subsection{Limitations}
 
@@ -1267,11 +1268,10 @@ is inflated by duplicates.
 %% \todo{Add a references.bib entry for chen2018learning (Chen et al., learning
 %% a director's style / reduced candidate set; cited in Sections 1 and 3 for
 %% the first-versus-second-suggestion comparison that motivates BoK@delta).
-%% The keys anonymous2025kbrs, shi2016hierarchical, chen2011active,
-%% krause2008near, itti1998model, wei2012geodesic, tatler2007central,
-%% feichtenhofer2017detect and gandhi2014video are inherited from the previous
-%% draft; several are no longer cited after the KBRS Coverage section was
-%% removed, so prune them once the bibliography is regenerated.}
+%% The keys shi2016hierarchical, chen2011active, krause2008near, itti1998model,
+%% wei2012geodesic, tatler2007central, feichtenhofer2017detect and
+%% gandhi2014video are inherited from the previous draft and several are no
+%% longer cited; prune them once the bibliography is regenerated.}
 
 \bibliographystyle{elsarticle-num}
 \bibliography{references}
