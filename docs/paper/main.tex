@@ -1113,27 +1113,6 @@ refinement but a requirement of the architecture we adopt, and the appropriate
 reference point for it is the Mask R-CNN baseline rather than the untreated
 CenterNet.
 
-\subsection{Generalisation Tests}
-
-Following \cite{joo2023learning, anonymous2025kbrs}, we evaluate 
-generalisation to unseen races, starting locations, and maps.
-
-\begin{table}[t]
-  \centering
-  \caption{Generalisation test: IR (4/4 game progression) for unseen 
-  conditions. \todo{Fill in experimental values.}}
-  \label{tab:generalisation}
-  \begin{tabular}{lccc}
-    \toprule
-    Method & Unseen Race & Unseen Location & Unseen Map \\
-    \midrule
-    Mask R-CNN + ROCI   & 0.615 & 0.559 & 0.581 \\
-    Mask R-CNN + prior  & \todo{X} & \todo{X} & \todo{X} \\
-    \textbf{Director-CenterNet} & \todo{X} & \todo{X} & \todo{X} \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
 \subsection{Ablation Study}
 \label{subsec:ablation}
 
@@ -1296,11 +1275,21 @@ case.
 
 \subsection{Limitations}
 
-\paragraph{Track~B (zero human-GT setting).} Director-CenterNet currently 
-operates in Track~A (human observation data available for the main viewport). 
-Extending to Track~B — where no human viewport data exists and the system 
-must rely entirely on unsupervised saliency signals — is a critical direction 
-for cross-game generalisation and is left as future work.
+\paragraph{Held-out conditions.} All results are reported on the standard test
+set, which fixes race matchup, map, and starting location. Earlier work
+additionally evaluates transfer to unseen races, starting locations and maps
+\cite{joo2023learning, anonymous2025kbrs}; we do not, and the accuracy reported
+here should not be read as evidence about those conditions. The question is
+also sharper for this formulation than for a single-region one, since the
+auxiliary regions are supervised by minority modes whose spatial distribution
+depends on map layout and on where each player starts. Whether the ranking
+learned on one map transfers to another is therefore an open question and the
+natural next experiment.
+
+\paragraph{Track~B (zero human-GT setting).} Director-CenterNet currently
+operates in Track~A (human observation data available for the main viewport).
+Extending to Track~B — where no human viewport data exists and the system
+must rely entirely on unsupervised saliency signals — is left as future work.
 
 \paragraph{Temporal modelling.} $\mathcal{L}_{\text{smooth}}$ acts on 
 pairs of consecutive frames. Incorporating longer-range temporal context via 
