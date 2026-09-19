@@ -1,14 +1,16 @@
 # conf/architecture/director_centernet.yaml
 model_name: director_centernet
-score_threshold: 0.3
+score_threshold: 0.1
 centernet_down_ratio: 4
 k_max: 3
-conf_threshold: 0.2
+conf_threshold: 0.1
 render_sigma: 2.0
 u_observers: 5
 
-resize_mode: fixed_square
-image_size: 640
+# NOTE: no resize_mode / image_size here. Only build_maskrcnn_backbone reads
+# those, so they were inert for this model and implied a 640x640 input that
+# never existed - the dataset hands over the raw 128x128 tile tensor, which is
+# why the heatmap is 32x32 at stride 4 and not the 4x4 a stride of 32 implies.
 do_normalize: false
 
 loss_weights:
@@ -27,3 +29,4 @@ smooth_huber_delta: 5.0      # tiles; below this the penalty stays quadratic
 smooth_warmup_start: 5       # epochs [0, 5) train with L_smooth off
 smooth_warmup_full: 10       # linear ramp to full weight by epoch 10
 soft_center_radius: 2        # feature cells in the soft-argmax window
+peak_border_margin: 1        # drop the outermost ring from peak candidates

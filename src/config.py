@@ -27,7 +27,16 @@ NUM_OBSERVERS_U = 5
 
 DIRECTOR_RENDER_SIGMA = 2.0
 DIRECTOR_K = 3
-DIRECTOR_TAU = 0.2
+# The smallest meaningful mode amplitude is 1 observer out of U, i.e. 1/5 = 0.2
+# (the Gaussian is rendered on its assigned grid cell, so that is exact rather
+# than attenuated). tau has to sit clearly below it or a minority mode can
+# never be emitted no matter how well the model fits it. inference's
+# score_threshold must match; at 0.3 it was the binding cut and no auxiliary
+# region could survive.
+DIRECTOR_TAU = 0.1
+# Auxiliary target mass below this is indistinguishable from background, and is
+# left to L_hcm rather than supervised by L_rmc.
+DIRECTOR_AUX_SUPPORT_FLOOR = 0.01
 
 # L_smooth (Eq 18). Displacement is measured in tiles, so the map diagonal is
 # the natural unit that puts the term on an O(1) scale next to the focal loss.
@@ -45,6 +54,10 @@ DIRECTOR_SMOOTH_WARMUP_FULL = 10
 # Radius (in feature cells) of the softmax window used to build a heatmap-
 # differentiable primary centre for L_smooth. See DirectorCenterNet.
 DIRECTOR_SOFT_CENTER_RADIUS = 2
+# Feature cells dropped from the outside of the heatmap when picking peaks.
+# max_pool2d pads with -inf, so border cells face fewer competitors and become
+# local maxima far more often than interior ones.
+DIRECTOR_PEAK_BORDER_MARGIN = 1
 
 
 class Channel(Enum):

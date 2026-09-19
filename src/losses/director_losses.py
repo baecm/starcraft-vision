@@ -29,6 +29,9 @@ def render_gaussian_heatmap_targets(
       Y_minus: (B, 1, H, W) - Top-2+ auxiliary modes heatmap target Y_t^-
       Y_all: (B, 1, H, W) - Joint target Y_t = max(Y1, Y_minus)
       mask_omega: (B, 1, H, W) - Binary mask for auxiliary region Omega_t = {q: A_t^(1)(q) == 0}
+      aux_support: (B, 1, H, W) - Binary mask of cells carrying auxiliary mode
+                   mass inside Omega_t. This is L_rmc's domain, and the region
+                   L_hcm must ignore rather than treat as background.
       pos_mask_top1: (B, 1, H, W) - Binary indicator at Top-1 center grid cell
       ct_top1: (B, 2) - Top-1 center coordinate (x, y) in tile units (or nan if none)
       has_aux: (B,) - Boolean tensor indicating whether M_t^- is non-empty
@@ -94,8 +97,17 @@ def render_gaussian_heatmap_targets(
         feat_c1_y = int(torch.clamp(c1_y / stride, 0, feat_h - 1).item())
         pos_mask_top1[b, 0, feat_c1_y, feat_c1_x] = 1.0
 
-        dist_sq1 = (grid_x - c1_x) ** 2 + (grid_y - c1_y) ** 2
-        Y1[b, 0] = w1 * torch.exp(-dist_sq1 / two_sig_sq)
+        # Centre the Gaussian on the assigned grid cell, not on the continuous
+        # tile coordinate, exactly as CenterNet renders at ct_int. With
+        # sigma=2 tiles on a stride-4 grid the nearest sampled point can be
+        # 2*sqrt(2) tiles from a continuous centre, which scaled the peak down
+        # by exp(-8/8) = 0.37 - so the amplitude encoded quantisation error as
+        # much as observer support, defeating the ranking it exists to carry.
+        # A mode with support 1 of U=5 now renders at exactly 0.2 instead of
+        # somewhere in 0.074-0.2. The sub-cell residual is the offset head's job.
+        Y1[b, 0] = w1 * torch.exp(
+            -((grid_x - feat_c1_x * stride) ** 2 + (grid_y - feat_c1_y * stride) ** 2) / two_sig_sq
+        )
 
         # Primary region coverage A_t^(1): box [c1_x - w/2, c1_y - h/2, c1_x + w/2, c1_y + h/2]
         x_min = c1_x - vp_w / 2.0
@@ -116,12 +128,13 @@ def render_gaussian_heatmap_targets(
             for k in range(1, n_modes):
                 ck_y, ck_x = c_tensor[k, 0], c_tensor[k, 1]
                 wk = (s_tensor[k] / float(u_observers)).clamp(0.0, 1.0)
-                dist_sq_k = (grid_x - ck_x) ** 2 + (grid_y - ck_y) ** 2
+                feat_ck_x = int(torch.clamp(ck_x / stride, 0, feat_w - 1).item())
+                feat_ck_y = int(torch.clamp(ck_y / stride, 0, feat_h - 1).item())
+
+                dist_sq_k = (grid_x - feat_ck_x * stride) ** 2 + (grid_y - feat_ck_y * stride) ** 2
                 gauss_k = wk * torch.exp(-dist_sq_k / two_sig_sq)
                 aux_accum = torch.maximum(aux_accum, gauss_k)
 
-                feat_ck_x = int(torch.clamp(ck_x / stride, 0, feat_w - 1).item())
-                feat_ck_y = int(torch.clamp(ck_y / stride, 0, feat_h - 1).item())
                 b_boxes.append(torch.tensor([ck_x, ck_y, float(vp_w), float(vp_h)], device=device))
                 b_inds.append(feat_ck_y * feat_w + feat_ck_x)
 
@@ -131,12 +144,16 @@ def render_gaussian_heatmap_targets(
         all_target_inds.append(torch.tensor(b_inds, dtype=torch.long, device=device) if b_inds else torch.zeros((0,), dtype=torch.long, device=device))
 
     Y_all = torch.maximum(Y1, Y_minus)
+    # Cells whose auxiliary mass is worth supervising. Everything below the
+    # floor is indistinguishable from background and belongs to L_hcm.
+    aux_support = ((Y_minus > config.DIRECTOR_AUX_SUPPORT_FLOOR).float() * mask_omega)
 
     return {
         "Y1": Y1,
         "Y_minus": Y_minus,
         "Y_all": Y_all,
         "mask_omega": mask_omega,
+        "aux_support": aux_support,
         "pos_mask_top1": pos_mask_top1,
         "ct_top1": ct_top1,
         "has_aux": has_aux,
@@ -149,6 +166,7 @@ def human_consensus_match_loss(
     pred_hm: torch.Tensor,
     target_hm_top1: torch.Tensor,
     pos_mask: torch.Tensor,
+    ignore_mask: Optional[torch.Tensor] = None,
     alpha: float = 2.0,
     beta: float = 4.0,
     eps: float = 1e-6,
@@ -157,16 +175,40 @@ def human_consensus_match_loss(
 
     ℓ_t(q) =
       (1 - Ŷ_t)^α * log(Ŷ_t),                           if pos_mask(q) == 1
-      (1 - Y_t^(1))^β * Ŷ_t^α * log(1 - Ŷ_t),           otherwise
+      (1 - Y_t)^β * Ŷ_t^α * log(1 - Ŷ_t),               if q is supervised here
+      0,                                                if ignore_mask(q) == 1
+
+    Two corrections to the published form, both about the auxiliary modes.
+
+    `target_hm_top1` should be handed the *joint* target Y_t, not Y_t^(1). In
+    CornerNet the (1 - Y)^beta factor protects every ground-truth location from
+    being pulled down as a hard negative. Weighting by Y^(1) alone leaves the
+    auxiliary modes unprotected: Y^(1) ~ 0 there, so the factor is ~1 and the
+    focal term trains the model to erase exactly what L_rmc is trying to
+    create.
+
+    `ignore_mask` then removes the auxiliary support region from this loss
+    altogether. Down-weighting is not enough - at an auxiliary peak with
+    support 1 of U=5 the target is 0.2, so (1 - 0.2)^4 = 0.41 still leaves
+    more downward pressure than L_rmc can answer with. Paper Section 4.3.2
+    claims the Omega restriction makes the two objectives "complementary
+    rather than adversarial", but Omega excludes only the *primary* region;
+    nothing stopped this term from covering Omega at full weight. Splitting
+    the domains makes that claim true: L_hcm owns the primary cell and the
+    genuine background, L_rmc owns the auxiliary support.
     """
     pred = pred_hm.clamp(eps, 1.0 - eps)
+
+    neg_domain = 1.0 - pos_mask
+    if ignore_mask is not None:
+        neg_domain = neg_domain * (1.0 - ignore_mask)
 
     pos_term = torch.pow(1.0 - pred, alpha) * torch.log(pred) * pos_mask
     neg_term = (
         torch.pow(1.0 - target_hm_top1, beta)
         * torch.pow(pred, alpha)
         * torch.log(1.0 - pred)
-        * (1.0 - pos_mask)
+        * neg_domain
     )
 
     num_pos = pos_mask.sum().clamp_min(1.0)
@@ -179,24 +221,42 @@ def ranked_mode_coverage_loss(
     target_hm_minus: torch.Tensor,
     mask_omega: torch.Tensor,
     has_aux: torch.Tensor,
+    aux_support: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Masked MSE on auxiliary modes over Omega_t (Eq 15, 16).
 
     If M_t^- is empty (has_aux is False), loss is exactly 0.0.
+
+    Averaging over all of Omega_t is what made this loss inert. Omega is ~1009
+    of the 1024 cells, while the auxiliary mass sits in roughly a dozen of
+    them, so dividing by |Omega| diluted the only informative cells by ~10^2
+    while L_hcm normalised by num_pos (1 per sample). Measured at an auxiliary
+    cell the two differed by ~760x, against the auxiliary regions - which is
+    why no ablation could show an effect for lambda_rmc and why n_pred stayed
+    at 1.4-1.5 with K=3.
+
+    So the domain is now the auxiliary support within Omega rather than all of
+    Omega, and the mean is taken over that. Suppressing the true background is
+    L_hcm's job and it already covers those cells; this term only has to raise
+    the prediction at the ranked minority modes to their support-weighted
+    amplitude. `aux_support` is omitted only by older callers, which fall back
+    to deriving it from a positive target.
     """
     if not has_aux.any():
         return torch.tensor(0.0, device=pred_hm.device, dtype=pred_hm.dtype)
 
-    # Compute masked squared error per sample in batch
+    if aux_support is None:
+        aux_support = (target_hm_minus > config.DIRECTOR_AUX_SUPPORT_FLOOR).to(pred_hm.dtype) * mask_omega
+
     diff_sq = (pred_hm - target_hm_minus) ** 2
-    masked_diff = diff_sq * mask_omega  # (B, 1, H, W)
+    masked_diff = diff_sq * aux_support  # (B, 1, H, W)
 
     sample_losses = []
     for b in range(pred_hm.size(0)):
         if not has_aux[b]:
             continue
-        omega_area = mask_omega[b].sum().clamp_min(1.0)
-        s_loss = masked_diff[b].sum() / omega_area
+        support_area = aux_support[b].sum().clamp_min(1.0)
+        s_loss = masked_diff[b].sum() / support_area
         sample_losses.append(s_loss)
 
     if not sample_losses:

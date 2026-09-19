@@ -26,6 +26,32 @@ def _kaiming_init_conv(conv: nn.Conv2d):
         nn.init.zeros_(conv.bias)
 
 
+def _init_head(head: nn.Sequential, final_bias: float = 0.0):
+    """Kaiming for the hidden convs, near-zero for the output conv.
+
+    fan_out is the wrong mode for a head's final 1x1 conv and catastrophically
+    so here: for Conv2d(64, 1, 1) fan_out is 1, giving std = sqrt(2) = 1.414 on
+    weights that sum 64 ReLU activations. The heatmap logits came out with a
+    standard deviation of roughly 10, sigmoid saturated, and the -2.19 bias
+    prior was swamped - scripts/probe_director.py measured L_hcm at 1970 and
+    L_off at 19.3 on random input, the latter being an L1 against targets in
+    [0, 1).
+
+    That second number is the corner-sticking mechanism from the ablations: an
+    offset of ~19 puts the decoded centre (cell + offset) * stride some 76
+    tiles from its cell, far outside a 128-tile map, where the box clamp pins
+    it to an edge. CenterNet initialises output layers at std 0.001 for exactly
+    this reason, which also lets the bias prior actually set the initial
+    probability.
+    """
+    convs = [m for m in head.modules() if isinstance(m, nn.Conv2d)]
+    for conv in convs[:-1]:
+        _kaiming_init_conv(conv)
+    nn.init.normal_(convs[-1].weight, std=0.001)
+    if convs[-1].bias is not None:
+        nn.init.constant_(convs[-1].bias, final_bias)
+
+
 class DirectorCenterNet(nn.Module):
     """Director-CenterNet: Heatmap-based Multi-Region Viewport Prediction (MRVP).
 
@@ -52,6 +78,7 @@ class DirectorCenterNet(nn.Module):
         smooth_warmup_start: int = config.DIRECTOR_SMOOTH_WARMUP_START,
         smooth_warmup_full: int = config.DIRECTOR_SMOOTH_WARMUP_FULL,
         soft_center_radius: int = config.DIRECTOR_SOFT_CENTER_RADIUS,
+        peak_border_margin: int = config.DIRECTOR_PEAK_BORDER_MARGIN,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -66,6 +93,7 @@ class DirectorCenterNet(nn.Module):
         self.smooth_warmup_start = int(smooth_warmup_start)
         self.smooth_warmup_full = int(smooth_warmup_full)
         self.soft_center_radius = int(soft_center_radius)
+        self.peak_border_margin = int(peak_border_margin)
         # Updated per epoch by train.py; only L_smooth's warmup reads it.
         self._current_epoch = self.smooth_warmup_full
 
@@ -117,19 +145,23 @@ class DirectorCenterNet(nn.Module):
             nn.Conv2d(head_conv, 2, kernel_size=1),
         )
 
-        # Initialize heads
-        for m in self.hm_head.modules():
-            if isinstance(m, nn.Conv2d):
-                _kaiming_init_conv(m)
-        for m in self.off_head.modules():
-            if isinstance(m, nn.Conv2d):
-                _kaiming_init_conv(m)
-        for m in self.wh_head.modules():
-            if isinstance(m, nn.Conv2d):
-                _kaiming_init_conv(m)
-
-        # CenterNet standard bias initialization for heatmap head
-        self.hm_head[-1].bias.data.fill_(-2.19)
+        # Initialize heads. -2.19 puts the initial heatmap probability at ~0.1,
+        # which only holds now that the output conv no longer overwhelms it.
+        _init_head(self.hm_head, final_bias=-2.19)
+        _init_head(self.off_head)
+        _init_head(self.wh_head)
+        # The viewport is a fixed-size camera rectangle, so the size head's
+        # answer is known up front. Starting its bias there (in feature units)
+        # means it begins at the target instead of at 0, where the min=2.0
+        # clamp would otherwise hold every predicted region at 2x2 tiles until
+        # L_size grows it - and L_rep sees no overlap to penalise meanwhile.
+        with torch.no_grad():
+            self.wh_head[-1].bias.copy_(
+                torch.tensor(
+                    [viewport_size_hw[1] / down_ratio, viewport_size_hw[0] / down_ratio],
+                    dtype=self.wh_head[-1].bias.dtype,
+                )
+            )
 
     def set_epoch(self, epoch: int) -> None:
         """Tell the model which epoch it is, for L_smooth's warmup ramp.
@@ -238,24 +270,40 @@ class DirectorCenterNet(nn.Module):
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor], torch.Tensor, torch.Tensor]:
         """Extract top-K regions with differentiable box coordinates.
 
-        Returns two versions of the primary centre. `primary_centers` is the
-        decoded one, (peak cell + offset head), which is what the boxes and
-        therefore inference use. `primary_centers_soft` replaces the offset
-        head with the soft-argmax displacement of _soft_peak_offsets, making it
-        differentiable with respect to the heatmap; L_smooth uses that one.
-        They are kept separate on purpose - adding both would double-count the
-        sub-cell position and bias the emitted boxes, since only the offset
-        head is supervised (by L_off) to represent it.
+        Two parallel sets of regions come back. `boxes_batch` /
+        `primary_centers` are decoded as (peak cell + offset head) and are what
+        inference emits. `soft_boxes_batch` / `primary_centers_soft` replace
+        the offset head with the soft-argmax displacement of
+        _soft_peak_offsets, so they are differentiable with respect to the
+        heatmap; L_smooth and L_rep use those. They are kept separate on
+        purpose - adding both displacements would double-count the sub-cell
+        position and bias the emitted boxes, since only the offset head is
+        supervised (by L_off) to represent it.
         """
         b, c, feat_h, feat_w = pred_hm.shape
         stride = self.down_ratio
 
-        # 3x3 max-pooling for NMS
+        # 3x3 max-pooling for NMS. max_pool2d pads with -inf, so a corner cell
+        # only has to beat 3 real neighbours and an edge cell 5, against 8 for
+        # an interior cell; under a flat heatmap that makes a border cell a
+        # local maximum with probability 1/4 rather than 1/9. Border cells were
+        # 23% of predictions across every ablation, independent of the loss
+        # composition. A mode centre in the outermost cell is also geometrically
+        # implausible - it is 0-3 tiles in, where a 12x20 viewport is almost
+        # entirely off-map, so the real centre of that camera position is a
+        # cell or two further in. Dropping the border ring from the candidates
+        # costs nothing reachable and removes the bias.
         hm_max = F.max_pool2d(pred_hm, kernel_size=3, stride=1, padding=1)
         keep = (pred_hm == hm_max).float()
+        if self.peak_border_margin > 0 and min(feat_h, feat_w) > 2 * self.peak_border_margin:
+            m = self.peak_border_margin
+            border = torch.zeros_like(keep)
+            border[..., m:feat_h - m, m:feat_w - m] = 1.0
+            keep = keep * border
         scored_hm = pred_hm * keep
 
         boxes_batch = []
+        soft_boxes_batch = []
         scores_batch = []
         labels_batch = []
         primary_centers = torch.full((b, 2), float("nan"), device=pred_hm.device)
@@ -299,29 +347,51 @@ class DirectorCenterNet(nn.Module):
             primary_centers[i, 1] = cy[0]
 
             if hm_logits is not None:
-                top = sel_inds[:1]
                 d_y, d_x = self._soft_peak_offsets(
                     hm_logits[i, 0],
-                    torch.div(top, feat_w, rounding_mode="floor"),
-                    top % feat_w,
+                    torch.div(sel_inds, feat_w, rounding_mode="floor"),
+                    sel_inds % feat_w,
                     self.soft_center_radius,
                 )
-                primary_centers_soft[i, 0] = (sel_xs[0] + d_x[0]) * stride
-                primary_centers_soft[i, 1] = (sel_ys[0] + d_y[0]) * stride
+                soft_cx = (sel_xs + d_x) * stride
+                soft_cy = (sel_ys + d_y) * stride
+                primary_centers_soft[i, 0] = soft_cx[0]
+                primary_centers_soft[i, 1] = soft_cy[0]
 
-            x1 = torch.clamp(cx - w / 2.0, 0.0, float(img_w))
-            y1 = torch.clamp(cy - h / 2.0, 0.0, float(img_h))
-            x2 = torch.clamp(cx + w / 2.0, 0.0, float(img_w))
-            y2 = torch.clamp(cy + h / 2.0, 0.0, float(img_h))
+            # Shift the region inside the map instead of cropping it, matching
+            # metrics.modes.box_from_center, which is what evaluation applies.
+            # Cropping returned a narrower box at the edges, so L_rep saw
+            # regions that were not the fixed-size viewport the task is defined
+            # over and could reduce an IoU penalty by sliding a region off the
+            # map. `predictions_from_dets(size_wh=...)` already re-imposes the
+            # true size downstream; this makes the model agree with it.
+            x1 = torch.clamp(cx - w / 2.0, torch.zeros_like(w), (float(img_w) - w).clamp_min(0.0))
+            y1 = torch.clamp(cy - h / 2.0, torch.zeros_like(h), (float(img_h) - h).clamp_min(0.0))
+            x2 = x1 + w
+            y2 = y1 + h
 
             boxes = torch.stack([x1, y1, x2, y2], dim=1)
             labels = torch.ones_like(sel_scores, dtype=torch.int64)
+
+            if hm_logits is not None:
+                sx1 = torch.clamp(soft_cx - w / 2.0, torch.zeros_like(w), (float(img_w) - w).clamp_min(0.0))
+                sy1 = torch.clamp(soft_cy - h / 2.0, torch.zeros_like(h), (float(img_h) - h).clamp_min(0.0))
+                soft_boxes_batch.append(torch.stack([sx1, sy1, sx1 + w, sy1 + h], dim=1))
+            else:
+                soft_boxes_batch.append(boxes)
 
             boxes_batch.append(boxes)
             scores_batch.append(sel_scores)
             labels_batch.append(labels)
 
-        return boxes_batch, scores_batch, labels_batch, primary_centers, primary_centers_soft
+        return (
+            boxes_batch,
+            scores_batch,
+            labels_batch,
+            primary_centers,
+            primary_centers_soft,
+            soft_boxes_batch,
+        )
 
     def forward(
         self,
@@ -362,10 +432,15 @@ class DirectorCenterNet(nn.Module):
             )
 
             # 1. L_hcm (Human Consensus Match loss)
+            # The joint target, not Y1, weights the negative term: Y1 is ~0 at
+            # the auxiliary modes, so weighting by it made this loss erase
+            # exactly what L_rmc creates. The auxiliary support is then left
+            # out of the negative domain entirely and handed to L_rmc.
             loss_hcm = human_consensus_match_loss(
                 pred_hm=pred_hm,
-                target_hm_top1=rendered["Y1"],
+                target_hm_top1=rendered["Y_all"],
                 pos_mask=rendered["pos_mask_top1"],
+                ignore_mask=rendered["aux_support"],
             )
 
             # 2. L_rmc (Ranked Mode Coverage loss)
@@ -374,6 +449,7 @@ class DirectorCenterNet(nn.Module):
                 target_hm_minus=rendered["Y_minus"],
                 mask_omega=rendered["mask_omega"],
                 has_aux=rendered["has_aux"],
+                aux_support=rendered["aux_support"],
             )
 
             # 3. Extract predicted regions for L_rep and L_smooth
@@ -383,6 +459,7 @@ class DirectorCenterNet(nn.Module):
                 _,
                 primary_centers,
                 primary_centers_soft,
+                pred_boxes_soft,
             ) = self._extract_predicted_regions_differentiable(
                 pred_hm=pred_hm,
                 pred_off=pred_off,
@@ -394,8 +471,13 @@ class DirectorCenterNet(nn.Module):
                 hm_logits=hm_logits,
             )
 
-            # 4. L_rep (Spatial Repulsion loss)
-            loss_rep = spatial_repulsion_loss(pred_boxes)
+            # 4. L_rep (Spatial Repulsion loss). Soft boxes for the same reason
+            # L_smooth uses soft centres: boxes decoded from topk indices are a
+            # function of the offset and size heads only, so the penalty could
+            # never push the *peaks* apart - only shrink or nudge the regions
+            # around them. That is why adding L_rep moved almost nothing
+            # (hcm_rmc IR 0.633 -> no_smooth 0.630).
+            loss_rep = spatial_repulsion_loss(pred_boxes_soft)
 
             # 5. L_smooth (Trajectory Smoothness loss)
             if has_pairs:
@@ -411,8 +493,12 @@ class DirectorCenterNet(nn.Module):
                         pred_wh_next,
                     ) = self._predict_heads(feat_next)
                     (
-                        *_,
+                        _,
+                        _,
+                        _,
+                        _,
                         primary_centers_next_soft,
+                        _,
                     ) = self._extract_predicted_regions_differentiable(
                         pred_hm=pred_hm_next,
                         pred_off=pred_off_next,
@@ -500,7 +586,7 @@ class DirectorCenterNet(nn.Module):
             feat = self._extract_features(batched)
             pred_hm, _hm_logits, pred_off, pred_wh = self._predict_heads(feat)
 
-            pred_boxes, pred_scores, pred_labels, _, _ = self._extract_predicted_regions_differentiable(
+            pred_boxes, pred_scores, pred_labels, _, _, _ = self._extract_predicted_regions_differentiable(
                 pred_hm=pred_hm,
                 pred_off=pred_off,
                 pred_wh=pred_wh,

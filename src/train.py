@@ -526,7 +526,7 @@ def run_training(cfg: DictConfig):
         "centernet_down_ratio", "max_objs",
         "k_max", "conf_threshold", "render_sigma", "u_observers",
         "smooth_huber_delta", "smooth_warmup_start", "smooth_warmup_full",
-        "soft_center_radius",
+        "soft_center_radius", "peak_border_margin",
     ):
         if hasattr(cfg.architecture, _arch_key):
             setattr(cfg, _arch_key, getattr(cfg.architecture, _arch_key))

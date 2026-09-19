@@ -93,8 +93,11 @@ print("[D] rendered target amplitude (support 3/1/1 of U=5)")
 print(f"    Y1      max                : {rendered['Y1'].max():.4f}")
 print(f"    Y_minus max                : {rendered['Y_minus'].max():.4f}   <- auxiliary modes")
 print(f"    model tau (conf_threshold) : {model.conf_threshold}")
-print(f"    inference score_threshold  : 0.3  (conf/architecture/director_centernet.yaml)")
-print(f"    |Omega| (L_rmc denominator): {rendered['mask_omega'][0].sum():.0f} of {feat_hw ** 2}")
+print(f"    inference score_threshold  : see conf/architecture/director_centernet.yaml (must equal tau)")
+print(f"    |Omega|                    : {rendered['mask_omega'][0].sum():.0f} of {feat_hw ** 2}")
+print(f"    |aux support|              : {rendered['aux_support'][0].sum():.0f}   <- L_rmc denominator now")
+print("    Y_minus max must be exactly support/U (0.2 for 1 of 5); anything")
+print("    lower means the Gaussian is still rendered off its assigned cell.")
 
 # ---------------------------------------------------------------- E
 groups = {
@@ -159,7 +162,7 @@ model.set_epoch(model.smooth_warmup_full)
 # how many peaks survive tau at init
 model.eval()
 with torch.no_grad():
-    boxes, scores, _, _, _ = model._extract_predicted_regions_differentiable(
+    boxes, scores, _, _, _, _ = model._extract_predicted_regions_differentiable(
         hm, off, wh, 128, 128, model.conf_threshold, model.k_max
     )
 print(f"    peaks passing tau at init  : {[len(s) for s in scores]}")

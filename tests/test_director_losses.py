@@ -19,13 +19,12 @@ from losses.director_losses import (
 
 
 def test_render_targets_and_masking():
-    # 1 batch sample with 2 modes.
-    # Centers are multiples of stride so they land exactly on sampled grid
-    # points; otherwise the discrete grid never samples the continuous peak
-    # (e.g. row=30 with stride=4 is 2 tiles off the nearest grid row, which
-    # alone scales the peak down by exp(-2^2 / 2*2^2) ~= 0.61).
+    # 1 batch sample with 2 modes, both on grid points.
     # Top-1 mode at (row=32, col=40) with support=5 -> peak 5/5 = 1.0
     # Top-2 mode at (row=80, col=88) with support=3 -> peak 3/5 = 0.6
+    # Off-grid centres now reach the same amplitudes, since the Gaussian is
+    # rendered on the assigned cell rather than the continuous coordinate;
+    # test_aux_modes_render_at_full_support_amplitude covers that.
     modes_list = [
         {
             "centers": np.array([[32.0, 40.0], [80.0, 88.0]]),
@@ -135,8 +134,85 @@ def test_l_rmc_masks_out_primary_region():
         target_hm_minus=targets["Y_minus"],
         mask_omega=targets["mask_omega"],
         has_aux=targets["has_aux"],
+        aux_support=targets["aux_support"],
     )
     assert torch.isclose(l_rmc, torch.tensor(0.0), atol=1e-5)
+
+
+def test_l_rmc_normalises_by_auxiliary_support_not_omega():
+    """Dividing by |Omega| diluted the informative cells by ~100x."""
+    modes_list = [
+        {
+            "centers": np.array([[32.0, 40.0], [80.0, 88.0]]),
+            "support": np.array([5, 1]),
+            "n_observers": 5,
+        }
+    ]
+    targets = render_gaussian_heatmap_targets(
+        modes_list=modes_list, batch_size=1, feat_h=32, feat_w=32,
+        stride=4, device=torch.device("cpu"),
+    )
+
+    n_support = float(targets["aux_support"].sum())
+    n_omega = float(targets["mask_omega"].sum())
+    assert 0 < n_support < n_omega / 10  # the dilution this fixes
+
+    # A prediction of all zeros: the loss must be the mean squared error over
+    # the auxiliary support, not that same error smeared across all of Omega.
+    pred_hm = torch.zeros_like(targets["Y_minus"])
+    l_rmc = ranked_mode_coverage_loss(
+        pred_hm=pred_hm,
+        target_hm_minus=targets["Y_minus"],
+        mask_omega=targets["mask_omega"],
+        has_aux=targets["has_aux"],
+        aux_support=targets["aux_support"],
+    )
+    expected = float(
+        ((targets["Y_minus"] ** 2) * targets["aux_support"]).sum() / n_support
+    )
+    assert torch.isclose(l_rmc, torch.tensor(expected), atol=1e-7)
+
+
+def test_aux_modes_render_at_full_support_amplitude():
+    """A minority mode must reach support/U exactly, or tau can never admit it."""
+    modes_list = [
+        {
+            # deliberately off-grid: row 30 and col 91 are not multiples of 4
+            "centers": np.array([[30.0, 41.0], [79.0, 91.0]]),
+            "support": np.array([5, 1]),
+            "n_observers": 5,
+        }
+    ]
+    targets = render_gaussian_heatmap_targets(
+        modes_list=modes_list, batch_size=1, feat_h=32, feat_w=32,
+        stride=4, device=torch.device("cpu"),
+    )
+    # 1 observer of 5 -> 0.2, undiminished by where the centre fell in its cell
+    assert torch.isclose(targets["Y_minus"].max(), torch.tensor(0.2), atol=1e-6)
+    assert torch.isclose(targets["Y1"].max(), torch.tensor(1.0), atol=1e-6)
+    assert targets["Y_minus"].max() > config.DIRECTOR_TAU
+
+
+def test_l_hcm_ignores_auxiliary_support():
+    """The focal term must not treat the minority modes as hard negatives."""
+    pred_hm = torch.full((1, 1, 4, 4), 0.2)
+    target_all = torch.zeros(1, 1, 4, 4)
+    target_all[0, 0, 0, 0] = 1.0
+    target_all[0, 0, 3, 3] = 0.2  # an auxiliary mode
+    pos_mask = torch.zeros(1, 1, 4, 4)
+    pos_mask[0, 0, 0, 0] = 1.0
+    ignore = torch.zeros(1, 1, 4, 4)
+    ignore[0, 0, 3, 3] = 1.0
+
+    with_pressure = human_consensus_match_loss(pred_hm, target_all, pos_mask)
+    without = human_consensus_match_loss(pred_hm, target_all, pos_mask, ignore_mask=ignore)
+    # Excluding the auxiliary cell removes a term that was pushing it down.
+    assert without < with_pressure
+
+    # And the gradient at that cell must be exactly zero once ignored.
+    p = pred_hm.clone().requires_grad_(True)
+    human_consensus_match_loss(p, target_all, pos_mask, ignore_mask=ignore).backward()
+    assert float(p.grad[0, 0, 3, 3]) == 0.0
 
 
 def test_l_hcm_focal_loss_backward():
@@ -247,6 +323,12 @@ if __name__ == "__main__":
     print("test_l_rmc_empty_when_no_auxiliary_modes: PASS")
     test_l_rmc_masks_out_primary_region()
     print("test_l_rmc_masks_out_primary_region: PASS")
+    test_l_rmc_normalises_by_auxiliary_support_not_omega()
+    print("test_l_rmc_normalises_by_auxiliary_support_not_omega: PASS")
+    test_aux_modes_render_at_full_support_amplitude()
+    print("test_aux_modes_render_at_full_support_amplitude: PASS")
+    test_l_hcm_ignores_auxiliary_support()
+    print("test_l_hcm_ignores_auxiliary_support: PASS")
     test_l_hcm_focal_loss_backward()
     print("test_l_hcm_focal_loss_backward: PASS")
     test_l_rep_spatial_repulsion()
