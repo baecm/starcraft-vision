@@ -310,7 +310,11 @@ def test_l_smooth_huber_bounds_large_jumps():
     small_loss, small_grad = loss_and_grad(2.0)
     big_loss, big_grad = loss_and_grad(120.0)
 
-    # Linear branch: delta * (d - delta/2) / diag
+    # Quadratic branch below the knee: 0.5 * d^2 / diag
+    assert torch.isclose(
+        torch.tensor(small_loss), torch.tensor(0.5 * 2.0 ** 2 / diag), atol=1e-6
+    )
+    # Linear branch above it: delta * (d - delta/2) / diag
     assert torch.isclose(
         torch.tensor(big_loss), torch.tensor(delta * (120.0 - 0.5 * delta) / diag), atol=1e-6
     )
@@ -320,8 +324,10 @@ def test_l_smooth_huber_bounds_large_jumps():
     assert torch.isclose(torch.tensor(big_grad), torch.tensor(delta / diag), atol=1e-6)
     assert small_grad < big_grad
 
-    # Squared L2 in tiles would have put these at 4 and 14400.
-    assert small_loss < 0.01
+    # The point of the reshaping: squared L2 in tiles would have made these 4
+    # and 14400, so a large jump outweighed a small one by 3600x. Here the
+    # ratio is bounded by the linear branch.
+    assert big_loss / small_loss < 500.0
 
 
 def test_l_smooth_gradient_finite_at_zero_displacement():
