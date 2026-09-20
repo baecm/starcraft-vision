@@ -500,8 +500,17 @@ class DirectorCenterNet(nn.Module):
             # (hcm_rmc IR 0.633 -> no_smooth 0.630).
             loss_rep = spatial_repulsion_loss(pred_boxes_soft)
 
-            # 5. L_smooth (Trajectory Smoothness loss)
-            if has_pairs:
+            # 5. L_smooth (Trajectory Smoothness loss).
+            #
+            # The next frame needs a second full forward pass through the
+            # backbone, which roughly doubles activation memory and step time.
+            # When the effective weight is zero - every lambda_sm=0 ablation,
+            # and every run during the warmup epochs - that pass is computed
+            # and then multiplied by zero, so skipping it is numerically
+            # identical (there is no dropout and the norms are frozen, so no
+            # RNG is consumed either) and frees about 40% of the memory.
+            smooth_weight = self.loss_weights["lambda_sm"] * self.smooth_warmup_scale()
+            if has_pairs and smooth_weight > 0.0:
                 # Next frame images from paired targets
                 next_images = [t["next_image"].to(device) for t in targets if "next_image" in t]
                 if len(next_images) == b_size:
@@ -592,9 +601,7 @@ class DirectorCenterNet(nn.Module):
                 "loss_centernet_hm": self.loss_weights["lambda_hcm"] * loss_hcm,
                 "loss_rmc": self.loss_weights["lambda_rmc"] * loss_rmc,
                 "loss_rep": self.loss_weights["lambda_rep"] * loss_rep,
-                "loss_smooth": (
-                    self.loss_weights["lambda_sm"] * self.smooth_warmup_scale() * loss_smooth
-                ),
+                "loss_smooth": smooth_weight * loss_smooth,
                 "loss_off": self.loss_weights["lambda_off"] * loss_off,
                 "loss_wh": self.loss_weights["lambda_sz"] * loss_sz,
             }
