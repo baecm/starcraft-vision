@@ -560,6 +560,15 @@ spans $12 \times 20$ tiles, it occupies $3 \times 5$ cells; the stride is
 therefore already coarse relative to the target, and we return to this point in
 Section~\ref{sec:discussion}.
 
+Because the heads read that level and no other, the whole backbone is trained,
+including the first residual stage. Detection libraries conventionally freeze
+the early stages at their ImageNet weights, which is reasonable when a
+detection head pools several pyramid levels and scores them with its own
+learned layers: the frozen stage is then one input among many. Here it is the
+only one, and the input is a channelised tile tensor rather than a natural
+image, so leaving it frozen would mean scoring StarCraft game state through
+features never trained on anything like it.
+
 \paragraph{Heatmap head.} Two $3{\times}3$ convolutions followed by a
 $1{\times}1$ sigmoid layer produce the region-centre heatmap
 $\hat{\mathcal{Y}}_t \in [0,1]^{H_s \times W_s}$. The ground-truth heatmap is
@@ -571,17 +580,35 @@ Section~\ref{subsec:modes}:
                       {2\sigma^2}\right),
   \label{eq:gt_heatmap}
 \end{equation}
-where $\omega_k = n_t(\mathbf{m}^{(k)}_t)/U \in (0,1]$ weights a mode by its
-normalised support. Using the support as an amplitude, rather than treating all
-modes identically, preserves the ranking in the target and prevents a mode
-observed by a single participant from being trained as strongly as the
-consensus region.
+where the amplitude is
+\begin{equation}
+  \omega_k = \begin{cases}
+    1 & k = 1, \\
+    n_t(\mathbf{m}^{(k)}_t)/U \in (0,1] & k \ge 2.
+  \end{cases}
+  \label{eq:amplitude}
+\end{equation}
+Using the support as an amplitude for the auxiliary modes, rather than treating
+them identically, preserves the ranking in the target and prevents a mode
+observed by a single participant from being trained as strongly as one observed
+by several.
+
+The primary is exempt. It is already distinguished from the auxiliaries by
+which objective supervises it — $\mathcal{L}_{\text{hcm}}$ owns its cell and
+$\mathcal{L}_{\text{rmc}}$ owns $\Psi_t$ — so weighting it by support adds no
+ranking information and only weakens its supervision. It weakens it worst
+where the task is hardest: when observers disagree the Top-1 support is low,
+$\omega_1$ is small, and every cell around the peak then carries a
+penalty-reduction factor $(1-\omega_1 e^{-\cdot})^{\beta_f}$ close to one and
+is trained as a hard negative. The primary would receive a near-delta target on
+precisely the multimodal frames this work is about. Ranking across the ordered
+set is unaffected, since $\omega_k \le 1$ for $k \ge 2$.
 
 The operator $\pi(\cdot)$ maps a mode to the centre of its assigned heatmap
 cell, and it is not cosmetic. A mode at a continuous tile coordinate can fall
-up to $s\sqrt{2}/2$ tiles from the nearest sampled grid point, which for
-$\sigma = 2$ tiles and $s = 4$ attenuates the rendered peak by up to
-$\exp(-1) \approx 0.37$. Rendering at the continuous coordinate would therefore
+up to $s\sqrt{2}/2$ tiles from the nearest sampled grid point, which at
+$s = 4$ attenuates the rendered peak substantially. Rendering at the
+continuous coordinate would therefore
 make the target amplitude encode quantisation error as much as observer
 support, defeating the ranking it is meant to carry; a mode with support $1$ of
 $U=5$ would render anywhere in $[0.074,\,0.2]$ instead of exactly $0.2$. We
@@ -969,9 +996,13 @@ results are averaged over three folds and three random seeds
 $\{123, 456, 789\}$.
 
 \paragraph{Implementation.} Backbone: ResNet-50 pretrained on ImageNet with
-FPN, finest level ($s=4$), giving a $32 \times 32$ heatmap. Gaussian
-rendering: $\sigma = 2$~tiles, which matches the CenterNet radius heuristic
-for a $3 \times 5$-cell target. Mode extraction: Gaussian smoothing
+FPN, finest level ($s=4$), giving a $32 \times 32$ heatmap, all stages
+trainable. Heads are two $3{\times}3$ convolutions of width $64$ followed by a
+$1{\times}1$ output layer. Gaussian rendering: $\sigma = 4$~tiles, one heatmap
+cell at this stride; at $\sigma = 2$ the target is half a cell wide, so the
+immediate neighbours of a peak fall to $e^{-2} = 0.135$ and are trained as
+near-hard negatives, leaving no soft neighbourhood at all. Mode extraction:
+Gaussian smoothing
 $\sigma_m = 4$~tiles, relative floor $\theta = 0.35$, minimum separation
 $D = 12$~tiles. Loss weights: $\lambda_{\text{off}}=1$,
 $\lambda_{\text{sz}}=0.1$, $\lambda_{\text{rmc}}=0.5$,
@@ -1389,7 +1420,9 @@ is inflated by duplicates.
     FPN stride $s$   & 4          & Finest FPN level; $32{\times}32$ heatmap \\
     Map size         & $128{\times}128$ tiles & Consumed at native resolution \\
     Viewport $(h,w)$ & $12{\times}20$ tiles & $3{\times}5$ heatmap cells \\
-    Gaussian $\sigma$  & 2 tiles  & GT rendering, on the assigned cell \\
+    Gaussian $\sigma$  & 4 tiles  & GT rendering, on the assigned cell (1 cell) \\
+    Head width         & 64       & Hidden convs in each head \\
+    Trainable stages   & all      & The heads read only the finest level \\
     Stacking $\Delta$  & 8 frames & Temporal stride \\
     Stacking $W$       & 3        & Number of past frames \\
     Mode $\sigma_m$    & 4 tiles  & Coverage-map smoothing \\
