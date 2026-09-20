@@ -100,6 +100,27 @@ def _git_state() -> dict:
         }
 
 
+def _model_family(model_name: str) -> str:
+    """Coarse family for a model_name, so a whole line of work is filterable.
+
+    `director_centernet` is a CenterNet variant, but filtering W&B on
+    "centernet" would not match it, and the same applies to every
+    deformable/video DETR name. The family tag sits alongside the exact
+    model_name rather than replacing it. Order matters below: rtdetr is
+    checked before the generic detr test.
+    """
+    name = (model_name or "").lower()
+    if "maskrcnn" in name or "mask_rcnn" in name:
+        return "maskrcnn"
+    if "rtdetr" in name:
+        return "rtdetr"
+    if "centernet" in name or name.startswith("director"):
+        return "centernet"
+    if "detr" in name:
+        return "detr"
+    return name or "unknown"
+
+
 def _build_run_tags(cfg) -> list:
     """Filterable W&B tags describing what actually varies between runs.
 
@@ -111,7 +132,9 @@ def _build_run_tags(cfg) -> list:
     checksumming prediction files afterwards.
     """
     arch = getattr(cfg, "architecture", None)
-    tags = [str(getattr(arch, "model_name", "unknown"))]
+    model_name = str(getattr(arch, "model_name", "unknown"))
+    family = _model_family(model_name)
+    tags = [model_name] if model_name == family else [family, model_name]
 
     use_kbrs = _is_kbrs_enabled(cfg)
     tags.append("kbrs" if use_kbrs else "vanilla")
@@ -123,7 +146,7 @@ def _build_run_tags(cfg) -> list:
     # axis, and reading it off the run name is error-prone.
     weights = getattr(arch, "loss_weights", None) or {}
     active = [k for k in ("rmc", "rep", "sm") if float(weights.get(f"lambda_{k}", 0.0)) > 0.0]
-    if str(getattr(arch, "model_name", "")).startswith("director"):
+    if "director" in model_name.lower():
         tags.append("L:" + ("+".join(active) if active else "hcm_only"))
         lam_sm = float(weights.get("lambda_sm", 0.0))
         if lam_sm > 0.0:
