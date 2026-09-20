@@ -100,6 +100,60 @@ def _git_state() -> dict:
         }
 
 
+def _build_run_tags(cfg) -> list:
+    """Filterable W&B tags describing what actually varies between runs.
+
+    Beyond the architecture/dataset/seed identity, this records the loss
+    composition and the knobs that distinguish the current sweep, because a
+    dozen runs whose names differ only by a suffix are unreadable in the UI
+    otherwise. The commit is tagged too: an earlier round had ablations
+    launched from checkouts at different commits, and that was only caught by
+    checksumming prediction files afterwards.
+    """
+    arch = getattr(cfg, "architecture", None)
+    tags = [str(getattr(arch, "model_name", "unknown"))]
+
+    use_kbrs = _is_kbrs_enabled(cfg)
+    tags.append("kbrs" if use_kbrs else "vanilla")
+    tags.append(f"win{cfg.window_size}")
+    tags.append(str(_get_choice("dataset") or "fold?"))
+    tags.append(f"s{cfg.seed}")
+
+    # Which of the optional objectives are actually on. This is the ablation
+    # axis, and reading it off the run name is error-prone.
+    weights = getattr(arch, "loss_weights", None) or {}
+    active = [k for k in ("rmc", "rep", "sm") if float(weights.get(f"lambda_{k}", 0.0)) > 0.0]
+    if str(getattr(arch, "model_name", "")).startswith("director"):
+        tags.append("L:" + ("+".join(active) if active else "hcm_only"))
+        lam_sm = float(weights.get("lambda_sm", 0.0))
+        if lam_sm > 0.0:
+            tags.append(f"sm{lam_sm:g}")
+
+    # Non-default knobs only, so the tag list stays short when nothing is swept.
+    for key, default, fmt in (
+        ("dense_positives", False, lambda v: "dense"),
+        ("head_conv", config.DIRECTOR_HEAD_CONV, lambda v: f"hc{v}"),
+        ("render_sigma", config.DIRECTOR_RENDER_SIGMA, lambda v: f"sig{v:g}"),
+        ("trainable_layers", config.DIRECTOR_TRAINABLE_LAYERS, lambda v: f"tl{v}"),
+        ("conf_threshold", config.DIRECTOR_TAU, lambda v: f"tau{v:g}"),
+    ):
+        value = getattr(arch, key, default)
+        if value != default:
+            tags.append(fmt(value))
+
+    if use_kbrs:
+        for group in ("kbrs_loss", "kbrs_score"):
+            choice = _get_choice(group)
+            if choice:
+                tags.append(str(choice).replace("/", "_"))
+
+    commit = _git_state().get("commit")
+    if commit:
+        tags.append(f"git:{commit[:9]}")
+
+    return [t for t in tags if t]
+
+
 def _write_run_provenance(save_dir: str, model, id_string: str) -> None:
     """Record which code and which knobs produced this run, next to the weights.
 
@@ -408,41 +462,20 @@ def run_training(cfg: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
     Logger.info(f"[Info] Using device: {device} (torch.cuda.is_available(): {torch.cuda.is_available()} / cfg.cuda: {cfg.cuda})")
 
-    run_tags = []
-    # 3) id_string / tag_string
+    # 3) run tags / id_string
+    #
+    # These are built unconditionally. They used to live inside the
+    # `if not cfg.id_string` branch, so every run launched with an explicit
+    # id_string - which is every ablation - reached wandb.init with tags=[].
+    # The parameters were still in wandb's config, but nothing was filterable
+    # in the UI, which is the part that makes a sweep of near-identical runs
+    # readable.
+    run_tags = _build_run_tags(cfg)
+
     if not cfg.id_string:
-        run_tags.append(cfg.architecture.model_name)         # maskrcnn or rtdetr
-        Logger.info(f"[Info] Architecture: {cfg.architecture.model_name}")
-        use_kbrs = _is_kbrs_enabled(cfg)
-        run_tags.append("kbrs" if use_kbrs else "vanilla")   # kbrs enabled/disabled
-        Logger.info(f"[Info] Using KBRS: {use_kbrs}")
-        run_tags.append(f"win{cfg.window_size}")  # win4
-        Logger.info(f"[Info] Window size: {cfg.window_size}")
-
-        # hydra runtime choices에서 현재 job의 선택값을 읽어온다.
-        dataset_name    = _get_choice("dataset")     # fold1
-        Logger.info(f"[Info] Dataset choice: {dataset_name}")
-        run_tags.append(f"{dataset_name}")
-        
-        seed_choice     = _get_choice("seed")        # s123 같은 group 이름 (있으면)
-        Logger.info(f"[Info] Seed choice from Hydra: {seed_choice}")
-        run_tags.append(f"s{seed_choice}" if seed_choice else f"s{cfg.seed}")  # seed123 (실제 값)
-        
-        # kbrs가 켜져 있을 때만 loss/score suffix 달기
-        if use_kbrs:
-            kbrs_weight  = _get_choice("kbrs_loss")   # kbrs025 ...
-            if kbrs_weight:
-                Logger.info(f"[Info] KBRS loss choice: {kbrs_weight}")
-                run_tags.append(f"{kbrs_weight}" if kbrs_weight else None)
-            kbrs_score_name = _get_choice("kbrs_score")  # base, density020 ...
-            if kbrs_score_name:
-                Logger.info(f"[Info] KBRS score choice: {kbrs_score_name}")
-                run_tags.append(kbrs_score_name.replace("/", "_"))
-
-        run_tags.append(f"{time.strftime('%Y%m%d_%H%M%S')}")
-
-        cfg.id_string = "_".join(run_tags)
+        cfg.id_string = "_".join(run_tags + [time.strftime("%Y%m%d_%H%M%S")])
         Logger.info(f"[Info] Using id string: {cfg.id_string}")
+    Logger.info(f"[Info] W&B tags: {run_tags}")
 
 
     log_save_path = os.path.join(cfg.log_root, f"{cfg.id_string}/")
