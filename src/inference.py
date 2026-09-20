@@ -59,11 +59,67 @@ def _auto_num_workers(device: torch.device) -> int:
     return max(0, avail - 1)
 
 
-def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int, 
-                architecture: str, num_classes: int = 2, use_kbrs: bool = False, 
+# Keys that train.py records in run_provenance.json, mapped to the attribute
+# names build_model reads. Only knobs that change what the model *is* or how it
+# decodes belong here; training-only settings (render_sigma, dense_positives,
+# the L_smooth shaping) are deliberately absent.
+_PROVENANCE_ARCH_KEYS = {
+    "head_conv": "head_conv",
+    "down_ratio": "centernet_down_ratio",
+    "peak_border_margin": "peak_border_margin",
+}
+
+
+def _apply_recorded_architecture(model_args: SimpleNamespace, model_folder: str) -> None:
+    """Rebuild the model the way the checkpoint was trained, in place.
+
+    build_model takes a flat namespace rather than the Hydra config, because
+    inference, evaluation and the benchmark tools all call it from outside
+    Hydra. The consequence is that this function has to forward every
+    architecture knob by hand, and until now it forwarded two - so a run
+    trained with `architecture.head_conv=256` would be rebuilt here at the
+    src/config.py default of 64 and load_state_dict would fail on a shape
+    mismatch, after the training had already finished.
+
+    train.py writes those knobs next to the weights, so read them from there
+    instead of widening the CLI every time a knob is added. Missing file means
+    a checkpoint from before provenance existed; the config defaults then apply
+    as they did before.
+    """
+    path = os.path.join(model_folder, "run_provenance.json")
+    if not os.path.isfile(path):
+        Logger.warn(
+            f"[Inference] No run_provenance.json in {model_folder}; "
+            "rebuilding from src/config.py defaults. If this checkpoint was "
+            "trained with a non-default architecture knob, the load will fail."
+        )
+        return
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            record = json.load(f)
+    except Exception as e:
+        Logger.warn(f"[Inference] Could not read {path}: {e}")
+        return
+
+    applied = {}
+    for key, attr in _PROVENANCE_ARCH_KEYS.items():
+        if key in record:
+            setattr(model_args, attr, record[key])
+            applied[attr] = record[key]
+    if applied:
+        Logger.info(f"[Inference] Architecture from run_provenance.json: {applied}")
+
+    commit = (record.get("git") or {}).get("commit")
+    if commit:
+        Logger.info(f"[Inference] Checkpoint was trained at commit {commit[:9]}")
+
+
+def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int,
+                architecture: str, num_classes: int = 2, use_kbrs: bool = False,
                 kbrs_params: dict = None, rtdetr_version: str = "v1", rtdetr_size: str = "l",
                 k_max: int = 3, conf_threshold: float = 0.2):
-    
+
     # 1. factory.py가 요구하는 인자들을 담을 dummy args(SimpleNamespace) 생성
     model_args = SimpleNamespace(
         model_name=architecture.lower(),
@@ -73,12 +129,14 @@ def _load_model(model_path: str, device: torch.device, in_channels: int, window_
         window_size=window_size,
         kbrs_params=kbrs_params,
         loss_weights=None,
-        rtdetr_version=rtdetr_version,  
+        rtdetr_version=rtdetr_version,
         rtdetr_size=rtdetr_size,
         k_max=k_max,
         conf_threshold=conf_threshold,
     )
-    
+
+    _apply_recorded_architecture(model_args, os.path.dirname(model_path))
+
     # 2. factory를 통해 모델 구조 생성 (Train과 완벽히 동일한 경로)
     model = build_model(model_args)
     
