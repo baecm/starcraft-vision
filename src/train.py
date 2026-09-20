@@ -1,4 +1,5 @@
 # src/train.py
+import json
 import os
 import subprocess
 import time
@@ -59,6 +60,70 @@ def _get_choice(group: str) -> Optional[str]:
         return None
 
 
+def _git_state() -> dict:
+    """HEAD commit and whether the working tree is dirty, or why we cannot tell."""
+    def _run(args):
+        return subprocess.check_output(
+            args, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+
+    try:
+        return {
+            "commit": _run(["git", "rev-parse", "HEAD"]),
+            "subject": _run(["git", "log", "-1", "--format=%s"]),
+            "committed_at": _run(["git", "log", "-1", "--format=%cI"]),
+            "dirty": bool(_run(["git", "status", "--porcelain"])),
+        }
+    except Exception as e:
+        return {"commit": None, "error": f"{type(e).__name__}: {e}"}
+
+
+def _write_run_provenance(save_dir: str, model, id_string: str) -> None:
+    """Record which code and which knobs produced this run, next to the weights.
+
+    Seven ablations were once launched across several machines whose checkouts
+    were at different commits. Three of them silently reproduced the previous
+    round byte for byte, and that was only caught afterwards by checksumming
+    prediction files against the older run. A run that cannot state its own
+    commit cannot be compared to another run, so record it before training
+    rather than reconstructing it later.
+    """
+    base = getattr(model, "base_model", model)
+    weights = getattr(base, "loss_weights", None)
+    record = {
+        "id_string": id_string,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "git": _git_state(),
+        "loss_weights": {k: float(v) for k, v in weights.items()} if weights else None,
+    }
+    for knob in (
+        "down_ratio", "k_max", "conf_threshold", "render_sigma", "u_observers",
+        "smooth_huber_delta", "smooth_warmup_start", "smooth_warmup_full",
+        "soft_center_radius", "peak_border_margin",
+    ):
+        if hasattr(base, knob):
+            record[knob] = getattr(base, knob)
+
+    git = record["git"]
+    if git.get("commit"):
+        Logger.info(
+            f"[Provenance] commit {git['commit'][:9]}"
+            f"{' (DIRTY)' if git['dirty'] else ''} - {git['subject']}"
+        )
+        if git["dirty"]:
+            Logger.warn("[Provenance] working tree is dirty; this run is not reproducible from a commit.")
+    else:
+        Logger.warn(f"[Provenance] could not determine git commit: {git.get('error')}")
+
+    try:
+        os.makedirs(save_dir, exist_ok=True)
+        with open(os.path.join(save_dir, "run_provenance.json"), "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=2, sort_keys=True)
+    except Exception as e:
+        Logger.warn(f"[Provenance] failed to write run_provenance.json: {e}")
+
+
 def train_model(
     model,
     optimizer,
@@ -73,6 +138,8 @@ def train_model(
     test_eval_every: int = 0,
     id_string: str = "",
 ):
+    _write_run_provenance(save_dir, model, id_string)
+
     Logger.info("[Stage] Starting training loop...")
     for epoch in tqdm.tqdm(range(num_epochs)):
         epoch_t0 = time.time()
