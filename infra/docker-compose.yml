@@ -85,6 +85,9 @@ services:
       - ${RESULTS_DIR}:/workspace/results
       - ${CONF_DIR}:/workspace/conf
       - ../scripts:/workspace/scripts
+      # the unit tests import from src/ and need torch, so they can only run
+      # inside the image; scripts/ was mounted for the same reason
+      - ../tests:/workspace/tests
       - ./entrypoint.sh:/workspace/entrypoint.sh
 
   notebook:

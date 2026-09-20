@@ -24,7 +24,7 @@ PYDEBUG_SERVICE  ?= pydebug
 
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
-		zeppelin benchmark mode-disagreement
+		zeppelin benchmark mode-disagreement test probe
 
 # 디렉토리 생성
 ifneq ($(OS),Windows_NT)
@@ -128,6 +128,12 @@ run:
 debug:
 	CONTAINER_NAME=debug_$(shell date +%Y%m%d_%H%M%S); \
 	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm debugger debug $(ARGS);
+
+test:
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/tests/test_director_losses.py"
+
+probe:
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/probe_director.py"
 
 benchmark:
 	CONTAINER_NAME=benchmark_$$(date +%Y%m%d_%H%M%S); \
