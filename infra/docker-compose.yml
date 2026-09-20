@@ -18,6 +18,10 @@ x-common-config: &common-config
     - OTEL_METRICS_EXPORTER=${OTEL_METRICS_EXPORTER:-none}
     - WANDB_SILENT=${WANDB_SILENT:-true}
     - WANDB_CORE=${WANDB_CORE:-false}
+    # exported by the Makefile from the host checkout; the container has no
+    # .git of its own, so this is the only way a run can record its commit
+    - GIT_COMMIT=${GIT_COMMIT:-}
+    - GIT_DIRTY=${GIT_DIRTY:-}
   user: "${UID}:${GID}"
   shm_size: '${SHARED_MEMORY}'
   working_dir: /workspace

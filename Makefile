@@ -1,5 +1,13 @@
 COMPOSE_FILE=infra/docker-compose.yml
 PID_DIR=pids
+
+# The container mounts only src/, so it has no .git and cannot answer "which
+# commit is this". Read the host checkout here and pass it in, so every run
+# records the code that produced it. See _write_run_provenance in src/train.py.
+GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null)
+GIT_DIRTY  := $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo 1 || echo 0)
+export GIT_COMMIT
+export GIT_DIRTY
 JUPYTER_PORT ?= 8888
 DEBUG_PORT   ?= 5678
 ENABLE_SYNOLOGY_CHAT ?= false

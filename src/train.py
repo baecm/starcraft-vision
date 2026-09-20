@@ -61,7 +61,22 @@ def _get_choice(group: str) -> Optional[str]:
 
 
 def _git_state() -> dict:
-    """HEAD commit and whether the working tree is dirty, or why we cannot tell."""
+    """HEAD commit and whether the working tree is dirty, or why we cannot tell.
+
+    The container only mounts src/, so there is no .git under /workspace and
+    asking git directly fails with exit 128. The Makefile therefore reads the
+    host checkout at launch and passes GIT_COMMIT / GIT_DIRTY through the
+    environment; the subprocess path is the fallback for running outside the
+    container.
+    """
+    env_commit = os.environ.get("GIT_COMMIT", "").strip()
+    if env_commit:
+        return {
+            "commit": env_commit,
+            "dirty": os.environ.get("GIT_DIRTY", "").strip() == "1",
+            "source": "host env",
+        }
+
     def _run(args):
         return subprocess.check_output(
             args, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -74,9 +89,15 @@ def _git_state() -> dict:
             "subject": _run(["git", "log", "-1", "--format=%s"]),
             "committed_at": _run(["git", "log", "-1", "--format=%cI"]),
             "dirty": bool(_run(["git", "status", "--porcelain"])),
+            "source": "subprocess",
         }
     except Exception as e:
-        return {"commit": None, "error": f"{type(e).__name__}: {e}"}
+        return {
+            "commit": None,
+            "error": f"{type(e).__name__}: {e}",
+            "hint": "GIT_COMMIT was not in the environment and there is no .git here; "
+                    "launch via the Makefile, which exports it from the host checkout.",
+        }
 
 
 def _write_run_provenance(save_dir: str, model, id_string: str) -> None:
@@ -109,12 +130,15 @@ def _write_run_provenance(save_dir: str, model, id_string: str) -> None:
     if git.get("commit"):
         Logger.info(
             f"[Provenance] commit {git['commit'][:9]}"
-            f"{' (DIRTY)' if git['dirty'] else ''} - {git['subject']}"
+            f"{' (DIRTY)' if git.get('dirty') else ''}"
+            f"{' - ' + git['subject'] if git.get('subject') else ''}"
+            f" [{git.get('source')}]"
         )
-        if git["dirty"]:
+        if git.get("dirty"):
             Logger.warn("[Provenance] working tree is dirty; this run is not reproducible from a commit.")
     else:
         Logger.warn(f"[Provenance] could not determine git commit: {git.get('error')}")
+        Logger.warn(f"[Provenance] {git.get('hint', '')}")
 
     try:
         os.makedirs(save_dir, exist_ok=True)
