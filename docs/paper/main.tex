@@ -414,13 +414,19 @@ previous single-region work; the remaining entries are the minority modes that
 previous work suppressed.
 
 Two properties of $\mathcal{M}_t$ matter for this study. First, its cardinality
-grows as a match progresses, because observer attention separates in the
-mid-to-late game. Second, the reliability of the lower-ranked entries depends
-on $U$: with $U=5$, a mode supported by two observers is not separable from
-sampling variation, whereas a larger observer pool makes minority modes
-measurable. This is the reason we extend the dataset of \cite{joo2023learning}
-with additional participants per replay, as described in
-Section~\ref{sec:experiments}.
+varies over a match, and Section~\ref{subsec:target_structure} shows that it,
+rather than elapsed time, is what governs single-region accuracy. Second, the
+resolution of the ranking is bounded by $U$. We inherit the observational data
+of \cite{joo2023learning} unchanged, which records $U=5$ observers per replay,
+so a mode's support is an integer in $\{1,\ldots,5\}$ and by
+Eq.~\ref{eq:gt_heatmap} the smallest representable amplitude is $1/U = 0.2$.
+A mode carried by a single observer is therefore at the edge of what five
+samples can distinguish from idiosyncratic attention. The evidence that the
+target is genuinely multimodal does not rest on those single-observer modes:
+$18\%$ of frames have their top two modes supported by \emph{equal} numbers of
+observers (Table~\ref{tab:by_margin}), which a larger pool would refine but
+which is not an artefact of a small one. We return to this bound in
+Section~\ref{sec:discussion}.
 
 \subsection{Multi-Region Viewport Prediction (MRVP)}
 
@@ -836,20 +842,15 @@ observational data were collected from participants (aged 20--35) who freely
 spectated replay files while viewport coordinates were recorded at each frame.
 A total of approximately 420{,}000 frames from 21 games were collected.
 
-\paragraph{Extending the observer pool.} The original collection recorded
-$U=5$ observers \emph{per replay} \cite{joo2023learning}. As argued in
-Section~\ref{subsec:modes}, five observers are sufficient to estimate the
-consensus region but not to distinguish a genuine minority mode from sampling
-variation: a mode supported by two of five falls within the uncertainty of the
-estimate, and by Eq.~\ref{eq:gt_heatmap} the smallest representable amplitude
-is $1/U = 0.2$. We therefore recruit additional participants under the same
-protocol as \cite{joo2023learning}, raising the pool to
-\todo{state final $U$; target 10--15} observers per replay. With a larger pool
-a mode supported by a third of the observers becomes measurable, which is the
-minimum requirement for supervising the auxiliary regions. Participant
-recruitment criteria, instructions, and post-session questionnaires follow
-\cite{joo2023learning} so that the extended data remain compatible with the
-original portion.
+\paragraph{Observer pool.} We use the observational data of
+\cite{joo2023learning} unchanged, with no additional collection: $U=5$
+observers per replay, the same replay files, and the same three replay-level
+folds. Reusing it without modification is deliberate. The contribution of this
+work is a different reading of that data — the minority modes previous work
+suppressed — so holding the data fixed makes the comparison against the
+previously reported single-region results direct rather than confounded by a
+change of corpus. It also bounds the ranking at five levels of support, which
+Section~\ref{sec:discussion} discusses.
 
 \subsection{Structure of the Target Distribution}
 \label{subsec:target_structure}
@@ -1268,6 +1269,17 @@ exists, the modes collapse and the formulation degenerates to the single-region
 case.
 
 \subsection{Limitations}
+
+\paragraph{Observer pool size.} With $U=5$ the support of a mode is an integer
+in $\{1,\ldots,5\}$, so the ranking the method is built on has five levels and
+the smallest auxiliary amplitude is $1/U = 0.2$. A mode carried by one
+observer sits at the edge of what five samples separate from idiosyncratic
+attention, and the confidence threshold has to be set below $0.2$ to admit it
+at all. A larger pool would refine the ranking and make a support fraction,
+rather than a count, the natural amplitude; it would also let the auxiliary
+regions be supervised by modes that are individually better attested. We did
+not collect one, and the results here should be read as what the ranking
+recovers at the resolution the existing corpus provides.
 
 \paragraph{Held-out conditions.} All results are reported on the standard test
 set, which fixes race matchup, map, and starting location. Earlier work
