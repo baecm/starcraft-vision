@@ -1,5 +1,8 @@
 # tests/test_director_losses.py
-import pytest
+#
+# Runs either under pytest or directly (`python3 tests/test_director_losses.py`),
+# which is what the container image supports - it has no pytest. Do not add an
+# `import pytest` back unless a fixture or a mark actually needs it.
 import torch
 import numpy as np
 
