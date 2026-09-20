@@ -31,3 +31,5 @@ smooth_warmup_full: 10       # linear ramp to full weight by epoch 10
 soft_center_radius: 2        # feature cells in the soft-argmax window
 peak_border_margin: 1        # drop the outermost ring from peak candidates
 trainable_layers: 5          # unfreeze layer1; the heatmap head reads only that level
+head_conv: 64                # hidden width of each head
+dense_positives: false       # focal positive at every observer centre, not only the Top-1 mode

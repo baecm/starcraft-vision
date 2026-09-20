@@ -114,6 +114,8 @@ def build_model(args: Any) -> nn.Module:
             soft_center_radius=getattr(args, "soft_center_radius", config.DIRECTOR_SOFT_CENTER_RADIUS),
             peak_border_margin=getattr(args, "peak_border_margin", config.DIRECTOR_PEAK_BORDER_MARGIN),
             trainable_layers=getattr(args, "trainable_layers", config.DIRECTOR_TRAINABLE_LAYERS),
+            head_conv=getattr(args, "head_conv", config.DIRECTOR_HEAD_CONV),
+            dense_positives=getattr(args, "dense_positives", config.DIRECTOR_DENSE_POSITIVES),
         )
 
     elif model_name in ["probabilistic_video_detr", "video_detr", "deformable_video_detr_cvae"]:

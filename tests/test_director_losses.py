@@ -220,6 +220,39 @@ def test_primary_renders_at_full_amplitude_regardless_of_support():
         assert targets["Y_minus"].max() < targets["Y1"].max()
 
 
+def test_dense_positives_add_observer_centres():
+    """L_hcm otherwise sees one positive cell per frame against ~1000 negatives."""
+    modes_list = [{
+        "centers": np.array([[32.0, 40.0], [80.0, 88.0]]),
+        "support": np.array([3, 2]),
+        "n_observers": 5,
+    }]
+    kwargs = dict(
+        modes_list=modes_list, batch_size=1, feat_h=32, feat_w=32,
+        stride=4, device=torch.device("cpu"),
+    )
+    sparse = render_gaussian_heatmap_targets(**kwargs)
+    assert sparse["pos_mask_top1"].sum() == 1
+
+    # three observers on the Top-1 mode, two on the auxiliary one
+    obs = torch.tensor([
+        [30.0, 26.0, 50.0, 38.0],   # centre ~ (32, 40)
+        [34.0, 30.0, 54.0, 42.0],
+        [58.0, 50.0, 78.0, 62.0],   # a distinct location
+        [78.0, 74.0, 98.0, 86.0],   # near the auxiliary mode
+        [78.0, 74.0, 98.0, 86.0],
+    ])
+    dense = render_gaussian_heatmap_targets(**kwargs, obs_boxes_list=[obs])
+
+    assert dense["pos_mask_top1"].sum() > sparse["pos_mask_top1"].sum()
+    # every added positive must sit outside L_rmc's domain, or the two
+    # objectives are back in conflict at the same cell
+    assert float((dense["pos_mask_top1"] * dense["aux_support"]).sum()) == 0.0
+    # added centres are rendered, not left as bare deltas
+    assert dense["Y1"].sum() > sparse["Y1"].sum()
+    assert torch.isclose(dense["Y1"].max(), torch.tensor(1.0), atol=1e-6)
+
+
 def test_l_hcm_ignores_auxiliary_support():
     """The focal term must not treat the minority modes as hard negatives."""
     pred_hm = torch.full((1, 1, 4, 4), 0.2)
@@ -362,6 +395,8 @@ if __name__ == "__main__":
     print("test_aux_modes_render_at_full_support_amplitude: PASS")
     test_primary_renders_at_full_amplitude_regardless_of_support()
     print("test_primary_renders_at_full_amplitude_regardless_of_support: PASS")
+    test_dense_positives_add_observer_centres()
+    print("test_dense_positives_add_observer_centres: PASS")
     test_l_hcm_ignores_auxiliary_support()
     print("test_l_hcm_ignores_auxiliary_support: PASS")
     test_l_hcm_focal_loss_backward()

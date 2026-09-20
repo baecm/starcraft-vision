@@ -67,7 +67,7 @@ class DirectorCenterNet(nn.Module):
         in_channels: int = 36,
         num_classes: int = 1,
         down_ratio: int = 4,
-        head_conv: int = 64,
+        head_conv: int = config.DIRECTOR_HEAD_CONV,
         k_max: int = config.DIRECTOR_K,
         conf_threshold: float = config.DIRECTOR_TAU,
         render_sigma: float = config.DIRECTOR_RENDER_SIGMA,
@@ -80,6 +80,7 @@ class DirectorCenterNet(nn.Module):
         soft_center_radius: int = config.DIRECTOR_SOFT_CENTER_RADIUS,
         peak_border_margin: int = config.DIRECTOR_PEAK_BORDER_MARGIN,
         trainable_layers: int = config.DIRECTOR_TRAINABLE_LAYERS,
+        dense_positives: bool = config.DIRECTOR_DENSE_POSITIVES,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -96,6 +97,8 @@ class DirectorCenterNet(nn.Module):
         self.soft_center_radius = int(soft_center_radius)
         self.peak_border_margin = int(peak_border_margin)
         self.trainable_layers = int(trainable_layers)
+        self.dense_positives = bool(dense_positives)
+        self.head_conv = int(head_conv)
         # Updated per epoch by train.py; only L_smooth's warmup reads it.
         self._current_epoch = self.smooth_warmup_full
 
@@ -433,6 +436,9 @@ class DirectorCenterNet(nn.Module):
             # is missing yields an empty dict here and is skipped by the
             # renderer (no Top-1 target, no offset/size target for it).
             curr_modes = [t.get("modes", {}) for t in targets]
+            obs_boxes = (
+                [t.get("boxes") for t in targets] if self.dense_positives else None
+            )
             rendered = render_gaussian_heatmap_targets(
                 modes_list=curr_modes,
                 batch_size=b_size,
@@ -443,6 +449,7 @@ class DirectorCenterNet(nn.Module):
                 render_sigma=self.render_sigma,
                 u_observers=self.u_observers,
                 viewport_size_hw=self.viewport_size_hw,
+                obs_boxes_list=obs_boxes,
             )
 
             # 1. L_hcm (Human Consensus Match loss)

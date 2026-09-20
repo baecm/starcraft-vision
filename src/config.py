@@ -36,6 +36,15 @@ DIRECTOR_RENDER_SIGMA = 4.0
 # heatmap head reads. See DirectorCenterNet for why that costs this model more
 # than it costs Mask R-CNN.
 DIRECTOR_TRAINABLE_LAYERS = 5
+# Width of the hidden convs in each head. Mask R-CNN scores a region with a
+# ~14M-parameter MLP over ROIAlign-pooled features; this head is ~184k at
+# width 64. Exposed so the capacity hypothesis can be tested without a code
+# change - the receptive field is not the issue (two 3x3 convs already span
+# 5x5 cells = 20x20 tiles, wider than the 12x20-tile viewport).
+DIRECTOR_HEAD_CONV = 64
+# Place a focal positive at every observer's own viewport centre, not only at
+# the Top-1 mode. See _add_observer_positives in losses/director_losses.py.
+DIRECTOR_DENSE_POSITIVES = False
 DIRECTOR_K = 3
 # The smallest meaningful mode amplitude is 1 observer out of U, i.e. 1/5 = 0.2
 # (the Gaussian is rendered on its assigned grid cell, so that is exact rather

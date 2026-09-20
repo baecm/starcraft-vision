@@ -11,6 +11,57 @@ import torch.nn.functional as F
 import config
 
 
+def _add_observer_positives(
+    Y1: torch.Tensor,
+    pos_mask: torch.Tensor,
+    aux_support: torch.Tensor,
+    obs_boxes_list: List[Optional[torch.Tensor]],
+    grid_x: torch.Tensor,
+    grid_y: torch.Tensor,
+    stride: int,
+    feat_h: int,
+    feat_w: int,
+    two_sig_sq: float,
+) -> None:
+    """Mark each observer's own viewport centre as a primary positive, in place.
+
+    L_hcm otherwise has exactly one positive cell per frame - the Top-1 mode -
+    against roughly a thousand negatives, so the localisation signal is a
+    single "yes" per image. The vanilla CenterNet baseline in this repo instead
+    places a positive at every observer viewport centre, and it reaches a
+    higher IR than Director despite a four-conv backbone with no pretraining
+    and no FPN. That is the closest controlled comparison available: same task,
+    same data, same metric, much weaker encoder.
+
+    It is also the right target for IR, which measures overlap with the
+    *union* of observer viewports. Landing on any observer's viewport scores
+    well, so supervising only the consensus mode optimises something narrower
+    than what is measured.
+
+    Centres falling inside the auxiliary support are skipped, since L_rmc owns
+    those cells and regresses them to support/U; making them amplitude-1
+    positives would put the two objectives back in conflict.
+    """
+    for b, boxes in enumerate(obs_boxes_list):
+        if boxes is None or len(boxes) == 0:
+            continue
+        boxes = boxes.to(device=Y1.device, dtype=Y1.dtype)
+        cx = (boxes[:, 0] + boxes[:, 2]) * 0.5
+        cy = (boxes[:, 1] + boxes[:, 3]) * 0.5
+        fx = torch.clamp((cx / stride).long(), 0, feat_w - 1)
+        fy = torch.clamp((cy / stride).long(), 0, feat_h - 1)
+
+        free = aux_support[b, 0, fy, fx] == 0
+        fx, fy = fx[free], fy[free]
+        if fx.numel() == 0:
+            continue
+
+        pos_mask[b, 0, fy, fx] = 1.0
+        for cell_y, cell_x in zip(fy.tolist(), fx.tolist()):
+            dist_sq = (grid_x - cell_x * stride) ** 2 + (grid_y - cell_y * stride) ** 2
+            Y1[b, 0] = torch.maximum(Y1[b, 0], torch.exp(-dist_sq / two_sig_sq))
+
+
 def render_gaussian_heatmap_targets(
     modes_list: List[Dict[str, torch.Tensor]],
     batch_size: int,
@@ -21,6 +72,7 @@ def render_gaussian_heatmap_targets(
     render_sigma: float = config.DIRECTOR_RENDER_SIGMA,
     u_observers: int = config.NUM_OBSERVERS_U,
     viewport_size_hw: Tuple[int, int] = config.VIEWPORT_SIZE_HW,
+    obs_boxes_list: Optional[List[Optional[torch.Tensor]]] = None,
 ) -> Dict[str, torch.Tensor]:
     """Render support-weighted Gaussian target heatmaps (Equation 12 in paper).
 
@@ -155,10 +207,18 @@ def render_gaussian_heatmap_targets(
         all_target_boxes.append(torch.stack(b_boxes, dim=0) if b_boxes else torch.zeros((0, 4), device=device))
         all_target_inds.append(torch.tensor(b_inds, dtype=torch.long, device=device) if b_inds else torch.zeros((0,), dtype=torch.long, device=device))
 
-    Y_all = torch.maximum(Y1, Y_minus)
     # Cells whose auxiliary mass is worth supervising. Everything below the
     # floor is indistinguishable from background and belongs to L_hcm.
     aux_support = ((Y_minus > config.DIRECTOR_AUX_SUPPORT_FLOOR).float() * mask_omega)
+
+    if obs_boxes_list is not None:
+        _add_observer_positives(
+            Y1=Y1, pos_mask=pos_mask_top1, aux_support=aux_support,
+            obs_boxes_list=obs_boxes_list, grid_x=grid_x, grid_y=grid_y,
+            stride=stride, feat_h=feat_h, feat_w=feat_w, two_sig_sq=two_sig_sq,
+        )
+
+    Y_all = torch.maximum(Y1, Y_minus)
 
     return {
         "Y1": Y1,
