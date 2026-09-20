@@ -4,7 +4,7 @@ score_threshold: 0.1
 centernet_down_ratio: 4
 k_max: 3
 conf_threshold: 0.1
-render_sigma: 2.0
+render_sigma: 4.0            # tiles; = 1 heatmap cell at stride 4
 u_observers: 5
 
 # NOTE: no resize_mode / image_size here. Only build_maskrcnn_backbone reads
@@ -30,3 +30,4 @@ smooth_warmup_start: 5       # epochs [0, 5) train with L_smooth off
 smooth_warmup_full: 10       # linear ramp to full weight by epoch 10
 soft_center_radius: 2        # feature cells in the soft-argmax window
 peak_border_margin: 1        # drop the outermost ring from peak candidates
+trainable_layers: 5          # unfreeze layer1; the heatmap head reads only that level

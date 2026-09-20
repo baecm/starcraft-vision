@@ -100,7 +100,7 @@ def _write_run_provenance(save_dir: str, model, id_string: str) -> None:
     for knob in (
         "down_ratio", "k_max", "conf_threshold", "render_sigma", "u_observers",
         "smooth_huber_delta", "smooth_warmup_start", "smooth_warmup_full",
-        "soft_center_radius", "peak_border_margin",
+        "soft_center_radius", "peak_border_margin", "trainable_layers",
     ):
         if hasattr(base, knob):
             record[knob] = getattr(base, knob)
@@ -593,7 +593,7 @@ def run_training(cfg: DictConfig):
         "centernet_down_ratio", "max_objs",
         "k_max", "conf_threshold", "render_sigma", "u_observers",
         "smooth_huber_delta", "smooth_warmup_start", "smooth_warmup_full",
-        "soft_center_radius", "peak_border_margin",
+        "soft_center_radius", "peak_border_margin", "trainable_layers",
     ):
         if hasattr(cfg.architecture, _arch_key):
             setattr(cfg, _arch_key, getattr(cfg.architecture, _arch_key))

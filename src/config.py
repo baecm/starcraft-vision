@@ -25,7 +25,17 @@ MODE_EXTRACTION_REL_THRESHOLD = 0.35
 MODE_EXTRACTION_MAX_MODES = 5
 NUM_OBSERVERS_U = 5
 
-DIRECTOR_RENDER_SIGMA = 2.0
+# Gaussian width for the rendered targets, in tiles. The heatmap grid samples
+# every `down_ratio` tiles, so 2.0 tiles is half a cell: adjacent cells fall to
+# exp(-2) = 0.135 and are trained as near-hard negatives, leaving the target a
+# delta with no soft neighbourhood. 4.0 tiles is one cell, which is what the
+# vanilla CenterNet baseline in this repo derives from its box size, and that
+# baseline reaches a higher IR than Director despite a far weaker backbone.
+DIRECTOR_RENDER_SIGMA = 4.0
+# torchvision freezes layer1 at trainable_layers=3, and layer1 is the level the
+# heatmap head reads. See DirectorCenterNet for why that costs this model more
+# than it costs Mask R-CNN.
+DIRECTOR_TRAINABLE_LAYERS = 5
 DIRECTOR_K = 3
 # The smallest meaningful mode amplitude is 1 observer out of U, i.e. 1/5 = 0.2
 # (the Gaussian is rendered on its assigned grid cell, so that is exact rather

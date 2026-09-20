@@ -112,6 +112,8 @@ def build_model(args: Any) -> nn.Module:
             smooth_warmup_start=getattr(args, "smooth_warmup_start", config.DIRECTOR_SMOOTH_WARMUP_START),
             smooth_warmup_full=getattr(args, "smooth_warmup_full", config.DIRECTOR_SMOOTH_WARMUP_FULL),
             soft_center_radius=getattr(args, "soft_center_radius", config.DIRECTOR_SOFT_CENTER_RADIUS),
+            peak_border_margin=getattr(args, "peak_border_margin", config.DIRECTOR_PEAK_BORDER_MARGIN),
+            trainable_layers=getattr(args, "trainable_layers", config.DIRECTOR_TRAINABLE_LAYERS),
         )
 
     elif model_name in ["probabilistic_video_detr", "video_detr", "deformable_video_detr_cvae"]:

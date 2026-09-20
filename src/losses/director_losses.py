@@ -87,9 +87,21 @@ def render_gaussian_heatmap_targets(
         b_boxes = []
         b_inds = []
 
-        # Top-1 primary mode (k=1)
+        # Top-1 primary mode (k=1).
+        #
+        # The primary renders at full amplitude rather than at support/U. The
+        # support weighting exists to rank the modes, but the primary is
+        # already separated from the auxiliaries by which loss supervises it -
+        # L_hcm owns this cell, L_rmc owns Psi_t - so within the primary the
+        # weighting only weakens supervision. It weakens it most on exactly the
+        # frames that are hardest: when observers disagree, the Top-1 support
+        # is low, so w1 is small, so every cell around the peak carries a
+        # penalty-reduction factor (1 - w1*exp(...))^beta close to 1 and is
+        # trained as a hard negative. The primary then gets a near-delta target
+        # on precisely the multimodal frames this work is about. Ranking is
+        # unaffected: auxiliary amplitudes stay at support/U <= 1.
         c1_y, c1_x = c_tensor[0, 0], c_tensor[0, 1]
-        w1 = (s_tensor[0] / float(u_observers)).clamp(0.0, 1.0)
+        w1 = torch.ones((), device=device)
         ct_top1[b, 0] = c1_x
         ct_top1[b, 1] = c1_y
 

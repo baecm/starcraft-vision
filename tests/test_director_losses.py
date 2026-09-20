@@ -193,6 +193,30 @@ def test_aux_modes_render_at_full_support_amplitude():
     assert targets["Y_minus"].max() > config.DIRECTOR_TAU
 
 
+def test_primary_renders_at_full_amplitude_regardless_of_support():
+    """Low Top-1 support must not shrink the primary's soft neighbourhood.
+
+    Support weighting ranks the modes, but the primary is already separated
+    from the auxiliaries by which loss owns it. Scaling its amplitude by
+    support only weakened supervision, and did so hardest on the multimodal
+    frames this work is about.
+    """
+    for support_top1 in (1, 3, 5):
+        targets = render_gaussian_heatmap_targets(
+            modes_list=[{
+                "centers": np.array([[32.0, 40.0], [80.0, 88.0]]),
+                "support": np.array([support_top1, 1]),
+                "n_observers": 5,
+            }],
+            batch_size=1, feat_h=32, feat_w=32, stride=4,
+            device=torch.device("cpu"),
+        )
+        assert torch.isclose(targets["Y1"].max(), torch.tensor(1.0), atol=1e-6), support_top1
+        # the auxiliary keeps its support weighting, so the ranking survives
+        assert torch.isclose(targets["Y_minus"].max(), torch.tensor(0.2), atol=1e-6)
+        assert targets["Y_minus"].max() < targets["Y1"].max()
+
+
 def test_l_hcm_ignores_auxiliary_support():
     """The focal term must not treat the minority modes as hard negatives."""
     pred_hm = torch.full((1, 1, 4, 4), 0.2)
@@ -327,6 +351,8 @@ if __name__ == "__main__":
     print("test_l_rmc_normalises_by_auxiliary_support_not_omega: PASS")
     test_aux_modes_render_at_full_support_amplitude()
     print("test_aux_modes_render_at_full_support_amplitude: PASS")
+    test_primary_renders_at_full_amplitude_regardless_of_support()
+    print("test_primary_renders_at_full_amplitude_regardless_of_support: PASS")
     test_l_hcm_ignores_auxiliary_support()
     print("test_l_hcm_ignores_auxiliary_support: PASS")
     test_l_hcm_focal_loss_backward()

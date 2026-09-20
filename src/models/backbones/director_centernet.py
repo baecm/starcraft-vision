@@ -79,6 +79,7 @@ class DirectorCenterNet(nn.Module):
         smooth_warmup_full: int = config.DIRECTOR_SMOOTH_WARMUP_FULL,
         soft_center_radius: int = config.DIRECTOR_SOFT_CENTER_RADIUS,
         peak_border_margin: int = config.DIRECTOR_PEAK_BORDER_MARGIN,
+        trainable_layers: int = config.DIRECTOR_TRAINABLE_LAYERS,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -94,6 +95,7 @@ class DirectorCenterNet(nn.Module):
         self.smooth_warmup_full = int(smooth_warmup_full)
         self.soft_center_radius = int(soft_center_radius)
         self.peak_border_margin = int(peak_border_margin)
+        self.trainable_layers = int(trainable_layers)
         # Updated per epoch by train.py; only L_smooth's warmup reads it.
         self._current_epoch = self.smooth_warmup_full
 
@@ -111,12 +113,24 @@ class DirectorCenterNet(nn.Module):
             default_weights.update(loss_weights)
         self.loss_weights = default_weights
 
-        # Backbone: ResNet-50 with FPN
+        # Backbone: ResNet-50 with FPN.
+        #
+        # trainable_layers defaults to 3 in torchvision, which freezes layer1 -
+        # and layer1 is exactly the level this model reads, since the heads sit
+        # on fpn['0']. Mask R-CNN shares that default but routes around it: its
+        # ROI head pools several FPN levels and scores them with a trainable
+        # MLP, so a frozen layer1 costs it much less. Here the only feature map
+        # the heatmap ever sees would be ImageNet weights applied to StarCraft
+        # tile tensors, which are not natural images. We unfreeze it.
         try:
-            self.backbone = resnet_fpn_backbone("resnet50", weights="DEFAULT")
+            self.backbone = resnet_fpn_backbone(
+                "resnet50", weights="DEFAULT", trainable_layers=trainable_layers
+            )
         except Exception as e:
             Logger.warn(f"[DirectorCenterNet] Failed to load ImageNet weights ({e}), fallback to uninitialized backbone.")
-            self.backbone = resnet_fpn_backbone("resnet50", weights=None)
+            self.backbone = resnet_fpn_backbone(
+                "resnet50", weights=None, trainable_layers=trainable_layers
+            )
 
         self.backbone.body.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         _kaiming_init_conv(self.backbone.body.conv1)
