@@ -109,8 +109,12 @@ class DirectorCenterNet(nn.Module):
             "lambda_rmc": 0.5,
             "lambda_rep": 0.3,
             # 0.2 with a squared-L2 L_smooth collapsed every ablation that
-            # carried the term; see trajectory_smoothness_loss.
-            "lambda_sm": 0.02,
+            # carried the term; see trajectory_smoothness_loss. 0.02 was the
+            # first safe value after the reshaping and turned out to be inert -
+            # full and no_smooth agreed to four decimals on every metric. A
+            # sweep at 0.1 improved both VD (3.46 -> 3.30) and IR
+            # (0.592 -> 0.601), so that is the calibrated value.
+            "lambda_sm": 0.1,
         }
         if loss_weights is not None:
             default_weights.update(loss_weights)
@@ -457,11 +461,24 @@ class DirectorCenterNet(nn.Module):
             # the auxiliary modes, so weighting by it made this loss erase
             # exactly what L_rmc creates. The auxiliary support is then left
             # out of the negative domain entirely and handed to L_rmc.
+            #
+            # That hand-off is conditional on L_rmc being enabled, and the
+            # condition is not cosmetic. Applied unconditionally it meant
+            # lambda_rmc=0 removed the positive pull on the auxiliary modes
+            # while still protecting them from suppression, so the "no L_rmc"
+            # ablation was not an ablation of the auxiliary mechanism at all -
+            # hcm_only still emitted 2.75 regions per frame. With nothing
+            # supervising those cells, leaving them out of the negative domain
+            # only makes them unconstrained, which is not a defensible default
+            # either. So when L_rmc is off, L_hcm owns the whole map.
+            aux_ignore = (
+                rendered["aux_support"] if self.loss_weights["lambda_rmc"] > 0.0 else None
+            )
             loss_hcm = human_consensus_match_loss(
                 pred_hm=pred_hm,
                 target_hm_top1=rendered["Y_all"],
                 pos_mask=rendered["pos_mask_top1"],
-                ignore_mask=rendered["aux_support"],
+                ignore_mask=aux_ignore,
             )
 
             # 2. L_rmc (Ranked Mode Coverage loss)

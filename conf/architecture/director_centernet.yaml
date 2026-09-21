@@ -22,7 +22,7 @@ loss_weights:
   # L_smooth is Huber-on-displacement / map-diagonal, not squared L2 in tiles.
   # At 0.2 the old form dominated the globally clipped gradient and every
   # ablation carrying it collapsed to a fixed camera.
-  lambda_sm: 0.02
+  lambda_sm: 0.1
 
 # L_smooth shaping (src/losses/director_losses.py)
 smooth_huber_delta: 5.0      # tiles; below this the penalty stays quadratic
