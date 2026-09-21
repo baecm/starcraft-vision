@@ -715,6 +715,17 @@ downward pressure. We therefore exclude $\Psi_t$ from this loss entirely and
 delegate it to $\mathcal{L}_{\text{rmc}}$, so that the two objectives are
 complementary by construction rather than by assumption.
 
+The hand-off is conditional on $\mathcal{L}_{\text{rmc}}$ being active, and the
+condition matters for reading the ablation. Applied unconditionally, setting
+$\lambda_{\text{rmc}} = 0$ removes the positive pull on the auxiliary modes
+while still shielding them from suppression, so the ``without
+$\mathcal{L}_{\text{rmc}}$'' row is not an ablation of the auxiliary mechanism:
+the model places peaks at those locations anyway, because they are genuinely
+salient, and nothing pushes them down. Leaving cells both unsupervised and
+unsuppressed is not a defensible default either. When $\mathcal{L}_{\text{rmc}}$
+is disabled, $\mathcal{L}_{\text{hcm}}$ therefore owns the entire map, which is
+the comparison the ablation is meant to draw.
+
 \subsubsection{Ranked Mode Coverage Loss $\mathcal{L}_{\text{rmc}}$}
 \label{subsec:rmc_loss}
 
@@ -1006,7 +1017,7 @@ Gaussian smoothing
 $\sigma_m = 4$~tiles, relative floor $\theta = 0.35$, minimum separation
 $D = 12$~tiles. Loss weights: $\lambda_{\text{off}}=1$,
 $\lambda_{\text{sz}}=0.1$, $\lambda_{\text{rmc}}=0.5$,
-$\lambda_{\text{rep}}=0.3$, $\lambda_{\text{sm}}=0.02$. Smoothness shaping:
+$\lambda_{\text{rep}}=0.3$, $\lambda_{\text{sm}}=0.1$. Smoothness shaping:
 Huber knee $\Delta_s = 5$~tiles, warmup $E_0 = 5$, $E_1 = 10$. Soft-centre
 window radius $r=2$~cells. Region set: $K=3$, confidence threshold
 $\tau=0.1$. Note that $\tau$ is set below $1/U$ for the reasons given in
@@ -1433,7 +1444,7 @@ is inflated by duplicates.
     $\lambda_{\text{sz}}$    & 0.1 & Size loss weight \\
     $\lambda_{\text{rmc}}$   & 0.5 & Ranked mode coverage weight \\
     $\lambda_{\text{rep}}$   & 0.3 & Repulsion loss weight \\
-    $\lambda_{\text{sm}}$    & 0.02 & Smoothness loss weight \\
+    $\lambda_{\text{sm}}$    & 0.1  & Smoothness loss weight \\
     $\Delta_s$       & 5 tiles    & Huber knee for $\mathcal{L}_{\text{smooth}}$ \\
     $E_0, E_1$       & 5, 10      & Smoothness warmup start / full \\
     $r$              & 2 cells    & Soft-centre window radius \\
