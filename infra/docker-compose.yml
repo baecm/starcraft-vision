@@ -6,6 +6,13 @@ x-common-config: &common-config
   image: starcraft-vision:dev
   environment:
     - HOME=/tmp
+    # The container runs as ${UID}:${GID}, which has no entry in the image's
+    # /etc/passwd, so getpass.getuser() raises KeyError. torch.compile hits it
+    # via torch._inductor's default cache dir, which torchvision's roi_align
+    # reaches on the Mask R-CNN path. Setting either variable avoids it:
+    # getuser() checks USER first, and cache_dir() honours an explicit path.
+    - USER=${USER:-worker}
+    - TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor
     - JUPYTER_RUNTIME_DIR=/tmp/jupyter_runtime
     - JUPYTER_DATA_DIR=/tmp/jupyter_data
     - PYTHONPATH=/workspace/src

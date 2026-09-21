@@ -115,10 +115,51 @@ def _apply_recorded_architecture(model_args: SimpleNamespace, model_folder: str)
         Logger.info(f"[Inference] Checkpoint was trained at commit {commit[:9]}")
 
 
+def _architecture_from_state_dict(state) -> "str | None":
+    """Identify the architecture from the saved parameter names.
+
+    The caller's guess comes from substring-matching the run's id_string, so a
+    name containing neither "director" nor "centernet" silently becomes
+    "maskrcnn" - and load_state_dict(strict=False) then accepts the mismatch,
+    leaving a freshly initialised Mask R-CNN that crashes later in roi_heads.
+    The weights themselves are unambiguous, so ask them instead.
+    """
+    keys = list(state.keys())
+
+    def has(prefix: str) -> bool:
+        return any(k.startswith(prefix) for k in keys)
+
+    if has("roi_heads.") or has("rpn."):
+        return "maskrcnn"
+    if has("hm_head."):
+        # Director sits on a ResNet-FPN; the plain CenterNet backbone is a bare
+        # nn.Sequential and so has no fpn submodule.
+        return "director_centernet" if has("backbone.fpn.") else "centernet"
+    return None
+
+
 def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int,
                 architecture: str, num_classes: int = 2, use_kbrs: bool = False,
                 kbrs_params: dict = None, rtdetr_version: str = "v1", rtdetr_size: str = "l",
                 k_max: int = 3, conf_threshold: float = 0.2):
+
+    # Settle the architecture before building anything: building the wrong one
+    # and loading non-strict fails much later and much less obviously.
+    state = torch.load(model_path, map_location=device)
+    if 'model_state_dict' in state:
+        state = state['model_state_dict']
+    elif 'model' in state:
+        state = state['model']
+
+    sniffed = _architecture_from_state_dict(state)
+    if sniffed and sniffed != architecture.lower():
+        Logger.warn(
+            f"[Inference] Checkpoint parameters say '{sniffed}' but the caller asked for "
+            f"'{architecture}'; using '{sniffed}'."
+        )
+        architecture = sniffed
+    elif sniffed:
+        Logger.info(f"[Inference] Architecture confirmed from checkpoint: {sniffed}")
 
     # 1. factory.py가 요구하는 인자들을 담을 dummy args(SimpleNamespace) 생성
     model_args = SimpleNamespace(
@@ -140,20 +181,23 @@ def _load_model(model_path: str, device: torch.device, in_channels: int, window_
     # 2. factory를 통해 모델 구조 생성 (Train과 완벽히 동일한 경로)
     model = build_model(model_args)
     
-    # 3. 학습된 가중치 로드
-    state = torch.load(model_path, map_location=device)
-    
-    if 'model_state_dict' in state:
-        state = state['model_state_dict']
-    elif 'model' in state:
-        state = state['model']
-        
+    # 3. 학습된 가중치 로드 (state는 위에서 이미 읽었다)
     missing, unexpected = model.load_state_dict(state, strict=False)
-    
+
+    # strict=False is kept so a plugin wrapper can be attached or dropped, but
+    # a mismatch of this size means the wrong architecture was built and the
+    # run would otherwise proceed on mostly random weights.
     if len(missing) > 0:
         Logger.warn(f"[Inference] Missing keys: {len(missing)} items")
     if len(unexpected) > 0:
         Logger.warn(f"[Inference] Unexpected keys: {len(unexpected)} items")
+    if len(missing) > 0 and len(unexpected) > 0:
+        raise RuntimeError(
+            f"[Inference] Checkpoint does not match the model that was built: "
+            f"{len(missing)} missing and {len(unexpected)} unexpected keys. "
+            f"Built '{architecture}' from {model_path}. Refusing to run inference on "
+            f"partially initialised weights."
+        )
         
     model.to(device)
     model.eval()

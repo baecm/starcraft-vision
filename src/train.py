@@ -191,6 +191,10 @@ def _write_run_provenance(save_dir: str, model, id_string: str) -> None:
     weights = getattr(base, "loss_weights", None)
     record = {
         "id_string": id_string,
+        # Recorded because inference otherwise guesses the architecture by
+        # substring-matching id_string, which silently yields "maskrcnn" for
+        # any name that does not contain the model's own name.
+        "model_class": type(base).__name__,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "git": _git_state(),
         "loss_weights": {k: float(v) for k, v in weights.items()} if weights else None,
