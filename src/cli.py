@@ -133,6 +133,32 @@ def build_inference_parser() -> argparse.ArgumentParser:
         default="l",
         help="RT-DETR model size (s, m, l, x).",
     )
+    group_model.add_argument(
+        "--architecture",
+        type=str,
+        default=None,
+        help=(
+            "Architecture to build (e.g. director_centernet). Defaults to guessing from "
+            "--model-name, which is only reliable when the run name contains the model's "
+            "name; the checkpoint's own parameters override either way."
+        ),
+    )
+    group_model.add_argument(
+        "--k-max",
+        type=int,
+        default=None,
+        help="Director-CenterNet: size of the predicted region set. Defaults to config.DIRECTOR_K.",
+    )
+    group_model.add_argument(
+        "--conf-threshold",
+        type=float,
+        default=None,
+        help=(
+            "Director-CenterNet: peak confidence threshold tau. Defaults to "
+            "--score-threshold, since a score filter above tau silently drops every "
+            "region the model was willing to emit."
+        ),
+    )
 
     group_hyper = parser.add_argument_group("Inference Hyperparameters")
     group_hyper.add_argument(

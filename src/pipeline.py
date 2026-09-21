@@ -30,12 +30,20 @@ def _build_inference_argv_from_cfg(cfg: DictConfig) -> list[str]:
         "--model-number", str(cfg.max_epoch),
     ])
 
-    # RT-DETR 전용 설정
+    # Architecture and the knobs that change what inference builds or emits.
+    # These used to be omitted, so inference fell back to guessing the
+    # architecture from id_string and to config.py defaults for the rest.
     arch_cfg = cfg.get("architecture", {})
     argv.extend([
         "--rtdetr-version", str(arch_cfg.get("rtdetr_version", "v1")),
         "--rtdetr-size", str(arch_cfg.get("rtdetr_size", "l")),
     ])
+    if arch_cfg.get("model_name"):
+        argv.extend(["--architecture", str(arch_cfg.get("model_name"))])
+    if arch_cfg.get("k_max") is not None:
+        argv.extend(["--k-max", str(arch_cfg.get("k_max"))])
+    if arch_cfg.get("conf_threshold") is not None:
+        argv.extend(["--conf-threshold", str(arch_cfg.get("conf_threshold"))])
 
     # 3. KBRS & Preprocessing Settings (전처리 및 공통 설정)
     argv.extend([

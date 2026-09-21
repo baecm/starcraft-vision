@@ -348,18 +348,28 @@ def run_inference(args):
             Logger.warning(f"[Inference] KBRS YAML 로드 실패: {e}")
             kbrs_params = {}
 
-    # 2. 아키텍처, 버전, 사이즈 결정 (pipeline.py -> cli.py 를 통해 넘어온 인자 사용)
-    model_name_lower = args.model_name.lower()
-    if "director" in model_name_lower:
-        arch_name = "director_centernet"
-    elif "centernet" in model_name_lower:
-        arch_name = "centernet"
-    elif "deformable" in model_name_lower or ("detr" in model_name_lower and "rtdetr" not in model_name_lower):
-        arch_name = "deformable_detr"
-    elif "rtdetr" in model_name_lower:
-        arch_name = "rtdetr"
+    # 2. 아키텍처 결정. --architecture 가 있으면 그것을 쓰고, 없을 때만 이름으로
+    # 추측한다. 어느 쪽이든 _load_model 이 체크포인트로 최종 확인한다.
+    arch_name = getattr(args, "architecture", None)
+    if arch_name:
+        Logger.info(f"[Inference] Architecture from --architecture: {arch_name}")
     else:
-        arch_name = "maskrcnn"
+        model_name_lower = args.model_name.lower()
+        if "director" in model_name_lower:
+            arch_name = "director_centernet"
+        elif "centernet" in model_name_lower:
+            arch_name = "centernet"
+        elif "deformable" in model_name_lower or ("detr" in model_name_lower and "rtdetr" not in model_name_lower):
+            arch_name = "deformable_detr"
+        elif "rtdetr" in model_name_lower:
+            arch_name = "rtdetr"
+        else:
+            arch_name = "maskrcnn"
+        Logger.warn(
+            f"[Inference] No --architecture given; guessed '{arch_name}' from the run name "
+            f"'{args.model_name}'. This is only reliable when the name contains the model's "
+            f"own name."
+        )
 
     rtdetr_version = getattr(args, "rtdetr_version", "v1")
     rtdetr_size = getattr(args, "rtdetr_size", "l")
@@ -368,6 +378,19 @@ def run_inference(args):
     th = getattr(args, "score_threshold", None)
     if th is None:
         th = config.DIRECTOR_TAU
+
+    # tau defaults to the score filter, because a filter set above tau removes
+    # every region the model was willing to emit - which is how the auxiliary
+    # regions were silently unreachable at tau 0.2 against a filter of 0.3.
+    tau = getattr(args, "conf_threshold", None)
+    if tau is None:
+        tau = float(th)
+    elif float(tau) < float(th):
+        Logger.warn(
+            f"[Inference] conf_threshold={tau} is below score_threshold={th}: peaks in "
+            f"[{tau}, {th}) are emitted by the model and then discarded by the filter. "
+            f"Minority regions are the ones in that band."
+        )
 
     model = _load_model(
         model_path=model_path,
@@ -380,8 +403,8 @@ def run_inference(args):
         kbrs_params=kbrs_params,
         rtdetr_version=rtdetr_version,
         rtdetr_size=rtdetr_size,
-        k_max=getattr(args, "k_max", config.DIRECTOR_K),
-        conf_threshold=float(th),
+        k_max=getattr(args, "k_max", None) or config.DIRECTOR_K,
+        conf_threshold=float(tau),
     )
 
     input_root = os.path.join(args.data_root, "input", "dst")
