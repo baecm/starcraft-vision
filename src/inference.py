@@ -293,7 +293,18 @@ def run_inference(args):
         Logger.info(f"[Seed] No --seed provided for inference; generated seed={generated}")
     else:
         Logger.info(f"[Seed] Using provided inference seed={args.seed}")
-    set_global_seed(int(args.seed))
+    # deterministic=False on purpose. torchvision's CUDA roi_align kernel is
+    # non-deterministic, so with torch.use_deterministic_algorithms enabled it
+    # falls back to a pure-Python reference implementation that materialises a
+    # [K, C, PH, PW, IY, IX] tensor - 2.3 GiB per call at batch 16, which OOMs
+    # a 32 GiB card, and is orders of magnitude slower besides. That path is
+    # written to be torch.compile'd, which needs a C compiler the image lacks.
+    #
+    # Nothing is lost here: inference runs fixed weights with no dropout and no
+    # sampling, so the only non-determinism is float accumulation order inside
+    # roi_align, which does not move any metric we report. Weight loading, data
+    # order and any sampling stay seeded.
+    set_global_seed(int(args.seed), deterministic=False)
 
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")

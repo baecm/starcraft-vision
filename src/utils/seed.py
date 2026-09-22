@@ -32,6 +32,10 @@ def set_global_seed(seed: Optional[int], deterministic: bool = True) -> Optional
         torch.cuda.manual_seed_all(seed)
 
     if deterministic:
+        # Note for callers: enabling this makes torchvision's roi_align take a
+        # pure-Python fallback instead of its non-deterministic CUDA kernel,
+        # which is both far slower and large enough to OOM. Inference passes
+        # deterministic=False for that reason; see src/inference.py.
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
         try:
