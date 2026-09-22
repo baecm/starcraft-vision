@@ -25,6 +25,11 @@ from omegaconf import OmegaConf  # KBRS YAML 로드를 위해 추가
 import config
 from utils.logger import Logger
 from utils.synology_chat import send_message
+from utils.torch_compat import disable_inductor
+
+# Before any model runs: torchvision's roi_align compile hook otherwise takes
+# Mask R-CNN inference down on images without a C compiler.
+disable_inductor()
 
 
 from utils.seed import set_global_seed

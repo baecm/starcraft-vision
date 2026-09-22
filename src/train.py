@@ -37,6 +37,9 @@ from models.factory import build_model
 from utils.logger import Logger
 from utils.synology_chat import send_message
 from utils.seed import set_global_seed
+from utils.torch_compat import disable_inductor
+
+disable_inductor()
 
 def _is_kbrs_enabled(cfg) -> bool:
     kbrs = getattr(cfg, "kbrs", None)

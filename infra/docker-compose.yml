@@ -13,6 +13,12 @@ x-common-config: &common-config
     # getuser() checks USER first, and cache_dir() honours an explicit path.
     - USER=${USER:-worker}
     - TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor
+    # Recent torchvision wraps roi_align in a torch.compile hook, and inductor
+    # reaches Triton, which needs a C compiler the runtime image does not have.
+    # Nothing here needs compiled kernels. src/utils/torch_compat.py sets these
+    # too, for the case where a stale image ignores one of the names.
+    - TORCH_COMPILE_DISABLE=1
+    - TORCHDYNAMO_DISABLE=1
     - JUPYTER_RUNTIME_DIR=/tmp/jupyter_runtime
     - JUPYTER_DATA_DIR=/tmp/jupyter_data
     - PYTHONPATH=/workspace/src
