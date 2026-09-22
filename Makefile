@@ -32,7 +32,8 @@ PYDEBUG_SERVICE  ?= pydebug
 
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
-		zeppelin benchmark mode-disagreement test probe probe-resolution
+		zeppelin benchmark mode-disagreement test probe probe-resolution \
+		budget-allocation
 
 # 디렉토리 생성
 ifneq ($(OS),Windows_NT)
@@ -164,6 +165,12 @@ mode-disagreement:
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/mode_disagreement.py $(ARGS)" \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/mode_disagreement.cid
+
+# Reads the frames_*.csv that mode-disagreement wrote. Example:
+# make budget-allocation ARGS="--dir /workspace/results/mode_disagreement/th_sweep \
+#   --methods director prior_th07 --k-cap director=3"
+budget-allocation:
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/budget_allocation.py $(ARGS)"
 
 notebook:
 	CONTAINER_NAME=notebook_$$(date +%Y%m%d_%H%M%S); \
