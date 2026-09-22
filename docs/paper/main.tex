@@ -97,13 +97,19 @@ picture-in-picture inserts, as a split-screen layout, or as a ranked candidate
 set for a human director. We design four training objectives for this task: a
 \emph{Human Consensus Match} loss, a \emph{Ranked Mode Coverage} loss, a
 \emph{Spatial Repulsion} loss, and a \emph{Trajectory Smoothness} loss.
-Consequently, we show that our automatic observer outperforms current
-rule-based methods, human observers, and single-region learning-based
-observers. We further show that a detector-based observer already emits several
-candidate regions per frame, so the contribution of the proposed formulation is
-not multiplicity as such but that the regions are ranked by observer support,
+We further show that a detector-based observer already emits several candidate
+regions per frame, so the contribution of the proposed formulation is not
+multiplicity as such but that the regions are ranked by observer support,
 non-redundant, and temporally stable — which is what determines how many of the
-disagreeing observers the output actually serves.
+disagreeing observers the output actually serves. Controlling a proposal
+detector's region count by its confidence threshold, we find that the number of
+regions it emits varies inversely with the number of modes the frame contains,
+at every threshold and with no sign change available, because a per-proposal
+confidence is spread thinner precisely when the evidence is divided. The
+heatmap formulation reverses this dependence. At a matched region budget the
+proposed method leads on observer coverage and on count calibration; given an
+unconstrained budget the strongest single-region baseline remains ahead on
+primary-region accuracy, and we report both.
 \end{abstract}
 
 %% Graphical abstract
@@ -258,12 +264,18 @@ Our contributions are as follows.
         together with a Ranked Mode Coverage loss that supervises the auxiliary
         regions using minority observer attention rather than a hand-designed
         prior (Section~\ref{subsec:rmc_loss}).
-  \item We demonstrate that the proposed method outperforms existing rule-based
-        methods, human observers, and single-region learning-based observers.
-        We also show that those baselines already emit several candidate
-        regions per frame, and evaluate them on their own top-$K$ accordingly,
-        so that the comparison isolates whether the regions are ranked,
-        non-redundant and stable rather than merely numerous
+  \item We show that the baselines already emit several candidate regions per
+        frame, and evaluate them on their own top-$K$ accordingly, so that the
+        comparison isolates whether the regions are ranked, non-redundant and
+        stable rather than merely numerous. Controlling their region count by
+        the only mechanism they offer — the confidence threshold — we find that
+        the number of regions a proposal detector emits varies
+        \emph{inversely} with the number of modes the frame actually contains,
+        at every threshold and with no sign change available, whereas the
+        heatmap formulation reverses that dependence. At a matched region
+        budget the proposed method is ahead on coverage and on count
+        calibration; given an unconstrained budget the Mask R-CNN baseline
+        remains ahead on single-region accuracy, and we report both
         (Section~\ref{sec:experiments}).
 \end{enumerate}
 
@@ -497,13 +509,53 @@ OC@$\delta$ on their top-$K$ boxes as well, rather than treating them as
 producing a single region by construction. This is a deliberately demanding
 comparison: it credits the baselines with multi-region behaviour they were
 never trained for, and it raises the bar substantially — Mask R-CNN + prior
-reaches OC3@0.5 $=0.582$ against its own OC1@0.5 of $0.363$. The distinction
+reaches OC3@0.5 $=0.592$ against its own OC1@0.5 of $0.371$. The distinction
 the proposed method must establish is consequently not that it produces several
 regions, since a detector already does, but that the regions it produces are
 ranked by observer support, non-redundant, and temporally stable.
 
+\paragraph{Count calibration.}
+Let $\hat{n}_t = |\hat{\mathcal{P}}_t|$ be the number of regions the model
+emits at frame $t$ and $n_t = |\mathcal{M}_t|$ the number of ranked modes the
+observers produced. Three quantities summarise how the former tracks the
+latter. The first two are its accuracy,
+\begin{equation}
+  \text{MAE}_n = \frac{1}{T}\sum_t \bigl|\hat{n}_t - n_t\bigr|,
+  \qquad
+  \text{Exact}_n = \frac{1}{T}\sum_t \mathbf{1}\bigl[\hat{n}_t = n_t\bigr],
+  \label{eq:count_err}
+\end{equation}
+and the third is its \emph{responsiveness}: the slope $\beta_n$ of the weighted
+least-squares fit of the conditional mean $\mathbb{E}[\hat{n}_t \mid n_t = n]$
+on $n$,
+\begin{equation}
+  \beta_n = \frac{\sum_{n} w_n \bigl(n - \bar{n}\bigr)
+                  \bigl(\mathbb{E}[\hat{n}_t \mid n_t = n] - \bar{\hat{n}}\bigr)}
+                 {\sum_{n} w_n \bigl(n - \bar{n}\bigr)^2},
+  \qquad w_n = \bigl|\{t : n_t = n\}\bigr|.
+  \label{eq:count_slope}
+\end{equation}
+The two are independent. $\text{MAE}_n$ is a level: any model can be brought
+close to the mean of $n_t$ by tuning how freely it emits regions, and a
+constant predictor $\hat{n}_t \equiv \mathbb{E}[n_t]$ minimises it among all
+constant predictors. $\beta_n$ is a direction: it is zero for every constant
+predictor regardless of level, positive only when the model emits more regions
+on frames whose target genuinely has more modes, and negative when it does the
+opposite. Section~\ref{subsec:budget} shows that these two come apart sharply
+in practice, and that only the second distinguishes the formulations.
+
+\paragraph{Frame coverage.}
+The fraction of evaluated frames for which the model emits at least one region
+above its confidence threshold. All metrics above are conditional on the model
+having produced an output, so a method that declines to answer on part of the
+test set is not comparable to one that answers everywhere unless coverage is
+reported alongside. Where a comparison spans methods with different coverage we
+report the coverage-penalised value, which scores an unanswered frame as $0$,
+or restrict all methods to the frames they all answer; both are stated
+explicitly where used.
+
 \paragraph{Viewport Displacement (VD).}
-Average L2 displacement of the main viewport centre across consecutive 
+Average L2 displacement of the main viewport centre across consecutive
 frames, measuring temporal stability:
 \begin{equation}
   \text{VD} = \frac{1}{T-1}\sum_{t=1}^{T-1}
@@ -1065,7 +1117,10 @@ Intersection@$\delta$) on the standard test set.
   \centering
   \caption{Main viewport performance on the standard test set (fixed race, 
   map, starting location). Results averaged over three folds $\times$ three 
-  seeds. Best result in \textbf{bold}, second best \underline{underlined}. 
+  seeds. Best result in \textbf{bold}, second best \underline{underlined}.
+  The two missing rows require the full three-fold, three-seed protocol and
+  the @any and @0.3 thresholds; fold-1, seed-456 values at @0.5 are in
+  Table~\ref{tab:multi_results} and are not substitutable here.
   \todo{Fill in experimental values.}}
   \label{tab:main_results}
   \begin{tabular}{lcccc}
@@ -1101,12 +1156,14 @@ Section~\ref{sec:problem} emit a ranked list rather than a single box.
   \centering
   \caption{Multi-region coverage, per-observer service, and temporal stability
   on the mode-disagreement evaluation set ($\approx 148{,}600$ frames, fold~1
-  test replays, single seed). $|\hat{\mathcal{P}}_t|$ is the mean number of
-  regions the model emits per frame; BoK and OC are evaluated on its top $K$ of
-  those. Lower VD and jerk are better. \todo{Confirm whether the CenterNet row
-  is the plain-backbone model or the $\mathcal{L}_{\text{hcm}}$-only ablation,
-  and re-measure the baselines under the three-fold, three-seed protocol of
-  Table~\ref{tab:main_results} so the two tables agree.}}
+  test replays, seed $456$ throughout). $|\hat{\mathcal{P}}_t|$ is the mean
+  number of regions the model emits per frame; BoK and OC are evaluated on its
+  top $K$ of those. Every method answers on $\ge 99.9\%$ of frames at its own
+  default confidence threshold, so the values are directly comparable without a
+  coverage correction. Lower VD and jerk are better. \todo{The CenterNet
+  (single) row is still the seed-123 measurement and is not comparable to the
+  rest; re-run it at seed 456. Then re-measure all rows under the three-fold,
+  three-seed protocol of Table~\ref{tab:main_results}.}}
   \label{tab:multi_results}
   \begin{tabular}{lrccccrr}
     \toprule
@@ -1115,40 +1172,151 @@ Section~\ref{sec:problem} emit a ranked list rather than a single box.
     Method & $|\hat{\mathcal{P}}_t|$ & BoK@0.5 & OC@0.5 & BoK@0.5 & OC@0.5
            & VD $\downarrow$ & Jerk $\downarrow$ \\
     \midrule
-    Mask R-CNN            & 6.44 & 0.720 & 0.353 & 0.918 & 0.575 & 3.92 & 15.4 \\
-    Mask R-CNN + prior    & 6.70 & 0.741 & 0.363 & 0.928 & \underline{0.582}
-                          & \underline{3.42} & \underline{14.1} \\
-    CenterNet (single)    & 4.74 & 0.680 & 0.328 & 0.915 & 0.557 & 7.20 & 27.8 \\
+    Mask R-CNN            & 6.99 & 0.709 & 0.343 & 0.914 & 0.570 & 4.43 & 16.4 \\
+    Mask R-CNN + prior    & 6.82 & \textbf{0.744} & \textbf{0.371}
+                          & \textbf{0.929} & \textbf{0.592}
+                          & \textbf{3.19} & 12.5 \\
+    CenterNet (single)$^{\dagger}$ & 4.74 & 0.680 & 0.328 & 0.915 & 0.557
+                          & 7.20 & 27.8 \\
     \midrule
-    \textbf{Director-CenterNet} & \todo{X} & \todo{X} & \todo{X} & \todo{X}
-                          & \todo{X} & \todo{X} & \todo{X} \\
+    \textbf{Director-CenterNet} & 2.72 & 0.668 & 0.313 & 0.896 & 0.516
+                          & 3.30 & \textbf{12.3} \\
+    \bottomrule
+  \end{tabular}
+  \\[2pt]
+  \footnotesize $^{\dagger}$Seed 123; see \todo{above}.
+\end{table}
+
+Three observations follow, and together they set out what the proposed method
+does and does not establish.
+
+First, the baselines are not single-region systems. They emit $4.7$ to $7.0$
+boxes per frame, with at least three in over $93\%$ of frames; previous work
+simply reports the first. Scored on their top three they reach BoK3@0.5 of
+$0.91$--$0.93$, so almost all of the human attention union is already reachable
+from an untrained ranked list and there is little headroom in that metric. The
+informative quantity is OC@$\delta$, which asks how many \emph{individual}
+observers are served: it rises only from $0.371$ to $0.592$ as $K$ goes from
+$1$ to $3$, and stops well short of $1$. The additional boxes a detector
+produces are proposals clustered around the same evidence, not a ranked account
+of where the disagreeing observers were looking.
+
+Second, the backbone change is not free. Replacing Mask R-CNN with a CenterNet
+heatmap detector costs a factor of two in temporal stability (VD $3.19
+\rightarrow 7.20$, jerk $12.5 \rightarrow 27.8$) before any multi-region
+objective is introduced. The Trajectory Smoothness loss is therefore not a
+refinement but a requirement of the architecture we adopt, and the appropriate
+reference point for it is the Mask R-CNN baseline rather than the untreated
+CenterNet. Measured that way it succeeds: the full model recovers jerk to
+$12.3$ and VD to $3.30$, restoring the stability the architecture gave up.
+
+Third — and this is the result that determines how the rest of the paper should
+be read — Director-CenterNet does \emph{not} lead this table. Mask R-CNN +
+prior is ahead on every accuracy column, by $0.08$ in IR and $0.08$ in OC3@0.5.
+What separates the two methods is the last column that is not shown here:
+Mask R-CNN reaches those numbers while emitting $6.8$ regions per frame against
+Director-CenterNet's $2.7$. A comparison at that ratio does not measure
+multi-region quality; it measures how many guesses each method is permitted.
+Section~\ref{subsec:budget} therefore constrains the baselines to a comparable
+region budget and asks what survives.
+
+\subsection{Region Count Under a Matched Budget}
+\label{subsec:budget}
+
+A detector emits as many regions as its confidence threshold admits, so the
+comparison in Table~\ref{tab:multi_results} confounds two things: how good each
+region is, and how many the method was allowed to produce. This section
+separates them by sweeping the baselines' score threshold over $\{0.5, 0.7,
+0.9\}$, which is the only mechanism a trained detector offers for controlling
+its region count, and reporting the same metrics at each operating point
+(Table~\ref{tab:threshold}).
+
+\begin{table}[t]
+  \centering
+  \caption{Baseline score-threshold sweep against Director-CenterNet
+  (fold~1, seed~$456$, $148{,}644$ evaluated frames). Cov.\ is frame coverage;
+  IR$^{\ast}$ and OC3$^{\ast}$ are coverage-penalised, scoring an unanswered
+  frame as $0$. $\beta_n$ is the count responsiveness of
+  Eq.~\eqref{eq:count_slope} and $\text{MAE}_n$, $\text{Exact}_n$ the count
+  accuracy of Eq.~\eqref{eq:count_err}. The shaded row is the operating point
+  whose region budget matches ours.}
+  \label{tab:threshold}
+  \begin{tabular}{llrrcccrrr}
+    \toprule
+    Method & $\tau$ & Cov.\ & $|\hat{\mathcal{P}}_t|$
+           & IR & IR$^{\ast}$ & OC3$^{\ast}$
+           & $\beta_n$ & $\text{MAE}_n$ & $\text{Exact}_n$ \\
+    \midrule
+    Mask R-CNN            & 0.5 & 100.0\% & 6.99 & 0.641 & 0.641 & 0.569
+                          & $-0.198$ & 4.76 & \phantom{0}4.0\% \\
+                          & 0.7 & \phantom{0}92.2\% & 2.64 & 0.623 & 0.574 & 0.439
+                          & $-0.148$ & 1.62 & 18.4\% \\
+                          & 0.9 & \phantom{0}55.7\% & 1.42 & 0.717 & 0.399 & 0.268
+                          & $-0.043$ & 1.05 & 39.1\% \\
+    \midrule
+    Mask R-CNN            & 0.5 & \phantom{0}99.9\% & 6.82 & 0.684
+                          & \textbf{0.683} & \textbf{0.592}
+                          & $-0.279$ & 4.65 & \phantom{0}4.5\% \\
+    \quad + prior         & 0.7 & \phantom{0}90.2\% & 2.76 & 0.664 & 0.599 & 0.469
+                          & $-0.143$ & 1.63 & 17.9\% \\
+                          & 0.9 & \phantom{0}54.8\% & 1.47 & 0.762 & 0.418 & 0.294
+                          & $-0.052$ & \textbf{0.96} & \textbf{40.7\%} \\
+    \midrule
+    \textbf{Ours}         & 0.1 & 100.0\% & 2.72 & 0.601 & 0.601 & 0.516
+                          & $\mathbf{+0.135}$ & 1.04 & 29.6\% \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-Two observations follow, and both shape what the proposed method has to
-demonstrate.
+\paragraph{Raising the threshold does not improve the prediction; it deletes
+frames.} The IR column appears to rise at $\tau=0.9$, to $0.762$ for
+Mask R-CNN + prior, above every other entry in the table. It is an artefact of
+conditioning. At that threshold the model answers on $54.8\%$ of frames, and
+the frames it declines are systematically the hard ones: $60\%$ of them have
+three or four ranked modes, against $42\%$ in the evaluation set as a whole.
+Restricted to the $64{,}561$ frames that every method in the table answers,
+$\tau=0.7$ and $\tau=0.9$ give IR of $0.7753$ and $0.7754$ and
+I@0.5 of $0.8900$ and $0.8900$ — identical to four decimal places. Thresholding
+cannot improve the primary region, because the primary region is the
+highest-scoring box and raising the bar never changes which box that is. It
+only removes lower-ranked boxes, and eventually the frame. The
+coverage-penalised columns report what remains once that is accounted for.
 
-First, the baselines are not single-region systems. They emit $4.7$ to $6.7$
-boxes per frame, with at least three in over $93\%$ of frames; previous work
-simply reports the first. Scored on their top three they reach BoK3@0.5 of
-$0.92$--$0.93$, so almost all of the human attention union is already reachable
-from an untrained ranked list and there is little headroom in that metric. The
-informative quantity is OC@$\delta$, which asks how many \emph{individual}
-observers are served: it rises only from $0.363$ to $0.582$ as $K$ goes from
-$1$ to $3$, and stops well short of $1$. The additional boxes a detector
-produces are proposals clustered around the same evidence, not a ranked account
-of where the disagreeing observers were looking. This is the gap the Ranked
-Mode Coverage and Spatial Repulsion objectives target, and $0.582$ — not the
-single-region $0.363$ — is the figure the proposed method must exceed.
+\paragraph{Count \emph{level} is a threshold; count \emph{direction} is not.}
+$\text{MAE}_n$ falls from $4.65$ to $0.96$ and $\text{Exact}_n$ rises from
+$4.5\%$ to $40.7\%$ as the threshold is raised, ending better than
+Director-CenterNet on both. This is expected and it is worth stating plainly:
+the number of emitted regions is a free parameter, and moving its mean onto the
+mean of $n_t$ is a calibration exercise that requires no knowledge of the scene.
+The responsiveness $\beta_n$ behaves differently. It is negative for every
+baseline at every threshold — $-0.279$, $-0.143$, $-0.052$ for the prior
+variant — and approaches zero from below without changing sign. A negative
+$\beta_n$ means the detector emits \emph{fewer} regions on frames whose target
+has more modes, which is the opposite of the required behaviour. The mechanism
+is visible in the architecture: a proposal score is a per-box confidence, and in
+a frame whose evidence is genuinely divided that confidence is spread across
+more boxes, so fewer of them clear a fixed bar. Thresholding can move the level
+of the count but not its dependence on the scene, because that dependence is a
+property of how the scores are formed. Director-CenterNet attains
+$\beta_n = +0.135$. Vanilla CenterNet, trained on the same heatmap
+representation without the ranked-mode objectives, attains $\beta_n = +0.010$:
+the dense heatmap makes the correct sign reachable, and the supervision is what
+realises it.
 
-Second, the backbone change is not free. Replacing Mask R-CNN with a CenterNet
-heatmap detector costs a factor of two in temporal stability (VD $3.42
-\rightarrow 7.20$, jerk $14.1 \rightarrow 27.8$) before any multi-region
-objective is introduced. The Trajectory Smoothness loss is therefore not a
-refinement but a requirement of the architecture we adopt, and the appropriate
-reference point for it is the Mask R-CNN baseline rather than the untreated
-CenterNet.
+\paragraph{At a matched budget the ranking reverses.} The row to compare
+against is $\tau = 0.7$, where Mask R-CNN + prior emits $2.76$ regions per
+frame against our $2.72$. There, Director-CenterNet is ahead on
+coverage-penalised IR ($0.601$ vs.\ $0.599$), on coverage-penalised OC3@0.5
+($0.516$ vs.\ $0.469$), and on all three count statistics
+($\beta_n$ $+0.135$ vs.\ $-0.143$; $\text{MAE}_n$ $1.04$ vs.\ $1.63$;
+$\text{Exact}_n$ $29.6\%$ vs.\ $17.9\%$). Mask R-CNN's advantage in
+Table~\ref{tab:multi_results} is therefore purchased with region count: it is
+ahead when permitted $2.5\times$ as many guesses, and behind when constrained to
+the same number. We do not read this as the proposed method dominating —
+$\tau = 0.5$ remains the better operating point in absolute terms if one is
+willing to display seven regions, and Section~\ref{subsec:limitations} states
+what that means for the claim. We read it as establishing that the region
+budget, not the region quality, is what the headline comparison was measuring.
 
 \subsection{Ablation Study}
 \label{subsec:ablation}
@@ -1181,9 +1349,14 @@ former and the last row of the latter are the same configuration.
 
 \begin{table}[t]
   \centering
-  \caption{Cumulative ablation (fold 1, 4/4 game progression, mean over seeds
-  $\{123,456,789\}$). \checkmark~= included.
-  \todo{Fill in experimental values.}}
+  \caption{Cumulative ablation (fold 1, seed 456, $148{,}644$ frames,
+  full-length evaluation). \checkmark~= included. OC is OC3@0.5. No row
+  differs from any other by more than $0.015$ in IR or $0.017$ in OC3, which
+  is below the seed-to-seed variation of the configuration
+  ($\pm 0.03$ in IR); the entries are reported for completeness and are not
+  separable from noise at one seed. \todo{Re-run at seeds 123 and 789 and
+  report the standard deviation; until then no row ordering here should be
+  claimed.}}
   \label{tab:ablation}
   \begin{tabular}{cccccccc}
     \toprule
@@ -1193,33 +1366,60 @@ former and the last row of the latter are the same configuration.
     $\mathcal{L}_{\text{smooth}}$ &
     IR $\uparrow$ & OC@0.5 $\uparrow$ & $|\hat{\mathcal{P}}_t|$ & VD $\downarrow$ \\
     \midrule
-    \checkmark &            &            &            & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
-    \checkmark & \checkmark &            &            & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
-    \checkmark & \checkmark & \checkmark &            & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
-    \checkmark & \checkmark & \checkmark & \checkmark & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    \checkmark &            &            &            & 0.607 & 0.527 & 2.71 & 3.72 \\
+    \checkmark & \checkmark &            &            & 0.607 & 0.528 & 2.71 & 3.58 \\
+    \checkmark & \checkmark & \checkmark &            & 0.592 & 0.523 & 2.72 & 3.45 \\
+    \checkmark & \checkmark & \checkmark & \checkmark & 0.601 & 0.516 & 2.72 & 3.30 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
 \begin{table}[t]
   \centering
-  \caption{Leave-one-out ablation (fold 1, 4/4 game progression, mean over
-  seeds $\{123,456,789\}$). The $\mathcal{L}_{\text{hcm}} +
-  \mathcal{L}_{\text{rep}}$ cell of the lattice is omitted because
-  $\mathcal{L}_{\text{rep}}$ has no effect without
-  $\mathcal{L}_{\text{rmc}}$. \todo{Fill in experimental values.}}
+  \caption{Leave-one-out ablation (fold 1, seed 456). The
+  $\mathcal{L}_{\text{hcm}} + \mathcal{L}_{\text{rep}}$ cell of the lattice is
+  omitted because $\mathcal{L}_{\text{rep}}$ has no effect without
+  $\mathcal{L}_{\text{rmc}}$. The same caveat as
+  Table~\ref{tab:ablation} applies: only the VD column separates the rows by
+  more than seed noise.}
   \label{tab:ablation_loo}
   \begin{tabular}{lcccc}
     \toprule
     Configuration & IR $\uparrow$ & OC@0.5 $\uparrow$ & $|\hat{\mathcal{P}}_t|$ & VD $\downarrow$ \\
     \midrule
-    Full                                    & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
-    w/o $\mathcal{L}_{\text{rmc}}$          & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
-    w/o $\mathcal{L}_{\text{rep}}$          & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
-    w/o $\mathcal{L}_{\text{smooth}}$       & \todo{X} & \todo{X} & \todo{X} & \todo{X} \\
+    Full                                    & 0.601 & 0.516 & 2.72 & \textbf{3.30} \\
+    w/o $\mathcal{L}_{\text{rmc}}$          & 0.598 & 0.525 & 2.74 & 3.39 \\
+    w/o $\mathcal{L}_{\text{rep}}$          & 0.607 & 0.528 & 2.71 & 3.56 \\
+    w/o $\mathcal{L}_{\text{smooth}}$       & 0.592 & 0.523 & 2.72 & 3.45 \\
     \bottomrule
   \end{tabular}
 \end{table}
+
+\paragraph{What the lattice does and does not show.} Read across either table,
+the three optional objectives are not separable on the accuracy metrics at one
+seed. The full span of IR across all seven measured configurations is $0.592$
+to $0.618$, and the seed-to-seed standard deviation of a single configuration
+is of the same order. We therefore make no claim about the relative
+contribution of $\mathcal{L}_{\text{rmc}}$ and $\mathcal{L}_{\text{rep}}$ from
+these data. The one effect that does exceed the noise is
+$\mathcal{L}_{\text{smooth}}$ on temporal stability: VD falls from $3.45$ to
+$3.30$ and jerk from $13.4$ to $12.3$ when it is added, and removing it is the
+only single change that moves VD consistently. This is the objective introduced
+to repair a deficit the architecture created (Table~\ref{tab:multi_results}),
+and it is also the only one whose target metric is measured directly rather
+than through the ranked-mode decoding.
+
+An earlier formulation of $\mathcal{L}_{\text{smooth}}$, penalising squared
+displacement without normalisation, is worth recording because it failed in a
+way that is easy to reproduce. At $\lambda_{\text{sm}} = 0.2$ every
+configuration carrying the term collapsed to IR $\approx 0.035$: with
+displacements measured in tiles on a $128 \times 128$ map, the squared penalty
+reached four orders of magnitude above the other objectives, and under a single
+global gradient-norm clip it consumed the entire gradient budget. The cheapest
+way to satisfy it is to stop moving, which the model duly learned. The Huber
+form of Eq.~\eqref{eq:smooth_loss}, normalised by the map diagonal, is what makes
+the term usable, and the warmup exists because the objective is a statement
+about a camera that is already tracking something.
 
 \paragraph{Reporting.} $|\hat{\mathcal{P}}_t|$ denotes the mean number of
 regions emitted per frame, which we report alongside the accuracy metrics
@@ -1268,19 +1468,47 @@ or keep them from duplicating one another. Those three properties are what turn
 a proposal list into a broadcast layout, and they are what the ranked-mode
 supervision, the repulsion penalty and the confidence threshold supply. The
 measurable consequence is OC@$\delta$: the baselines' additional proposals
-raise per-observer service only from $0.363$ to $0.582$, because they cluster
+raise per-observer service only from $0.371$ to $0.592$, because they cluster
 around the same evidence rather than covering the observers who disagreed.
 
 \subsection{CenterNet vs.\ Mask R-CNN for MRVP}
 
-CenterNet offers three structural advantages over Mask R-CNN in the MRVP 
-setting. First, its dense heatmap retains the multimodal structure of the
-target, whereas an instance mask forces a discrete assignment that discards
-it. Second, local-maximum extraction is more stable and efficient than
-repeated non-maximum suppression over proposal boxes, and it yields a variable
-number of regions without changing the model. Third, the support-weighted
-Gaussian rendering provides soft supervision that encodes the \emph{ranking}
-of human attention, not merely its location.
+The argument for a heatmap detector in this setting is usually made
+structurally: a dense heatmap retains the multimodal structure of the target
+where an instance mask forces a discrete assignment that discards it,
+local-maximum extraction yields a variable number of regions without changing
+the model, and support-weighted Gaussian rendering encodes the ranking of human
+attention rather than merely its location. Our results let one of those claims
+be tested rather than asserted, and the test is sharper than the structural
+statement.
+
+The testable claim is that the two architectures differ in how the emitted
+region count depends on the scene. Section~\ref{subsec:budget} measures this as
+$\beta_n$ and finds a sign difference that no confidence threshold removes:
+every Mask R-CNN operating point is negative ($-0.279$ to $-0.043$),
+Director-CenterNet is positive ($+0.135$). The reason is specific to how the
+two score their outputs. A proposal score is a per-box confidence competing
+against other boxes for the same evidence; when the evidence is genuinely
+divided across several regions, each box's share of it falls, so raising a fixed
+threshold prunes exactly the frames that needed several regions. A heatmap peak
+is scored against its own neighbourhood, so a frame with three well-supported
+modes produces three peaks that each clear the threshold on their own merits.
+This is why thresholding moves the level of $|\hat{\mathcal{P}}_t|$ but never
+its sign: the level is a decision rule, the sign is a property of the
+representation.
+
+Two qualifications keep this from being a general claim of superiority. First,
+the sign is a property of the heatmap but its \emph{magnitude} is a property of
+the supervision: vanilla CenterNet reaches only $\beta_n = +0.010$, so the
+architecture makes the correct behaviour reachable and the ranked-mode
+objectives are what realise it. Second, the architecture change is costly
+elsewhere. Untreated CenterNet is twice as unstable as Mask R-CNN
+(Table~\ref{tab:multi_results}), which is why $\mathcal{L}_{\text{smooth}}$ is
+a requirement rather than a refinement, and at its best operating point
+Mask R-CNN + prior remains ahead on IR. The honest summary is that the heatmap
+formulation buys a qualitatively different count behaviour and pays for it in
+single-region accuracy and in stability that must be restored by an additional
+objective.
 
 \subsection{Heatmap Resolution}
 
@@ -1290,12 +1518,27 @@ considerably coarser than the regime CenterNet was designed for, where objects
 span tens of cells. Positional precision is not the binding constraint, since
 the offset head decodes sub-cell position continuously; what a coarse stride
 limits is the density of candidate centres and the separability of nearby
-modes, both of which bear on the multi-region metrics rather than on IR. We
-leave a systematic study of heatmap resolution to future work, and note that
-several constants in the method — the non-maximum suppression kernel in
-particular, whose radius must remain commensurate with the minimum mode
-separation $D$ — are specified in tile units and would have to be rescaled
-alongside the stride.
+modes, both of which bear on the multi-region metrics rather than on IR.
+
+Resolution is consequently the first place to look for the IR deficit in
+Table~\ref{tab:multi_results}, and the comparison is not a fair one until it
+has been ruled out: Mask R-CNN pools its features at ROI resolution and is not
+subject to the same constraint. A study of this is in progress but not
+reported here. We note two requirements that a correct version of it must
+satisfy, because both are easy to violate silently. Several constants in the
+method are distances in tiles that happen to be expressed in heatmap cells —
+the non-maximum suppression radius, which must remain commensurate with the
+minimum mode separation $D$; the soft-argmax window; and the excluded border
+ring — and each shrinks with the stride unless it is re-derived, the first of
+these turning a single mode into several duplicate peaks inside its own
+viewport. Separately, $\mathcal{L}_{\text{hcm}}$ sums its negative term over
+cells while the normaliser $N$ of Eq.~\ref{eq:hcm_loss} is $1$ per frame by
+construction — there is exactly one positive location,
+$\pi(\mathbf{m}^{(1)}_t)$ — so its magnitude grows
+with the square of the resolution; under a single global gradient-norm clip
+that starves the remaining objectives, which is the same failure mode the
+unnormalised $\mathcal{L}_{\text{smooth}}$ produced. Weighting each cell by the
+map area it represents holds the term invariant.
 
 \subsection{Toward Domain-Agnostic Multi-Region Observers}
 
@@ -1311,6 +1554,7 @@ exists, the modes collapse and the formulation degenerates to the single-region
 case.
 
 \subsection{Limitations}
+\label{subsec:limitations}
 
 \paragraph{Observer pool size.} With $U=5$ the support of a mode is an integer
 in $\{1,\ldots,5\}$, so the ranking the method is built on has five levels and
@@ -1322,6 +1566,28 @@ rather than a count, the natural amplitude; it would also let the auxiliary
 regions be supervised by modes that are individually better attested. We did
 not collect one, and the results here should be read as what the ranking
 recovers at the resolution the existing corpus provides.
+
+\paragraph{Single-region accuracy.} At an unconstrained region budget the
+Mask R-CNN + prior baseline remains ahead of the proposed method on IR
+($0.684$ vs.\ $0.601$) and on OC3@0.5 ($0.592$ vs.\ $0.516$). The comparison at
+a matched budget in Section~\ref{subsec:budget} reverses both, and we regard
+that as the meaningful one, but it does not dispose of the first: a
+practitioner who is content to display seven candidate regions and read only
+the top one is better served by the baseline on these data. We have not closed
+this gap and we do not know its cause. Heatmap resolution is the leading
+candidate and is under study; head capacity is a second. Until one of them
+accounts for it, the contribution of this work should be read as being about
+\emph{how many} regions a model emits and \emph{how they are ranked}, not about
+the accuracy of the primary region.
+
+\paragraph{Statistical power of the ablation.} The per-objective results in
+Section~\ref{subsec:ablation} are single-seed, and the differences between
+neighbouring configurations are smaller than the seed-to-seed variation of a
+single configuration on every metric except VD. The ablation therefore
+establishes that $\mathcal{L}_{\text{smooth}}$ acts on temporal stability and
+does not establish anything about the relative contributions of
+$\mathcal{L}_{\text{rmc}}$ and $\mathcal{L}_{\text{rep}}$. Three seeds per cell
+are required before those rows can be ordered.
 
 \paragraph{Held-out conditions.} All results are reported on the standard test
 set, which fixes race matchup, map, and starting location. Earlier work
@@ -1367,13 +1633,26 @@ tensors in a single forward pass. The Ranked Mode Coverage loss supervises the
 auxiliary regions with the minority observer attention that previous work
 discarded as noise, so no new form of annotation is required, while the
 Spatial Repulsion and Trajectory Smoothness losses remove redundant overlap
-and camera thrashing respectively. Experiments on StarCraft: Brood War
-benchmarks demonstrate improvements in primary-region overlap, multi-region
-coverage, per-observer service, and temporal stability compared to
-single-region baselines.
+and camera thrashing respectively.
 
-Future work will explore Track~B (zero human-GT) operation via unsupervised 
-saliency estimation, longer-range temporal context modelling, and extension 
+Experiments on StarCraft: Brood War replays locate the contribution precisely.
+A proposal-based detector emits several regions per frame already, so
+multiplicity is not what distinguishes the formulations. What distinguishes
+them is that the detector's region count moves in the wrong direction: it emits
+fewer regions on the frames whose target has more modes, at every confidence
+threshold we measured, because a per-proposal score is divided among boxes
+exactly when the evidence is. No threshold reverses the sign, and raising one
+does not improve the primary region — it only withholds answers, and withholds
+them disproportionately on the multimodal frames the task is about. The heatmap
+formulation reverses the sign, and the ranked-mode supervision is what
+determines its magnitude. Held to the same region budget, Director-CenterNet
+leads on per-observer coverage and on count calibration; released from that
+constraint, the strongest single-region baseline remains ahead on
+primary-region overlap, and closing that remaining gap — most plausibly a
+matter of heatmap resolution — is the immediate next step.
+
+Future work will explore Track~B (zero human-GT) operation via unsupervised
+saliency estimation, longer-range temporal context modelling, and extension
 to MOBA games and non-game surveillance domains.
 
 %%====================================================================
