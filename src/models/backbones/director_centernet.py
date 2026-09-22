@@ -19,6 +19,21 @@ from losses.director_losses import (
 )
 from utils.logger import Logger
 
+# The FPN level the heads read ('0') is stride 4, and that is the resolution
+# every cell-unit knob below was tuned at. An output stride finer than this is
+# produced by an upsampling decoder, not by touching the backbone, so this
+# stays fixed and `down_ratio` is the *output* stride.
+FPN_STRIDE = 4
+
+# Radius, in tiles, that NMS suppresses around a peak. The 3x3 kernel used at
+# stride 4 is a radius of 4 tiles, and that is what this preserves, so a finer
+# output stride does not silently change the decoder. It stays safely below
+# MODE_EXTRACTION_MIN_SEP / 2 = 6 tiles, the largest radius that cannot merge
+# two genuine ranked modes; a radius far below it is what lets one mode emit
+# several peaks inside its own viewport, so this is the knob to raise if
+# n_pred balloons with duplicates at a finer stride.
+NMS_RADIUS_TILES = 4.0
+
 
 def _kaiming_init_conv(conv: nn.Conv2d):
     nn.init.kaiming_normal_(conv.weight, mode="fan_out", nonlinearity="relu")
@@ -85,7 +100,12 @@ class DirectorCenterNet(nn.Module):
         super().__init__()
         self.in_channels = in_channels
         self.num_classes = num_classes
-        self.down_ratio = down_ratio
+        self.down_ratio = int(down_ratio)
+        if self.down_ratio > FPN_STRIDE or FPN_STRIDE % self.down_ratio != 0:
+            raise ValueError(
+                f"down_ratio must be a power-of-two divisor of the FPN level this "
+                f"model reads (stride {FPN_STRIDE}); got {down_ratio}."
+            )
         self.k_max = k_max
         self.conf_threshold = conf_threshold
         self.render_sigma = render_sigma
@@ -99,6 +119,31 @@ class DirectorCenterNet(nn.Module):
         self.trainable_layers = int(trainable_layers)
         self.dense_positives = bool(dense_positives)
         self.head_conv = int(head_conv)
+
+        # `soft_center_radius`, `peak_border_margin` and the NMS kernel are
+        # configured in cells but mean a distance in tiles, so each is
+        # re-derived from the output stride. Keeping the configured values on
+        # self untouched matters: _write_run_provenance records them and
+        # inference rebuilds the model from that record, so scaling them in
+        # place would apply the factor a second time on every reload.
+        cells_per_tile = 1.0 / self.down_ratio
+        self._soft_center_cells = max(
+            1, int(round(soft_center_radius * FPN_STRIDE * cells_per_tile))
+        )
+        self._peak_border_cells = max(
+            0, int(round(peak_border_margin * FPN_STRIDE * cells_per_tile))
+        )
+        self._nms_kernel = 1 + 2 * max(
+            1, int(round(NMS_RADIUS_TILES * cells_per_tile))
+        )
+        # The focal negative term sums over every cell while num_pos is fixed
+        # at one per sample, so its magnitude would grow with the square of the
+        # resolution and, under a single global gradient-norm clip, starve
+        # L_rmc, L_rep and L_smooth exactly as the old squared-L2 L_smooth did.
+        # Weighting each cell by the map area it covers makes the sum an
+        # approximation of the same integral at any stride; it is 1.0 at the
+        # stride the loss weights were calibrated at.
+        self._hcm_neg_weight = (self.down_ratio / FPN_STRIDE) ** 2
         # Updated per epoch by train.py; only L_smooth's warmup reads it.
         self._current_epoch = self.smooth_warmup_full
 
@@ -144,6 +189,30 @@ class DirectorCenterNet(nn.Module):
 
         # Stride 4 feature level from FPN output '0' (channels = 256)
         fpn_out_channels = 256
+
+        # Optional upsampling decoder, when the heads are asked for an output
+        # stride finer than the FPN level.
+        #
+        # Stride 4 is disproportionately coarse for this target: the viewport
+        # is 12x20 tiles, i.e. 3x5 cells, where CenterNet runs stride 4 on
+        # objects spanning tens of cells. Sub-cell precision is not the limit
+        # (the offset head decodes position continuously); the density of
+        # candidate peaks is, since two ranked modes 12 tiles apart are only 3
+        # cells apart at stride 4. Upsampling here rather than restriding
+        # conv1 keeps the ImageNet-pretrained backbone and costs ~16x less.
+        n_up = int(round(math.log2(FPN_STRIDE / self.down_ratio)))
+        decoder: List[nn.Module] = []
+        for _ in range(n_up):
+            decoder += [
+                nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+                nn.Conv2d(fpn_out_channels, fpn_out_channels, kernel_size=3, padding=1),
+                nn.GroupNorm(32, fpn_out_channels),
+                nn.ReLU(inplace=True),
+            ]
+        self.decoder = nn.Sequential(*decoder) if decoder else nn.Identity()
+        for mod in self.decoder.modules():
+            if isinstance(mod, nn.Conv2d):
+                _kaiming_init_conv(mod)
 
         # Heatmap Head (2x 3x3 conv + 1x1 conv)
         self.hm_head = nn.Sequential(
@@ -212,8 +281,9 @@ class DirectorCenterNet(nn.Module):
 
     def _extract_features(self, x: torch.Tensor) -> torch.Tensor:
         fpn_feats = self.backbone(x)
-        # '0' corresponds to stride 4
-        return fpn_feats["0"]
+        # '0' corresponds to stride 4; the decoder is Identity unless the
+        # configured output stride is finer than that.
+        return self.decoder(fpn_feats["0"])
 
     def _predict_heads(
         self, feat: torch.Tensor
@@ -314,10 +384,10 @@ class DirectorCenterNet(nn.Module):
         # entirely off-map, so the real centre of that camera position is a
         # cell or two further in. Dropping the border ring from the candidates
         # costs nothing reachable and removes the bias.
-        hm_max = F.max_pool2d(pred_hm, kernel_size=3, stride=1, padding=1)
+        hm_max = F.max_pool2d(pred_hm, kernel_size=self._nms_kernel, stride=1, padding=self._nms_kernel // 2)
         keep = (pred_hm == hm_max).float()
-        if self.peak_border_margin > 0 and min(feat_h, feat_w) > 2 * self.peak_border_margin:
-            m = self.peak_border_margin
+        if self._peak_border_cells > 0 and min(feat_h, feat_w) > 2 * self._peak_border_cells:
+            m = self._peak_border_cells
             border = torch.zeros_like(keep)
             border[..., m:feat_h - m, m:feat_w - m] = 1.0
             keep = keep * border
@@ -372,7 +442,7 @@ class DirectorCenterNet(nn.Module):
                     hm_logits[i, 0],
                     torch.div(sel_inds, feat_w, rounding_mode="floor"),
                     sel_inds % feat_w,
-                    self.soft_center_radius,
+                    self._soft_center_cells,
                 )
                 soft_cx = (sel_xs + d_x) * stride
                 soft_cy = (sel_ys + d_y) * stride
@@ -479,6 +549,7 @@ class DirectorCenterNet(nn.Module):
                 target_hm_top1=rendered["Y_all"],
                 pos_mask=rendered["pos_mask_top1"],
                 ignore_mask=aux_ignore,
+                neg_weight=self._hcm_neg_weight,
             )
 
             # 2. L_rmc (Ranked Mode Coverage loss)

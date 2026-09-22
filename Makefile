@@ -32,7 +32,7 @@ PYDEBUG_SERVICE  ?= pydebug
 
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
-		zeppelin benchmark mode-disagreement test probe
+		zeppelin benchmark mode-disagreement test probe probe-resolution
 
 # 디렉토리 생성
 ifneq ($(OS),Windows_NT)
@@ -142,6 +142,10 @@ test:
 
 probe:
 	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/probe_director.py"
+
+
+probe-resolution:
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/probe_resolution.py"
 
 benchmark:
 	CONTAINER_NAME=benchmark_$$(date +%Y%m%d_%H%M%S); \

@@ -159,6 +159,7 @@ def _build_run_tags(cfg) -> list:
     for key, default, fmt in (
         ("dense_positives", False, lambda v: "dense"),
         ("head_conv", config.DIRECTOR_HEAD_CONV, lambda v: f"hc{v}"),
+        ("centernet_down_ratio", 4, lambda v: f"stride{v}"),
         ("render_sigma", config.DIRECTOR_RENDER_SIGMA, lambda v: f"sig{v:g}"),
         ("trainable_layers", config.DIRECTOR_TRAINABLE_LAYERS, lambda v: f"tl{v}"),
         ("conf_threshold", config.DIRECTOR_TAU, lambda v: f"tau{v:g}"),

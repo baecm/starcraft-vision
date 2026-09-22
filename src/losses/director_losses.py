@@ -242,6 +242,7 @@ def human_consensus_match_loss(
     alpha: float = 2.0,
     beta: float = 4.0,
     eps: float = 1e-6,
+    neg_weight: float = 1.0,
 ) -> torch.Tensor:
     """CornerNet modified focal loss for Top-1 Human Consensus (Eq 13, 14).
 
@@ -268,6 +269,13 @@ def human_consensus_match_loss(
     nothing stopped this term from covering Omega at full weight. Splitting
     the domains makes that claim true: L_hcm owns the primary cell and the
     genuine background, L_rmc owns the auxiliary support.
+
+    `neg_weight` keeps the loss comparable across heatmap resolutions. The
+    positive term is normalised by num_pos, which is one cell per sample by
+    construction here and so does not grow with resolution, while the negative
+    term sums over every cell and does. Callers that change the output stride
+    pass the per-cell map area relative to the stride the loss weights were
+    calibrated at; see DirectorCenterNet._hcm_neg_weight.
     """
     pred = pred_hm.clamp(eps, 1.0 - eps)
 
@@ -284,7 +292,7 @@ def human_consensus_match_loss(
     )
 
     num_pos = pos_mask.sum().clamp_min(1.0)
-    loss = -(pos_term.sum() + neg_term.sum()) / num_pos
+    loss = -(pos_term.sum() + neg_weight * neg_term.sum()) / num_pos
     return loss
 
 

@@ -1,7 +1,10 @@
 # conf/architecture/director_centernet.yaml
 model_name: director_centernet
 score_threshold: 0.1
-centernet_down_ratio: 4
+centernet_down_ratio: 4      # heatmap output stride in tiles; 4|2|1 (32x32 | 64x64 | 128x128).
+                             # Values below 4 add a bilinear+conv decoder on fpn["0"];
+                             # the NMS kernel, soft_center_radius and peak_border_margin
+                             # below are re-derived in tiles, so leave them as they are.
 k_max: 3
 conf_threshold: 0.1
 render_sigma: 4.0            # tiles; = 1 heatmap cell at stride 4
@@ -28,8 +31,8 @@ loss_weights:
 smooth_huber_delta: 5.0      # tiles; below this the penalty stays quadratic
 smooth_warmup_start: 5       # epochs [0, 5) train with L_smooth off
 smooth_warmup_full: 10       # linear ramp to full weight by epoch 10
-soft_center_radius: 2        # feature cells in the soft-argmax window
-peak_border_margin: 1        # drop the outermost ring from peak candidates
+soft_center_radius: 2        # soft-argmax window, in stride-4 cells (= 8 tiles)
+peak_border_margin: 1        # drop the outermost ring, in stride-4 cells (= 4 tiles)
 trainable_layers: 5          # unfreeze layer1; the heatmap head reads only that level
 head_conv: 64                # hidden width of each head
 dense_positives: false       # focal positive at every observer centre, not only the Top-1 mode
