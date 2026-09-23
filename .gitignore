@@ -17,3 +17,6 @@ pyrightconfig.json
 *.synctex.gz
 *.toc
 docs/paper/*.pdf
+
+# host-resolved commit list for `make run-registry` (see Makefile)
+results/.run_registry_commits.txt

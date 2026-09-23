@@ -41,7 +41,7 @@ PYDEBUG_SERVICE  ?= pydebug
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
 		zeppelin benchmark mode-disagreement mode-disagreement-fg inference-fg test probe probe-resolution \
-		budget-allocation
+		budget-allocation run-registry
 
 # 디렉토리 생성
 ifneq ($(OS),Windows_NT)
@@ -211,3 +211,20 @@ stop:
 		[ -f $$cidfile ] && docker stop $$(cat $$cidfile) 2>/dev/null || true; \
 		rm -f $$cidfile; \
 	done
+
+# Which trained runs are still comparable to the current code, read from the
+# run_provenance.json that train.py writes next to each checkpoint. SINCE names
+# the commit after which a run counts as current; the ancestry is resolved here
+# because the containers do not mount .git. Examples:
+#   make run-registry
+#   make run-registry SINCE=ed86508 ARGS="--out /workspace/results/run_registry.md"
+SINCE ?=
+run-registry:
+	@mkdir -p results
+	@EXTRA=""; \
+	if [ -n "$(SINCE)" ]; then \
+		git rev-list $(SINCE)..HEAD > results/.run_registry_commits.txt; \
+		git rev-parse HEAD >> results/.run_registry_commits.txt; \
+		EXTRA="--ok-commits-file /workspace/results/.run_registry_commits.txt"; \
+	fi; \
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/run_registry.py --models-root /workspace/models --pred-root /workspace/predictions $$EXTRA $(ARGS)"
