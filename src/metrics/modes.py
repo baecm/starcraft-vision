@@ -767,6 +767,26 @@ def primary_track_m_cti(
     out["tracked_fraction"] = weight / float(len(frames))
     return out
 
+def _baseline(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows from the pass that kept every observer in the ground truth.
+
+    A `--holdout` run appends one pass per observer, each with that observer
+    removed, so a pooled frame holds both families. Everything except the HO
+    keys is defined over the baseline pass alone, which is what keeps the flag
+    from moving a number that was reported without it.
+    """
+    if "holdout" not in df.columns:
+        return df
+    return df[df["holdout"].isna()]
+
+
+def _heldout(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows from the passes that removed an observer."""
+    if "holdout" not in df.columns:
+        return df.iloc[0:0]
+    return df[df["holdout"].notna()]
+
+
 def _answered(df: pd.DataFrame) -> pd.DataFrame:
     """Rows the model actually answered.
 
@@ -778,7 +798,6 @@ def _answered(df: pd.DataFrame) -> pd.DataFrame:
     if "answered" not in df.columns:
         return df
     return df[df["answered"] == 1.0]
-
 
 def summarise(df: pd.DataFrame, delta: float, k_max: int) -> dict:
     """Fold-level aggregate.
@@ -793,9 +812,14 @@ def summarise(df: pd.DataFrame, delta: float, k_max: int) -> dict:
     confidence threshold deletes frames rather than improving predictions, and
     the frames it deletes are the crowded ones, so the plain keys reward a
     method for declining to answer where the task is hardest.
+
+    Every key except the HO family comes from the baseline pass, the one that
+    kept all observers in the ground truth, so a --holdout run reports exactly
+    what a plain run does and adds to it.
     """
-    ans = _answered(df)
-    n_total = len(df)
+    base = _baseline(df)
+    ans = _answered(base)
+    n_total = len(base)
     n_ans = len(ans)
     coverage = n_ans / n_total if n_total else 0.0
 
@@ -829,24 +853,26 @@ def summarise(df: pd.DataFrame, delta: float, k_max: int) -> dict:
     err_ans = (ans["n_pred"] - ans["n_modes"]).abs()
     out["MAE_n"] = err_ans.mean()
     out["Exact_n"] = float((ans["n_pred"] == ans["n_modes"]).mean()) if n_ans else np.nan
-    err_all = (df["n_pred"].fillna(0) - df["n_modes"]).abs()
+    err_all = (base["n_pred"].fillna(0) - base["n_modes"]).abs()
     out["MAE_n_cov"] = err_all.mean()
-    out["Exact_n_cov"] = float((df["n_pred"].fillna(0) == df["n_modes"]).mean()) if n_total else np.nan
+    out["Exact_n_cov"] = float((base["n_pred"].fillna(0) == base["n_modes"]).mean()) if n_total else np.nan
     out["mean_n_pred"] = ans["n_pred"].mean()
     # The diagnostic that makes the coverage trap visible at a glance: when
     # mean_n_modes_all exceeds mean_n_modes, the frames the model declined
     # were the crowded ones, and every plain key above is flattered by their
     # absence.
-    out["mean_n_modes_all"] = df["n_modes"].mean()
+    out["mean_n_modes_all"] = base["n_modes"].mean()
 
-    # Held-out observer. Present only when the run excluded one from the
-    # ground truth. OC above says how well the output serves the people whose
-    # data built the target; this says whether it reaches someone it never
-    # saw, which is the claim a broadcast actually has to make.
-    if f"HO{k_max}@{delta}" in df.columns:
+    # Held-out observer, from the passes that removed one. OC above says how
+    # well the output serves the people whose data built the target; this says
+    # whether it reaches someone it never saw, which is the claim a broadcast
+    # actually has to make. Absent unless the run was given --holdout.
+    ho = _answered(_heldout(df))
+    if len(ho) and f"HO{k_max}@{delta}" in ho.columns:
+        out["ho_frames"] = len(ho)
         for k in range(1, k_max + 1):
-            out[f"HO{k}@{delta}"] = ans[f"HO{k}@{delta}"].mean()
-        out["HO_best"] = ans["HO_best"].mean()
+            out[f"HO{k}@{delta}"] = ho[f"HO{k}@{delta}"].mean()
+        out["HO_best"] = ho["HO_best"].mean()
 
     # Forward fill: a declined frame holds the last viewport the model did
     # produce, which is what a live system does with a real camera. It is
@@ -857,15 +883,15 @@ def summarise(df: pd.DataFrame, delta: float, k_max: int) -> dict:
     # bracketed by the two. One caveat - VD_ff counts a held camera as
     # motionless, so it favours stability; the accuracy keys carry no such
     # favour.
-    ff_scored = df["IR_ff"].notna()
+    ff_scored = base["IR_ff"].notna()
     out["coverage_ff"] = float(ff_scored.mean()) if n_total else 0.0
-    out["carried_frac"] = float((df["carried"] == 1.0).mean()) if n_total else 0.0
-    out["IR_ff"] = df["IR_ff"].mean()
-    out[f"I@{delta}_ff"] = df[f"I@{delta}_ff"].mean()
-    out["VD_ff"] = df["VD_ff_step"].mean()
+    out["carried_frac"] = float((base["carried"] == 1.0).mean()) if n_total else 0.0
+    out["IR_ff"] = base["IR_ff"].mean()
+    out[f"I@{delta}_ff"] = base[f"I@{delta}_ff"].mean()
+    out["VD_ff"] = base["VD_ff_step"].mean()
     for k in range(1, k_max + 1):
-        out[f"BoK{k}@{delta}_ff"] = df[f"BoK{k}@{delta}_ff"].mean()
-        out[f"OC{k}@{delta}_ff"] = df[f"OC{k}@{delta}_ff"].mean()
+        out[f"BoK{k}@{delta}_ff"] = base[f"BoK{k}@{delta}_ff"].mean()
+        out[f"OC{k}@{delta}_ff"] = base[f"OC{k}@{delta}_ff"].mean()
 
     for label in ATTRIBUTIONS:
         out[f"frac_{label}"] = float((ans["attribution"] == label).mean()) if n_ans else np.nan
@@ -879,6 +905,7 @@ def summarise(df: pd.DataFrame, delta: float, k_max: int) -> dict:
 
 
 def by_quartile(df: pd.DataFrame, delta: float, k_max: int) -> pd.DataFrame:
+    df = _baseline(df)
     q = pd.cut(df["progression"], [-0.001, 0.25, 0.5, 0.75, 1.0],
                labels=["1/4", "2/4", "3/4", "4/4"])
     rows = []
@@ -891,7 +918,7 @@ def by_quartile(df: pd.DataFrame, delta: float, k_max: int) -> pd.DataFrame:
 
 def by_margin(df: pd.DataFrame, delta: float) -> pd.DataFrame:
     rows = []
-    for margin, part in _answered(df).groupby("margin", observed=True):
+    for margin, part in _answered(_baseline(df)).groupby("margin", observed=True):
         rows.append({
             "margin": margin,
             "n_frames": len(part),
@@ -909,7 +936,7 @@ def by_replay(df: pd.DataFrame, delta: float) -> pd.DataFrame:
     per replay, concatenated with a "replay" column) - lets a fold-wide
     mode_flip_rate/IR be checked for replays that dominate or skew it."""
     rows = []
-    for replay, part in df.groupby("replay", observed=True):
+    for replay, part in _baseline(df).groupby("replay", observed=True):
         ans = _answered(part)
         rows.append({
             "replay": replay,
@@ -927,7 +954,7 @@ def by_replay(df: pd.DataFrame, delta: float) -> pd.DataFrame:
 
 def by_n_modes(df: pd.DataFrame, delta: float) -> pd.DataFrame:
     rows = []
-    for n, part in df.groupby("n_modes", observed=True):
+    for n, part in _baseline(df).groupby("n_modes", observed=True):
         ans = _answered(part)
         rows.append({
             "n_modes": n,

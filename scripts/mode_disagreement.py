@@ -165,14 +165,18 @@ def main() -> None:
                 print(f"  [!] {name}: no predictions for replay {replay}, skipping")
                 continue
 
-            # With --holdout the analysis runs once per observer, each time
-            # with that one removed from the ground truth, and the results are
-            # pooled. Every frame therefore appears U times, once per observer
-            # held out, so the held-out figures average over which person was
-            # the stranger rather than depending on a single arbitrary choice.
-            holdouts = range(args.num_observers) if args.holdout else [None]
+            # The baseline pass always runs, with every observer in the ground
+            # truth, and it is the one the main figures come from. --holdout
+            # adds a pass per observer on top, each with that one removed, and
+            # those rows carry a `holdout` column so `summarise` can keep the
+            # two apart. The flag is therefore additive: turning it on cannot
+            # move a number that was reported without it.
+            passes = [None]
+            if args.holdout:
+                passes += list(range(args.num_observers))
+
             replay_frames = []
-            for ho in holdouts:
+            for ho in passes:
                 tag = f"{replay}/{name}" if ho is None else f"{replay}/{name}/ho{ho}"
                 df = analyse_method(
                     gt_by_frame, pred_by_frame, height, width,
