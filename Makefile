@@ -40,7 +40,7 @@ PYDEBUG_SERVICE  ?= pydebug
 
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
-		zeppelin benchmark mode-disagreement mode-disagreement-fg inference-fg test probe probe-resolution \
+		zeppelin benchmark mode-disagreement mode-disagreement-fg inference-fg train-fg test probe probe-resolution \
 		budget-allocation run-registry
 
 # 디렉토리 생성
@@ -93,6 +93,12 @@ train:
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm trainer train $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/train.cid
+
+# Foreground training, so a shell can queue several runs onto one GPU with
+# `&&`. `train` backgrounds itself, so a chain built on it starts every run at
+# once and they fight over the card. Same reasoning as inference-fg.
+train-fg:
+	docker compose -f $(COMPOSE_FILE) run --rm trainer train $(ARGS)
 
 inference:
 	CONTAINER_NAME=inference_$(shell date +%Y%m%d_%H%M%S); \
