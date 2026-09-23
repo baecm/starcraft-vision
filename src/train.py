@@ -264,6 +264,64 @@ def _write_run_provenance(save_dir: str, model, id_string: str) -> None:
         Logger.warn(f"[Provenance] failed to write run_provenance.json: {e}")
 
 
+CHECKPOINT_FORMAT = 2
+
+
+def save_checkpoint(path, model, optimizer, lr_scheduler, epoch) -> None:
+    """Write a checkpoint that a run can actually be continued from.
+
+    Weights alone are not enough to resume. SGD carries momentum buffers, and
+    the cosine schedule's position is held in the scheduler, not derived from
+    anything the weights record - restart without it and the rate jumps back to
+    its initial value, which at two thirds through a run is four times what it
+    should be. A resumed run would then be a different experiment from an
+    uninterrupted one, which matters most for the seed sweeps, where the whole
+    point is that the runs differ only by seed.
+
+    `epoch` is the number of epochs completed, so training continues from it.
+    """
+    torch.save(
+        {
+            "format": CHECKPOINT_FORMAT,
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "lr_scheduler": lr_scheduler.state_dict(),
+            "epoch": int(epoch),
+        },
+        path,
+    )
+
+
+def load_checkpoint(path, model, optimizer=None, lr_scheduler=None, device=None) -> int:
+    """Restore a checkpoint and return the epoch to continue from.
+
+    Checkpoints written before this was a dict hold a bare state_dict. Those
+    load their weights and return 0: there is no optimizer or schedule state to
+    recover, so continuing from one is a fresh run that happens to start from
+    trained weights, and it says so rather than pretending otherwise.
+    """
+    blob = torch.load(path, map_location=device or "cpu")
+
+    if not isinstance(blob, dict) or "model" not in blob:
+        model.load_state_dict(blob)
+        Logger.warn(
+            f"[Resume] {path} predates optimizer state; weights loaded but the "
+            "optimizer and schedule restart. This is not a faithful "
+            "continuation - do not mix it into a seed comparison."
+        )
+        return 0
+
+    model.load_state_dict(blob["model"])
+    if optimizer is not None and blob.get("optimizer") is not None:
+        optimizer.load_state_dict(blob["optimizer"])
+    if lr_scheduler is not None and blob.get("lr_scheduler") is not None:
+        lr_scheduler.load_state_dict(blob["lr_scheduler"])
+
+    epoch = int(blob.get("epoch", 0))
+    Logger.info(f"[Resume] {path}: continuing from epoch {epoch}")
+    return epoch
+
+
 def train_model(
     model,
     optimizer,
@@ -278,11 +336,17 @@ def train_model(
     test_eval_every: int = 0,
     id_string: str = "",
     checkpoint_every: int = 10,
+    start_epoch: int = 0,
 ):
     _write_run_provenance(save_dir, model, id_string)
 
     Logger.info("[Stage] Starting training loop...")
-    for epoch in tqdm.tqdm(range(num_epochs)):
+    if start_epoch:
+        Logger.info(
+            f"[Stage] Resuming at epoch {start_epoch} of {num_epochs}"
+        )
+    for epoch in tqdm.tqdm(range(start_epoch, num_epochs), initial=start_epoch,
+                           total=num_epochs):
         epoch_t0 = time.time()
 
         # Loss terms that ramp over training (currently only Director's
@@ -463,7 +527,7 @@ def train_model(
         if is_interval or (epoch + 1) == num_epochs:
             tc0 = time.time()
             save_path = os.path.join(save_dir, f"model_{epoch+1:03d}.pth")
-            torch.save(model.state_dict(), save_path)
+            save_checkpoint(save_path, model, optimizer, lr_scheduler, epoch + 1)
             t_ckpt = time.time() - tc0
             Logger.info(
                 f"[Info] Saved model checkpoint: {save_path} "
@@ -776,6 +840,25 @@ def run_training(cfg: DictConfig):
         f"max_epoch={cfg.max_epoch}"
     )
 
+    # Resume, if asked. The scheduler is restored rather than fast-forwarded,
+    # so the rate picks up exactly where it stopped; a fresh cosine restarted
+    # two thirds through a run would be four times too high. Momentum comes
+    # back with the optimizer state, so the continuation is faithful and a
+    # resumed run stays comparable to one that ran straight through.
+    start_epoch = 0
+    resume_path = getattr(cfg, "resume", None)
+    if resume_path:
+        if not os.path.isfile(resume_path):
+            raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
+        start_epoch = load_checkpoint(
+            resume_path, model, optimizer, lr_scheduler, device
+        )
+        if start_epoch >= int(cfg.max_epoch):
+            raise ValueError(
+                f"{resume_path} is already at epoch {start_epoch}, which is "
+                f"max_epoch ({cfg.max_epoch}); nothing left to run."
+            )
+
     test_eval_every = cfg.test_eval_every
 
     # === 실제 학습 ===
@@ -793,6 +876,7 @@ def run_training(cfg: DictConfig):
         test_eval_every=test_eval_every,
         id_string=cfg.id_string,
         checkpoint_every=int(getattr(cfg, "checkpoint_every", 10)),
+        start_epoch=start_epoch,
     )
     torch.cuda.empty_cache()
     send_message(f"@work Training run '{cfg.id_string}' completed successfully.")
