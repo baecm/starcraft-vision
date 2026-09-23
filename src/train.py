@@ -247,6 +247,7 @@ def train_model(
     data_loader_test=None,
     test_eval_every: int = 0,
     id_string: str = "",
+    checkpoint_every: int = 10,
 ):
     _write_run_provenance(save_dir, model, id_string)
 
@@ -423,8 +424,13 @@ def train_model(
         Logger.info(f"[Time][epoch {epoch}] wandb.log (scalars): {t_wandb:.3f}s")
 
         # ---- 체크포인트 저장 ----
+        # 매 에폭 저장은 30에폭 실행마다 ResNet-50 가중치를 30벌 남긴다.
+        # 실제로 읽는 것은 마지막 것뿐이고, 중간 것은 학습 곡선을 되짚을 때만
+        # 쓰이므로 10에폭 간격이면 충분하다. 마지막 에폭은 간격에 걸리지
+        # 않더라도 항상 저장한다 - 추론이 --epoch 로 그것을 찾는다.
         t_ckpt = 0.0
-        if (epoch + 1) % 1 == 0 or (epoch + 1) == num_epochs:
+        is_interval = checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0
+        if is_interval or (epoch + 1) == num_epochs:
             tc0 = time.time()
             save_path = os.path.join(save_dir, f"model_{epoch+1:03d}.pth")
             torch.save(model.state_dict(), save_path)
@@ -721,6 +727,7 @@ def run_training(cfg: DictConfig):
         data_loader_test=test_loader,
         test_eval_every=test_eval_every,
         id_string=cfg.id_string,
+        checkpoint_every=int(getattr(cfg, "checkpoint_every", 10)),
     )
     torch.cuda.empty_cache()
     send_message(f"@work Training run '{cfg.id_string}' completed successfully.")
