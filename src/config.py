@@ -26,24 +26,22 @@ MODE_EXTRACTION_MAX_MODES = 5
 NUM_OBSERVERS_U = 5
 
 # ===== ROCI (Region of Common Interest) target augmentation =====
-# Joo et al. (2023) add viewports where the human observers overlap as extra
-# detection targets. Off by default: turning it on changes the labels, so the
-# generated file is named "<method>_roci" and a model trained on it must be
-# trained from scratch - an existing checkpoint cannot be converted.
+# Joo et al. (2023) add the regions the observers agree on as extra detection
+# targets. Off by default: turning it on changes the labels, so the generated
+# file is named "<method>_roci" and a model trained on it must be trained from
+# scratch - an existing checkpoint cannot be converted.
+#
+# These follow their released code, not the paper's prose. The blur kernel is
+# about the size of a viewport, which is what keeps the coverage map on its
+# original scale - a tile two observers both cover still reads near 2 after
+# blurring - and that is what makes an absolute floor just above 1 separate
+# common interest from a lone observer. Widening the blur flattens the scale
+# and the same floor then admits nothing at all.
 ROCI_ENABLED = False
-# The peak-finding parameters are the mode-extraction ones above, because the
-# two procedures are the same. They are named separately so that ROCI's target
-# generation and the evaluator's mode recovery can be moved apart later without
-# one silently following the other.
-ROCI_SIGMA = MODE_EXTRACTION_SIGMA
-ROCI_MIN_SEP = MODE_EXTRACTION_MIN_SEP
-# Joo et al. put their floor just above 1: a tile one observer watches scores
-# 1, a tile two watch concurrently scores 2. This is read as a multiple of what
-# one observer is worth under the same smoothing, so the 1.1 keeps that meaning
-# regardless of sigma or viewport size and never needs recalibrating.
-ROCI_THRESHOLD = 1.1
-# Joo et al. cap the added regions at the number of observers.
-ROCI_MAX_REGIONS = NUM_OBSERVERS_U
+ROCI_BLUR_KSIZE = (19, 11)   # (width, height), cv2 order; sigma derived from it
+ROCI_MIN_DISTANCE = 7        # tiles between peaks
+ROCI_THRESHOLD = 1.1         # absolute, on the blurred coverage
+ROCI_MAX_REGIONS = 0         # 0 = unbounded, as in their code
 
 # Gaussian width for the rendered targets, in tiles. The heatmap grid samples
 # every `down_ratio` tiles, so 2.0 tiles is half a cell: adjacent cells fall to

@@ -195,8 +195,8 @@ class Viewport:
             points = [(int(a[0]), int(a[1])) for a in observers if a.size >= 2]
             extra = roci_viewports(
                 points, height, width, box_wh,
-                sigma=config.ROCI_SIGMA,
-                min_sep=config.ROCI_MIN_SEP,
+                ksize_wh=config.ROCI_BLUR_KSIZE,
+                min_distance=config.ROCI_MIN_DISTANCE,
                 threshold=config.ROCI_THRESHOLD,
                 max_regions=config.ROCI_MAX_REGIONS,
             )
