@@ -25,6 +25,27 @@ MODE_EXTRACTION_REL_THRESHOLD = 0.35
 MODE_EXTRACTION_MAX_MODES = 5
 NUM_OBSERVERS_U = 5
 
+# ===== ROCI (Region of Common Interest) target augmentation =====
+# Joo et al. (2023) add viewports where the human observers overlap as extra
+# detection targets. Off by default: turning it on changes the labels, so the
+# generated file is named "<method>_roci" and a model trained on it must be
+# trained from scratch - an existing checkpoint cannot be converted.
+ROCI_ENABLED = False
+# The peak-finding parameters are the mode-extraction ones above, because the
+# two procedures are the same. They are named separately so that ROCI's target
+# generation and the evaluator's mode recovery can be moved apart later without
+# one silently following the other.
+ROCI_SIGMA = MODE_EXTRACTION_SIGMA
+ROCI_MIN_SEP = MODE_EXTRACTION_MIN_SEP
+# Joo et al. set their floor just above 1: a tile one observer watches scores 1,
+# a tile two watch concurrently scores 2, so this is what separates common
+# interest from a lone observer. Their Gaussian is a viewport-sized window
+# while this pipeline uses scipy sigma, so the number does not carry over
+# exactly - check the regions-per-frame the run reports before trusting it.
+ROCI_THRESHOLD = 1.1
+# Joo et al. cap the added regions at the number of observers.
+ROCI_MAX_REGIONS = NUM_OBSERVERS_U
+
 # Gaussian width for the rendered targets, in tiles. The heatmap grid samples
 # every `down_ratio` tiles, so 2.0 tiles is half a cell: adjacent cells fall to
 # exp(-2) = 0.135 and are trained as near-hard negatives, leaving the target a

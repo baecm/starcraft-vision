@@ -20,6 +20,11 @@ probabilistic_query: ${plugins.probabilistic_query}
 train_replays: ${dataset.train_replays}
 test_replays: ${dataset.test_replays}
 include_components: [worker, ground, air, building, vision]
+# ROCI (Joo et al.) adds the regions the observers agree on as extra training
+# targets. It selects a different label file, <label_method>_roci, which
+# preprocessing writes only when generated with --roci. Changing this requires
+# training from scratch; it cannot be applied to an existing checkpoint.
+roci: false
 label_method: all_correct
 data_root: /workspace/data
 

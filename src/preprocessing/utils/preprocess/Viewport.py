@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import tqdm
 from multiprocessing import Pool, cpu_count
+from .roci import roci_viewports
 from .viewport_parallel_utils import (
     preprocess_argmax_kernel_sum_parallel,
     preprocess_unique_local_maximums_parallel,
@@ -173,8 +174,44 @@ class Viewport:
                 traceback.print_exc()
         return result
 
-    def run(self, method):
-        print(f"[Viewport] Method selected: {method}")
+    def apply_roci(self, results):
+        """Append the common-interest viewports to each frame's labels.
+
+        Joo et al. train on "5 + n" targets per frame: the five observer
+        viewports, plus however many regions of common interest that frame
+        turned out to have. The count varies by frame, which is why this
+        appends rather than pads.
+        """
+        height, width = config.ORIGIN_SHAPE
+        box_wh = config.KERNEL_SHAPE
+        added = 0
+        augmented = []
+        for res in results:
+            if isinstance(res, (list, tuple)):
+                observers = [np.asarray(r).flatten() for r in res]
+            else:
+                observers = [np.asarray(res).flatten()]
+
+            points = [(int(a[0]), int(a[1])) for a in observers if a.size >= 2]
+            extra = roci_viewports(
+                points, height, width, box_wh,
+                sigma=config.ROCI_SIGMA,
+                min_sep=config.ROCI_MIN_SEP,
+                threshold=config.ROCI_THRESHOLD,
+                max_regions=config.ROCI_MAX_REGIONS,
+            )
+            added += len(extra)
+            augmented.append(list(observers) + [np.array(p) for p in extra])
+
+        per_frame = added / max(1, len(results))
+        print(f"[Viewport] ROCI added {added} viewports "
+              f"({per_frame:.2f} per frame)")
+        return augmented
+
+    def run(self, method, roci=None):
+        if roci is None:
+            roci = config.ROCI_ENABLED
+        print(f"[Viewport] Method selected: {method} (roci={roci})")
         try:
             print("[Viewport] Interpolating dataframes...")
             dataframes = self.interpolation(self.vpds)
@@ -192,10 +229,16 @@ class Viewport:
             if method not in methods:
                 raise NotImplementedError(f"Method '{method}' is not implemented.")
 
-            self.method = method
+            # ROCI labels are written beside the plain ones rather than over
+            # them: the two are different training sets, and a run has to be
+            # able to say which it used.
+            self.method = f"{method}_roci" if roci else method
             print(f"[Viewport] Running preprocessing: {method}")
             self.results = methods[method](dataframe, num_vpds)
-            print(f"[Viewport] Finished preprocessing with method: {method}")
+            if roci:
+                print("[Viewport] Applying ROCI target augmentation...")
+                self.results = self.apply_roci(self.results)
+            print(f"[Viewport] Finished preprocessing with method: {self.method}")
         except Exception as e:
             print("[Viewport.run] Exception occurred")
             traceback.print_exc()

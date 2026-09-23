@@ -801,9 +801,16 @@ def run_training(cfg: DictConfig):
 
 @hydra.main(config_path="../conf", config_name="config", version_base=None)
 def main(cfg: DictConfig):
+    # ROCI lives in its own label file, so the toggle resolves to a label
+    # method name here, once, before anything reads it. Everything downstream -
+    # the dataset, the inference pass, the run's id_string - then follows
+    # without needing to know the flag exists, and a run is named after the
+    # targets it actually trained on.
+    if cfg.get("roci", False) and not str(cfg.label_method).endswith("_roci"):
+        cfg.label_method = f"{cfg.label_method}_roci"
+
     # 디버깅용: 전체 config 출력
     print(OmegaConf.to_yaml(cfg))
-
     # 로그 레벨 설정
     Logger.set_level(cfg.log_level)
 
