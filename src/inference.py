@@ -33,6 +33,7 @@ disable_inductor()
 
 
 from utils.seed import set_global_seed
+from utils.provenance import write_provenance
 
 
 def collate_fn(batch):
@@ -334,6 +335,43 @@ def run_inference(args):
             f.write(str(args.seed) + "\n")
     except Exception as e:
         Logger.warn(f"[Inference] Failed to write seed.txt: {e}")
+
+    # A prediction file could not previously say what produced it, which is a
+    # problem the moment a sweep is split over machines: a workstation that has
+    # not pulled produces silently different predictions, and the only way to
+    # notice was to checksum files against an older run and already suspect it.
+    # Named apart from the model folder's own run_provenance.json, which
+    # describes the training run rather than this pass over it.
+    try:
+        written = write_provenance(
+            os.path.join(run_dir, "inference_provenance.json"),
+            {
+                "model_name": args.model_name,
+                "model_number": model_number,
+                "checkpoint": model_path,
+                "label_method": args.label_method,
+                "window_size": args.window_size,
+                "score_threshold": getattr(args, "score_threshold", None),
+                "conf_threshold": getattr(args, "conf_threshold", None),
+                "k_max": getattr(args, "k_max", None),
+                "sample_ratio": getattr(args, "sample_ratio", None),
+                "replays": list(args.replays),
+                "seed": args.seed,
+            },
+        )
+        git = written.get("git", {})
+        Logger.info(
+            f"[Provenance] commit {str(git.get('commit'))[:9]}"
+            f"{' (DIRTY)' if git.get('dirty') else ''}"
+            f" on {written.get('host') or 'unknown host'}"
+        )
+        if git.get("dirty"):
+            Logger.warn(
+                "[Provenance] working tree is dirty; these predictions are not "
+                "reproducible from a commit."
+            )
+    except Exception as e:
+        Logger.warn(f"[Inference] Failed to write inference_provenance.json: {e}")
 
     # Infer input channels once from a small temp dataset (first replay)
     temp_input_root = os.path.join(args.data_root, "input", "dst")
