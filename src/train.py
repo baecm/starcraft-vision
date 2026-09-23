@@ -587,7 +587,26 @@ def run_training(cfg: DictConfig):
         Logger.info(f"[Seed] No seed provided in config; generated seed={generated}")
     else:
         Logger.info(f"[Seed] Using seed={seed}")
-    set_global_seed(int(seed))
+
+    # torchvision's CUDA roi_align kernel is non-deterministic, so with
+    # torch.use_deterministic_algorithms enabled `ops.roi_align` silently takes a
+    # pure-Python decomposition instead. That path materialises a
+    # [K, C, PH, PW, IY, IX] intermediate: Mask R-CNN training asks for 5.5 GiB in
+    # a single allocation and dies on a 32 GiB card, at batch 16 as well as 32.
+    # inference.py already opts out for the same reason; training has to do the
+    # same for the models that reach roi_align. The heatmap models never call it,
+    # so they keep determinism, which is what makes their seed comparison mean
+    # anything.
+    arch_name = str(getattr(cfg.architecture, "model_name", "")).lower()
+    uses_roi_align = "rcnn" in arch_name
+    if uses_roi_align:
+        Logger.warn(
+            f"[Seed] deterministic algorithms disabled for architecture "
+            f"'{arch_name}': they force torchvision's roi_align onto a "
+            f"pure-Python fallback that OOMs. Runs of this architecture are "
+            f"reproducible only up to the kernel's own non-determinism."
+        )
+    set_global_seed(int(seed), deterministic=not uses_roi_align)
 
     # 2) 디바이스
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
