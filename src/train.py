@@ -709,7 +709,42 @@ def run_training(cfg: DictConfig):
     optimizer = torch.optim.SGD(
         params, lr=cfg.learning_rate, momentum=0.9, weight_decay=0.0005
     )
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
+    # StepLR(step_size=3, gamma=0.1) stepped once per epoch, which over a
+    # 30-epoch run drops the rate by a decade every three epochs: 5e-3 for
+    # epochs 1-3, 5e-4 through 6, 5e-5 through 9, and 5e-12 by epoch 30. The
+    # run was effectively over after epoch six. Three consequences were
+    # visible in the results before the cause was:
+    #
+    #   - L_smooth ramps from epoch 5 and reaches full weight at epoch 10,
+    #     where the rate is a thousandth of its initial value. The objective
+    #     had never actually been trained at the weight it is reported with.
+    #   - the same holds, less sharply, for every optional objective, which is
+    #     why the ablation lattice was flat to within seed noise.
+    #   - a randomly initialised decoder between the pretrained backbone and
+    #     the heads cannot converge in six epochs, which is how the stride-2
+    #     run collapsed to 66% frame coverage with a median peak score of
+    #     0.275 against 0.572 at stride 4.
+    #
+    # Cosine over max_epoch keeps the rate useful across the whole run and has
+    # no cliff for a warmup to land behind. engine_safe already applies the
+    # torchvision linear warmup within epoch 0, so this only shapes the decay.
+    schedule = str(getattr(cfg, "lr_schedule", "cosine")).lower()
+    if schedule == "cosine":
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=int(cfg.max_epoch)
+        )
+    elif schedule == "step":
+        # The legacy shape, rescaled so the three decade drops span the run
+        # instead of its first sixth.
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, step_size=max(1, int(cfg.max_epoch) // 3), gamma=0.1
+        )
+    else:
+        raise ValueError(f"Unknown lr_schedule '{schedule}'; use cosine or step.")
+    Logger.info(
+        f"[Info] LR schedule: {schedule}, base lr={cfg.learning_rate}, "
+        f"max_epoch={cfg.max_epoch}"
+    )
 
     test_eval_every = cfg.test_eval_every
 

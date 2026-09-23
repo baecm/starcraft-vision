@@ -67,6 +67,28 @@ def _init_head(head: nn.Sequential, final_bias: float = 0.0):
         nn.init.constant_(convs[-1].bias, final_bias)
 
 
+class _DecoderBlock(nn.Module):
+    """Bilinear x2 upsample, then a residual that starts at zero.
+
+    `out = up(x) + conv2(relu(gn(conv1(up(x)))))` with conv2 zero-initialised,
+    so the block is exactly bilinear upsampling until training moves it. See
+    the comment at its construction site for why that matters here.
+    """
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+        self.gn = nn.GroupNorm(32, channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        _kaiming_init_conv(self.conv1)
+        nn.init.zeros_(self.conv2.weight)
+        nn.init.zeros_(self.conv2.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+        return x + self.conv2(F.relu(self.gn(self.conv1(x)), inplace=True))
+
+
 class DirectorCenterNet(nn.Module):
     """Director-CenterNet: Heatmap-based Multi-Region Viewport Prediction (MRVP).
 
@@ -200,19 +222,24 @@ class DirectorCenterNet(nn.Module):
         # candidate peaks is, since two ranked modes 12 tiles apart are only 3
         # cells apart at stride 4. Upsampling here rather than restriding
         # conv1 keeps the ImageNet-pretrained backbone and costs ~16x less.
+        # Each block is bilinear upsampling followed by a residual whose last
+        # conv is zero-initialised, so at step 0 the decoder is *exactly*
+        # bilinear upsampling and the heads see the same pretrained FPN
+        # semantics they see at stride 4.
+        #
+        # The first version of this stacked plain conv-norm-ReLU blocks with
+        # Kaiming init, which destroys those semantics at step 0: the heads
+        # then have to learn from noise while the decoder learns to pass
+        # information at all. Under the old learning-rate schedule that had six
+        # usable epochs the stride-2 run never recovered - 66% frame coverage,
+        # median peak score 0.275 against 0.572 at stride 4, which is a model
+        # that never became confident rather than one that ran out of capacity.
+        # Starting from identity means a stride change tests resolution instead
+        # of testing whether a fresh decoder can be optimised.
         n_up = int(round(math.log2(FPN_STRIDE / self.down_ratio)))
-        decoder: List[nn.Module] = []
-        for _ in range(n_up):
-            decoder += [
-                nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
-                nn.Conv2d(fpn_out_channels, fpn_out_channels, kernel_size=3, padding=1),
-                nn.GroupNorm(32, fpn_out_channels),
-                nn.ReLU(inplace=True),
-            ]
-        self.decoder = nn.Sequential(*decoder) if decoder else nn.Identity()
-        for mod in self.decoder.modules():
-            if isinstance(mod, nn.Conv2d):
-                _kaiming_init_conv(mod)
+        self.decoder = nn.Sequential(
+            *[_DecoderBlock(fpn_out_channels) for _ in range(n_up)]
+        ) if n_up else nn.Identity()
 
         # Heatmap Head (2x 3x3 conv + 1x1 conv)
         self.hm_head = nn.Sequential(

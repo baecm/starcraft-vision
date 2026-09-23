@@ -18,6 +18,7 @@ model that scaled them in place would apply the factor again on every reload.
 """
 from __future__ import annotations
 
+import math
 import sys
 
 sys.path.insert(0, "/workspace/src")
@@ -80,6 +81,28 @@ def main() -> int:
             )
 
             assert pred_hm.shape[-1] == MAP // stride, "decoder produced the wrong grid"
+
+            # At step 0 the decoder must be exactly bilinear upsampling, so the
+            # heads start on the same pretrained FPN semantics they get at
+            # stride 4. A decoder that scrambles them has to be optimised
+            # before the stride change can be measured, which is how the first
+            # stride-2 run failed.
+            if stride < FPN_STRIDE:
+                n_up = int(round(math.log2(FPN_STRIDE / stride)))
+                with torch.no_grad():
+                    want = model.backbone(x)["0"]
+                    # one x2 step per block: repeated bilinear is not the same
+                    # map as a single x4 bilinear, so match the block structure
+                    for _ in range(n_up):
+                        want = torch.nn.functional.interpolate(
+                            want, scale_factor=2, mode="bilinear",
+                            align_corners=False,
+                        )
+                err = (feat - want).abs().max().item()
+                assert err < 1e-5, (
+                    f"decoder is not identity at init (max |diff| = {err:.3e}); "
+                    f"a stride sweep from here measures optimisation, not resolution"
+                )
             assert model.soft_center_radius == config.DIRECTOR_SOFT_CENTER_RADIUS, (
                 "configured soft_center_radius was scaled in place; provenance "
                 "would make inference scale it a second time"
