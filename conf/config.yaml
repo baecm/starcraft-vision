@@ -34,7 +34,7 @@ max_epoch: 30
 # 체크포인트를 몇 에폭마다 남길지. 마지막 에폭은 이 간격과 무관하게 항상
 # 저장하므로 max_epoch=30, checkpoint_every=10 이면 10/20/30 이 남는다.
 # 0 이면 마지막 에폭만 저장한다.
-checkpoint_every: 10
+checkpoint_every: 5
 # Path to a checkpoint to continue from, e.g.
 #   make train ARGS="resume=/workspace/models/<run>/model_020.pth"
 # Weights, optimizer and schedule are all restored, so the run picks up where
