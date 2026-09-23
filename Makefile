@@ -40,7 +40,7 @@ PYDEBUG_SERVICE  ?= pydebug
 
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
-		zeppelin benchmark mode-disagreement test probe probe-resolution \
+		zeppelin benchmark mode-disagreement mode-disagreement-fg test probe probe-resolution \
 		budget-allocation
 
 # 디렉토리 생성
@@ -173,6 +173,16 @@ mode-disagreement:
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/mode_disagreement.py $(ARGS)" \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/mode_disagreement.cid
+
+# Same as mode-disagreement but in the foreground, so the shell waits for it.
+# The backgrounded target returns as soon as the container is launched, which
+# makes "a && b" start both at once - they then compete for the GPU and the
+# second overwrites the first CID file. Chain this one instead, and wrap the
+# whole chain in a single nohup if the terminal should be free:
+#   nohup bash -c 'make mode-disagreement-fg ARGS="..." && \
+#                   make mode-disagreement-fg ARGS="..."' > logs/chain.log 2>&1 &
+mode-disagreement-fg:
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/mode_disagreement.py $(ARGS)"
 
 # Reads the frames_*.csv that mode-disagreement wrote. Example:
 # make budget-allocation ARGS="--dir /workspace/results/mode_disagreement/th_sweep \
