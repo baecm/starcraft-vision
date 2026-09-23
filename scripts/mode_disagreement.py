@@ -72,14 +72,25 @@ from metrics.modes import (
 )
 
 
-def parse_model_spec(spec: str, default_epoch: int) -> Tuple[str, str, int]:
+def parse_model_spec(spec: str, default_epoch: int) -> Tuple[str, str, int, object]:
+    """NAME=MODEL_NAME[:EPOCH][@THRESHOLD] -> (name, model, epoch, threshold).
+
+    The threshold names the prediction directory to read, `model_NNN_th<x>`,
+    which is where inference puts a run that set one. A sweep is therefore
+    addressed here rather than by copying directories: comparing a proposal
+    detector against a heatmap one is only meaningful at a matched region
+    count, and for the detector that count is set by this filter.
+    """
     name, sep, rest = spec.partition("=")
     if not sep:
-        raise ValueError(f"--model spec must be NAME=MODEL_NAME[:EPOCH], got: {spec!r}")
+        raise ValueError(
+            f"--model spec must be NAME=MODEL_NAME[:EPOCH][@THRESHOLD], got: {spec!r}"
+        )
+    rest, _, th_str = rest.partition("@")
     model_name, _, epoch_str = rest.partition(":")
     epoch = int(epoch_str) if epoch_str else default_epoch
-    return name, model_name, epoch
-
+    threshold = th_str if th_str else None
+    return name, model_name, epoch, threshold
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
@@ -89,9 +100,12 @@ def main() -> None:
     ap.add_argument("--label-root", default="/workspace/data/label/dst")
     ap.add_argument("--label-method", default="all_correct")
     ap.add_argument("--pred-root", default="/workspace/predictions")
-    ap.add_argument("--model", action="append", required=True, metavar="NAME=MODEL_NAME[:EPOCH]",
+    ap.add_argument("--model", action="append", required=True, metavar="NAME=MODEL_NAME[:EPOCH][@THRESHOLD]",
                     help="prediction source under --pred-root, repeatable "
-                         "(e.g. maskrcnn=<dir>, maskrcnn_kbrs=<dir>, centernet=<dir>)")
+                         "(e.g. maskrcnn=<dir>, director=<dir>:30). A @THRESHOLD "
+                         "reads <dir>/model_NNN_th<x> instead, which is where "
+                         "inference puts a run that set --score-threshold; that "
+                         "is how a sweep is compared at a matched region count.")
     ap.add_argument("--epoch", type=int, default=30,
                     help="default epoch for --model specs that omit :EPOCH")
     ap.add_argument("--outdir", default="results",
@@ -143,11 +157,11 @@ def main() -> None:
     os.makedirs(args.outdir, exist_ok=True)
     models = [parse_model_spec(spec, args.epoch) for spec in args.model]
     print(f"replays: {args.replays}")
-    print(f"models : {[(n, m, e) for n, m, e in models]}")
+    print(f"models : {[(n, m, e, t) for n, m, e, t in models]}")
     print(f"pred box size: {'as stored in the prediction file' if args.raw_pred_size else 'GT viewport size, anchored at top-left'}\n")
 
-    per_method_frames = {name: [] for name, _, _ in models}
-    per_method_mcti = {name: [] for name, _, _ in models}
+    per_method_frames = {name: [] for name, _, _, _ in models}
+    per_method_mcti = {name: [] for name, _, _, _ in models}
 
     for replay in args.replays:
         replay = str(replay)
@@ -163,10 +177,11 @@ def main() -> None:
         # prediction denotes; box_slices/box_center take (x, y, w, h).
         pred_size_wh = None if args.raw_pred_size else (size_hw[1], size_hw[0])
 
-        for name, model_name, epoch in models:
+        for name, model_name, epoch, threshold in models:
             dets_by_img = load_coco_preds(
                 pred_root=args.pred_root, model_name=model_name, epoch=epoch,
                 replay_id=replay, label_method=args.label_method,
+                score_threshold=threshold,
             )
             pred_by_frame = predictions_from_dets(dets_by_img, pred_size_wh)
             if not pred_by_frame:
@@ -213,7 +228,7 @@ def main() -> None:
         print()
 
     summaries = []
-    for name, _, _ in models:
+    for name, _, _, _ in models:
         dfs = per_method_frames[name]
         if not dfs:
             print(f"--- {name}: no data across the fold, skipping")

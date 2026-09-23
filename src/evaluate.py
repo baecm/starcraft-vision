@@ -627,9 +627,16 @@ def load_coco_preds(
     epoch: int,
     replay_id: str,
     label_method: str,
+    score_threshold=None,
 ) -> Dict[int, List[dict]]:
+    # Inference writes a threshold's predictions to their own directory,
+    # `model_NNN_th<x>`, and leaves `model_NNN` for a run that set none. Naming
+    # the threshold here is what lets a sweep be read back: the region count a
+    # proposal detector emits is set by this filter, so comparing two methods
+    # at a matched count means addressing those directories separately.
+    suffix = "" if score_threshold is None else f"_th{score_threshold}"
     pred_dir = os.path.join(
-        pred_root, model_name, f"model_{epoch:03d}", f"{replay_id}.rep"
+        pred_root, model_name, f"model_{epoch:03d}{suffix}", f"{replay_id}.rep"
     )
     pred_path = os.path.join(pred_dir, f"{label_method}.json")
     if not os.path.isfile(pred_path):
