@@ -21,6 +21,7 @@ one represents and assigns them to separate output regions.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import List, Sequence, Tuple
 
 import numpy as np
@@ -46,6 +47,40 @@ def _coverage_map(
     return coverage
 
 
+
+@lru_cache(maxsize=None)
+def _single_observer_peak(
+    height: int,
+    width: int,
+    box_wh: Tuple[int, int],
+    sigma: float,
+) -> float:
+    """What one observer's viewport is worth after the same smoothing.
+
+    Joo et al. read their floor off the raw scale of the coverage map, where a
+    tile one observer watches scores 1 and a tile two watch concurrently
+    scores 2, and put the floor just above 1. Their Gaussian is a window the
+    size of a viewport, so smoothing roughly preserves that scale and the
+    number means what it says.
+
+    Smoothing here is scipy's sigma form, which attenuates a peak by an amount
+    that depends on sigma, on the viewport size and on the grid - so the raw
+    number does not survive the change of filter. Measuring one observer under
+    the very same filter restores the intent: the floor becomes a multiple of
+    one observer's worth rather than an absolute that has to be recalibrated,
+    and silently ends up admitting everything or nothing.
+
+    The box is placed at the map centre so the reference is the untruncated
+    peak; a viewport at the edge smooths lower under constant padding, and
+    calibrating against that would make the floor depend on where the
+    observers happened to be looking.
+    """
+    w, h = box_wh
+    x = max(0, (width - w) // 2)
+    y = max(0, (height - h) // 2)
+    one = _coverage_map([(x, y)], height, width, box_wh)
+    return float(gaussian_filter(one, sigma=sigma, mode="constant").max())
+
 def roci_viewports(
     viewports: Sequence[Tuple[int, int]],
     height: int,
@@ -62,14 +97,14 @@ def roci_viewports(
     labels, so the caller can append them to a frame's list and let the COCO
     export treat them like any other viewport.
 
-    `threshold` is absolute, on the smoothed coverage, as in Joo et al.: their
-    delta sits just above 1 because 1 is a tile one observer watches and 2 a
-    tile two watch concurrently, so the floor is what separates common interest
-    from a lone observer. Note their Gaussian is a window of the viewport's own
-    size while this uses scipy's sigma parameterisation, so the two attenuate
-    peaks differently and the floor does not carry over numerically. Check the
-    reported count per frame after a change: a floor set too high silently
-    yields no regions at all and trains exactly like plain labels.
+    `threshold` is a multiple of one observer's worth, measured under the same
+    filter by `_single_observer_peak`, so Joo et al.'s 1.1 keeps its meaning -
+    just above what a lone observer produces - whatever sigma, viewport size or
+    grid this pipeline uses. Without such a floor the local maxima of a frame
+    where two observers overlap in one place and three others each look
+    somewhere alone would yield five regions, four of which no two observers
+    share; the floor is what makes the output common interest rather than every
+    attention peak.
 
     An empty list comes back when no two observers overlap, which is Joo et
     al.'s `else` branch: with no common interest there is nothing to add, and
@@ -88,8 +123,16 @@ def roci_viewports(
     if smoothed.max() <= 0:
         return []
 
+    # The floor is a multiple of what one observer is worth under this very
+    # filter, not an absolute on the smoothed scale - see
+    # `_single_observer_peak` for why the raw number does not survive the
+    # change of Gaussian.
+    reference = _single_observer_peak(height, width, tuple(box_wh), float(sigma))
+    if reference <= 0:
+        return []
+
     peaks = smoothed >= maximum_filter(smoothed, size=3, mode="constant")
-    peaks &= smoothed >= threshold
+    peaks &= smoothed >= threshold * reference
     rows, cols = np.nonzero(peaks)
     if len(rows) == 0:
         return []

@@ -37,11 +37,10 @@ ROCI_ENABLED = False
 # one silently following the other.
 ROCI_SIGMA = MODE_EXTRACTION_SIGMA
 ROCI_MIN_SEP = MODE_EXTRACTION_MIN_SEP
-# Joo et al. set their floor just above 1: a tile one observer watches scores 1,
-# a tile two watch concurrently scores 2, so this is what separates common
-# interest from a lone observer. Their Gaussian is a viewport-sized window
-# while this pipeline uses scipy sigma, so the number does not carry over
-# exactly - check the regions-per-frame the run reports before trusting it.
+# Joo et al. put their floor just above 1: a tile one observer watches scores
+# 1, a tile two watch concurrently scores 2. This is read as a multiple of what
+# one observer is worth under the same smoothing, so the 1.1 keeps that meaning
+# regardless of sigma or viewport size and never needs recalibrating.
 ROCI_THRESHOLD = 1.1
 # Joo et al. cap the added regions at the number of observers.
 ROCI_MAX_REGIONS = NUM_OBSERVERS_U
