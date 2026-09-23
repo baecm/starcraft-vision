@@ -113,6 +113,16 @@ def main() -> None:
     ap.add_argument("--region-size", type=int, nargs=2, default=None,
                     metavar=("H", "W"),
                     help="viewport size in tiles; inferred per-replay from the GT if omitted")
+    ap.add_argument("--holdout", action="store_true",
+                    help="also score a held-out observer. The analysis runs "
+                         "once per observer with that one removed from the "
+                         "ground truth, and HO<k>@delta reports whether the "
+                         "regions the others produced still reach them. Costs "
+                         "one pass per observer. Point --label-root at the "
+                         "plain labels, not the _roci ones, or the augmented "
+                         "viewports will be counted as people.")
+    ap.add_argument("--num-observers", type=int, default=5,
+                    help="observers per frame, used only to size --holdout")
     ap.add_argument("--raw-pred-size", action="store_true",
                     help="measure predictions at the width/height stored in the "
                          "prediction file instead of anchoring each box at its "
@@ -155,16 +165,28 @@ def main() -> None:
                 print(f"  [!] {name}: no predictions for replay {replay}, skipping")
                 continue
 
-            df = analyse_method(
-                gt_by_frame, pred_by_frame, height, width,
-                size_hw=size_hw, sigma=args.sigma, min_sep=args.min_sep,
-                rel_threshold=args.rel_threshold, max_modes=args.max_modes,
-                delta=args.delta, straddle_floor=args.straddle_floor, k_max=args.k_max,
-                label=f"{replay}/{name}",
-            )
-            df.insert(0, "replay", replay)
+            # With --holdout the analysis runs once per observer, each time
+            # with that one removed from the ground truth, and the results are
+            # pooled. Every frame therefore appears U times, once per observer
+            # held out, so the held-out figures average over which person was
+            # the stranger rather than depending on a single arbitrary choice.
+            holdouts = range(args.num_observers) if args.holdout else [None]
+            replay_frames = []
+            for ho in holdouts:
+                tag = f"{replay}/{name}" if ho is None else f"{replay}/{name}/ho{ho}"
+                df = analyse_method(
+                    gt_by_frame, pred_by_frame, height, width,
+                    size_hw=size_hw, sigma=args.sigma, min_sep=args.min_sep,
+                    rel_threshold=args.rel_threshold, max_modes=args.max_modes,
+                    delta=args.delta, straddle_floor=args.straddle_floor,
+                    k_max=args.k_max, label=tag, holdout=ho,
+                )
+                df.insert(0, "replay", replay)
+                replay_frames.append(df)
+
+            df = pd.concat(replay_frames, ignore_index=True)
             per_method_frames[name].append(df)
-            frames_sorted = sorted(df["frame"])
+            frames_sorted = sorted(df["frame"].unique())
             mcti = primary_track_m_cti(
                 pred_by_frame, frames_sorted, args.jump_threshold
             )

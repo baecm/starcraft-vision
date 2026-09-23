@@ -416,6 +416,46 @@ def _region_metrics(
     return out
 
 
+def _holdout_metrics(
+    boxes: np.ndarray,
+    held_mask: np.ndarray,
+    height: int,
+    width: int,
+    delta: float,
+    k_max: int,
+) -> dict:
+    """Whether the predicted regions serve an observer left out of the target.
+
+    The five observers who define a frame's modes are also the five the
+    coverage figures are scored against, so `OC@delta` says how well the output
+    serves the people whose data built it. This asks the other question: hold
+    one observer out of the ground truth entirely, and see whether the regions
+    the remaining four produced still reach them. A broadcast serves an
+    audience rather than the five people who happened to be recorded, so this
+    is the figure that speaks to deployment, and it is where extra regions
+    should pay off most - covering more modes is more chances to land on a
+    viewer nobody trained for.
+
+    The denominator is the held-out observer's own viewport, as in `OC@delta`.
+    """
+    out = {}
+    area = float(held_mask.sum())
+    if area <= 0:
+        for k in range(1, k_max + 1):
+            out[f"HO{k}@{delta}"] = np.nan
+        out["HO_best"] = np.nan
+        return out
+
+    slices = [box_slices(b, height, width) for b in boxes[:k_max]]
+    best = 0.0
+    for k in range(1, k_max + 1):
+        for ys, xs in slices[:k]:
+            best = max(best, float(held_mask[ys, xs].sum()) / area)
+        out[f"HO{k}@{delta}"] = float(best >= delta)
+    out["HO_best"] = best
+    return out
+
+
 def _unanswered_row(
     frame: int,
     first_frame: int,
@@ -423,6 +463,7 @@ def _unanswered_row(
     modes: Modes,
     delta: float,
     k_max: int,
+    holdout: Optional[int] = None,
 ) -> dict:
     """A row for a frame on which the model emitted no region.
 
@@ -464,7 +505,16 @@ def _unanswered_row(
         row[f"OC{k}@{delta}"] = np.nan
         row[f"BoK{k}@{delta}_ff"] = np.nan
         row[f"OC{k}@{delta}_ff"] = np.nan
+    if holdout is not None:
+        row["holdout"] = holdout
+        for k in range(1, k_max + 1):
+            row[f"HO{k}@{delta}"] = np.nan
+        row["HO_best"] = np.nan
+
+
     return row
+
+
 def analyse_method(
     gt_by_frame: Dict[int, np.ndarray],
     pred_by_frame: Dict[int, Tuple[np.ndarray, np.ndarray]],
@@ -480,6 +530,7 @@ def analyse_method(
     straddle_floor: float,
     k_max: int,
     label: str = "",
+    holdout: Optional[int] = None,
 ) -> pd.DataFrame:
     # Every ground-truth frame is analysed, not only those the model answered.
     # The intersection of the two key sets used to be taken here, which removed
@@ -511,6 +562,16 @@ def analyse_method(
                   f"({(idx + 1) / total_frames * 100:.1f}%)", flush=True)
 
         obs = gt_by_frame[frame]
+        held_mask = None
+        if holdout is not None:
+            if len(obs) <= holdout:
+                continue
+            # One observer is removed from the ground truth entirely: the modes
+            # below are built from the others, and this frame then asks whether
+            # the regions those modes produced still reach the person nobody
+            # trained for.
+            held_mask = box_mask(obs[holdout], height, width)
+            obs = np.delete(obs, holdout, axis=0)
         modes = extract_modes(
             obs, height, width,
             sigma=sigma, min_sep=min_sep,
@@ -528,7 +589,9 @@ def analyse_method(
             # raised threshold flatters itself - the frames it drops are the
             # crowded ones, so every average computed without them is higher
             # for a reason that has nothing to do with prediction quality.
-            row = _unanswered_row(frame, frames[0], span, modes, delta, k_max)
+            row = _unanswered_row(
+                frame, frames[0], span, modes, delta, k_max, holdout=holdout
+            )
             if last_boxes is not None:
                 row.update(_region_metrics(
                     last_boxes, modes, height, width, delta, k_max, suffix="_ff"
@@ -572,6 +635,12 @@ def analyse_method(
         # rather than recomputing keeps the _ff column defined on every row
         # without paying for the arithmetic twice.
         row.update({f"{key}_ff": value for key, value in plain.items()})
+
+        if held_mask is not None:
+            row["holdout"] = holdout
+            row.update(_holdout_metrics(
+                boxes, held_mask, height, width, delta, k_max
+            ))
 
         last_boxes = boxes
         records.append(row)
@@ -769,6 +838,15 @@ def summarise(df: pd.DataFrame, delta: float, k_max: int) -> dict:
     # were the crowded ones, and every plain key above is flattered by their
     # absence.
     out["mean_n_modes_all"] = df["n_modes"].mean()
+
+    # Held-out observer. Present only when the run excluded one from the
+    # ground truth. OC above says how well the output serves the people whose
+    # data built the target; this says whether it reaches someone it never
+    # saw, which is the claim a broadcast actually has to make.
+    if f"HO{k_max}@{delta}" in df.columns:
+        for k in range(1, k_max + 1):
+            out[f"HO{k}@{delta}"] = ans[f"HO{k}@{delta}"].mean()
+        out["HO_best"] = ans["HO_best"].mean()
 
     # Forward fill: a declined frame holds the last viewport the model did
     # produce, which is what a live system does with a real camera. It is
