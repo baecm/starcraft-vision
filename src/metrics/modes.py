@@ -367,6 +367,104 @@ def attribute(
     return "off_mode", nearest, float(covs[best])
 
 
+def _region_metrics(
+    boxes: np.ndarray,
+    modes: Modes,
+    height: int,
+    width: int,
+    delta: float,
+    k_max: int,
+    suffix: str = "",
+) -> dict:
+    """IR, I@delta and the per-k BoK/OC figures for one set of predicted boxes.
+
+    Factored out so the same arithmetic scores a frame's own prediction and,
+    on a frame the model declined, the prediction carried forward from the last
+    frame it did answer. `suffix` is what keeps the two families apart.
+    """
+    primary = boxes[0]
+    ir = coverage_of(primary, modes.union, height, width)
+    out = {
+        f"IR{suffix}": ir,
+        f"I@{delta}{suffix}": float(ir >= delta),
+    }
+
+    # box_slices(b) is the same for a given b across every k that includes it
+    # (top_k only grows), so compute each box's slice once per frame instead
+    # of once per (k, observer) - this and the switch away from RLE are what
+    # make the loop tractable on 60k+-frame replays.
+    top_slices = [box_slices(b, height, width) for b in boxes[:k_max]]
+
+    for k in range(1, k_max + 1):
+        slices_k = top_slices[:k]
+        out[f"BoK{k}@{delta}{suffix}"] = float(
+            any(_slice_coverage(ys, xs, modes.union) >= delta for ys, xs in slices_k)
+        )
+        served = 0
+        for mask in modes.observers:
+            if not mask.any():
+                continue
+            obs_area = float(mask.sum())
+            # fraction of this observer's own viewport covered by box b,
+            # i.e. intersection_ratio(b, mask, denom="gt")
+            best = max(
+                (float(mask[ys, xs].sum()) / obs_area for ys, xs in slices_k),
+                default=0.0,
+            )
+            served += int(best >= delta)
+        out[f"OC{k}@{delta}{suffix}"] = served / max(1, modes.n_observers)
+    return out
+
+
+def _unanswered_row(
+    frame: int,
+    first_frame: int,
+    span: int,
+    modes: Modes,
+    delta: float,
+    k_max: int,
+) -> dict:
+    """A row for a frame on which the model emitted no region.
+
+    The ground truth is known either way, so the mode count and the support
+    figures are filled in. Everything that needs a prediction is left missing,
+    and `answered` is 0. `n_pred` is 0 rather than missing, because emitting
+    nothing is a count and the count-calibration figures should see it as one.
+    `nearest_mode_rank` is -1 so that the mode-flip test, which requires a
+    known rank on both sides of a step, skips any pair touching this frame.
+
+    The `_ff` family starts missing too. The caller fills it from the last
+    answered frame when there is one to carry.
+    """
+    row = {
+        "frame": frame,
+        "progression": (frame - first_frame) / max(1, span - 1),
+        "n_modes": len(modes.centers),
+        "support_top1": int(modes.support[0]) if len(modes.support) else 0,
+        "support_top2": int(modes.support[1]) if len(modes.support) > 1 else 0,
+        "n_pred": 0,
+        "primary_score": np.nan,
+        "IR": np.nan,
+        f"I@{delta}": np.nan,
+        "IR_ff": np.nan,
+        f"I@{delta}_ff": np.nan,
+        "attribution": None,
+        "nearest_mode_rank": -1,
+        "best_mode_coverage": np.nan,
+        "primary_cy": np.nan,
+        "primary_cx": np.nan,
+        "primary_cy_ff": np.nan,
+        "primary_cx_ff": np.nan,
+        "answered": 0.0,
+        "carried": np.nan,
+    }
+    row["margin"] = row["support_top1"] - row["support_top2"]
+    for k in range(1, k_max + 1):
+        row[f"BoK{k}@{delta}"] = np.nan
+        row[f"OC{k}@{delta}"] = np.nan
+        row[f"BoK{k}@{delta}_ff"] = np.nan
+        row[f"OC{k}@{delta}_ff"] = np.nan
+    return row
 def analyse_method(
     gt_by_frame: Dict[int, np.ndarray],
     pred_by_frame: Dict[int, Tuple[np.ndarray, np.ndarray]],
@@ -383,8 +481,14 @@ def analyse_method(
     k_max: int,
     label: str = "",
 ) -> pd.DataFrame:
-    frames = sorted(set(gt_by_frame) & set(pred_by_frame))
+    # Every ground-truth frame is analysed, not only those the model answered.
+    # The intersection of the two key sets used to be taken here, which removed
+    # the frames a confidence threshold had emptied before any metric could see
+    # them, and with them the denominator that makes coverage measurable.
+    frames = sorted(gt_by_frame)
     if not frames:
+        raise ValueError("ground truth has no frames")
+    if not set(frames) & set(pred_by_frame):
         raise ValueError("ground truth and prediction share no frame ids")
 
     span = max(frames) - min(frames) + 1
@@ -396,6 +500,10 @@ def analyse_method(
     # so a fold-wide log file doesn't balloon on large replays.
     step_interval = max(5000, total_frames // 10)
     tag = f" {label}" if label else ""
+
+    # the most recent answered prediction, carried into frames the model
+    # declines so that the _ff family has something to score
+    last_boxes = None
 
     for idx, frame in enumerate(frames):
         if (idx + 1) % step_interval == 0 or (idx + 1) == total_frames:
@@ -409,60 +517,63 @@ def analyse_method(
             rel_threshold=rel_threshold, max_modes=max_modes,
         )
 
-        boxes, scores = pred_by_frame[frame]
-        if len(boxes) == 0:
-            continue
-        primary = boxes[0]
+        boxes, scores = pred_by_frame.get(
+            frame, (np.empty((0, 4), dtype=float), np.empty(0, dtype=float))
+        )
 
-        ir = coverage_of(primary, modes.union, height, width)
+        if len(boxes) == 0:
+            # Nothing cleared the model's confidence threshold here. Keep the
+            # frame instead of dropping it: it is the denominator `summarise`
+            # needs for coverage, and declining to answer is exactly how a
+            # raised threshold flatters itself - the frames it drops are the
+            # crowded ones, so every average computed without them is higher
+            # for a reason that has nothing to do with prediction quality.
+            row = _unanswered_row(frame, frames[0], span, modes, delta, k_max)
+            if last_boxes is not None:
+                row.update(_region_metrics(
+                    last_boxes, modes, height, width, delta, k_max, suffix="_ff"
+                ))
+                held = box_center(last_boxes[0])
+                row["primary_cy_ff"] = held[0]
+                row["primary_cx_ff"] = held[1]
+                row["carried"] = 1.0
+            records.append(row)
+            continue
+
+        primary = boxes[0]
         attribution, nearest, mode_cov = attribute(
             primary, modes, size_hw, height, width, delta, straddle_floor
         )
+        center = box_center(primary)
 
         row = {
             "frame": frame,
-            "progression": (frame - min(frames)) / max(1, span - 1),
+            "progression": (frame - frames[0]) / max(1, span - 1),
             "n_modes": len(modes.centers),
             "support_top1": int(modes.support[0]) if len(modes.support) else 0,
             "support_top2": int(modes.support[1]) if len(modes.support) > 1 else 0,
             "n_pred": len(boxes),
             "primary_score": float(scores[0]) if len(scores) else np.nan,
-            "IR": ir,
-            f"I@{delta}": float(ir >= delta),
             "attribution": attribution,
             "nearest_mode_rank": nearest,
             "best_mode_coverage": mode_cov,
-            "primary_cy": box_center(primary)[0],
-            "primary_cx": box_center(primary)[1],
+            "primary_cy": center[0],
+            "primary_cx": center[1],
+            "primary_cy_ff": center[0],
+            "primary_cx_ff": center[1],
+            "answered": 1.0,
+            "carried": 0.0,
         }
         row["margin"] = row["support_top1"] - row["support_top2"]
 
-        # box_slices(b) is the same for a given b across every k that
-        # includes it (top_k only grows), so compute each box's slice once
-        # per frame instead of once per (k, observer) - this and the switch
-        # away from RLE below are what make the loop tractable on
-        # 60k+-frame replays.
-        top_slices = [box_slices(b, height, width) for b in boxes[:k_max]]
+        plain = _region_metrics(boxes, modes, height, width, delta, k_max)
+        row.update(plain)
+        # On a frame the model answered, the two families coincide. Copying
+        # rather than recomputing keeps the _ff column defined on every row
+        # without paying for the arithmetic twice.
+        row.update({f"{key}_ff": value for key, value in plain.items()})
 
-        for k in range(1, k_max + 1):
-            slices_k = top_slices[:k]
-            row[f"BoK{k}@{delta}"] = float(
-                any(_slice_coverage(ys, xs, modes.union) >= delta for ys, xs in slices_k)
-            )
-            served = 0
-            for mask in modes.observers:
-                if not mask.any():
-                    continue
-                obs_area = float(mask.sum())
-                # fraction of this observer's own viewport covered by box b,
-                # i.e. intersection_ratio(b, mask, denom="gt")
-                best = max(
-                    (float(mask[ys, xs].sum()) / obs_area for ys, xs in slices_k),
-                    default=0.0,
-                )
-                served += int(best >= delta)
-            row[f"OC{k}@{delta}"] = served / max(1, modes.n_observers)
-
+        last_boxes = boxes
         records.append(row)
 
     df = pd.DataFrame(records).sort_values("frame").reset_index(drop=True)
@@ -472,8 +583,18 @@ def analyse_method(
     # on why this stays a local diff rather than a call into
     # evaluator.compute_m_cti, which has no such gap awareness)
     step = df["frame"].diff()
-    disp = np.hypot(df["primary_cy"].diff(), df["primary_cx"].diff())
-    df["VD_step"] = disp.where(step == step.mode().iloc[0] if len(step.mode()) else False)
+    modal_step = step.mode().iloc[0] if len(step.mode()) else np.nan
+    adjacent = step == modal_step
+    df["VD_step"] = np.hypot(
+        df["primary_cy"].diff(), df["primary_cx"].diff()
+    ).where(adjacent)
+    # Under forward fill a declined frame holds the previous viewport, so its
+    # displacement is zero. That makes VD_ff optimistic about stability in the
+    # same measure that scoring a decline as 0 is pessimistic about accuracy;
+    # the two are meant to be read as a pair, not chosen between.
+    df["VD_ff_step"] = np.hypot(
+        df["primary_cy_ff"].diff(), df["primary_cx_ff"].diff()
+    ).where(adjacent)
 
     prev_rank = df["nearest_mode_rank"].shift()
     same_step = df["VD_step"].notna()
@@ -491,49 +612,187 @@ def primary_track_m_cti(
     pred_by_frame: Dict[int, Tuple[np.ndarray, np.ndarray]],
     frames: List[int],
     jump_threshold: float = 35.0,
+    carry_forward: bool = False,
+    min_run: int = 4,
 ) -> Dict[str, float]:
     """Whole-sequence velocity/jerk/jump_rate of the primary (top-1)
     prediction, via `evaluator.compute_m_cti` - the project's existing
     magnitude/threshold-based instability metric. Reported next to
     `mode_flip_rate`/`top2_flip_rate` for comparison, not as a replacement:
     see the module docstring for why the two are not interchangeable.
+
+    A frame the model did not answer breaks the trajectory rather than closing
+    over it. Dropping such frames used to leave the two frames on either side
+    adjacent in the array handed to `compute_m_cti`, which then read the jump
+    across the gap as ordinary camera motion, so the reported jerk partly
+    measured how often the model declined. The sequence is instead cut into
+    runs of genuinely consecutive answered frames, each run scored on its own,
+    and the runs combined in proportion to their length. Runs shorter than
+    `min_run` are dropped, since jerk is a third difference and needs four
+    points; `tracked_fraction` says how much of the sequence survived, and a
+    low value means the figures describe only the stretches where the model
+    kept answering.
+
+    With `carry_forward`, an unanswered frame holds the previous viewport
+    instead, which is what a live system does with a real camera. That keeps
+    one unbroken run and scores a held camera as motionless, which flatters
+    stability in the same measure that scoring a decline as a miss is harsh on
+    accuracy. The two are meant to be read as a pair.
     """
-    boxes_xyxy = []
+    if len(frames) < 2:
+        return {"m_cti": 0.0, "jerk": 0.0, "jump_rate": 0.0, "velocity": 0.0,
+                "tracked_fraction": 0.0}
+
+    step_counts: Dict[int, int] = {}
+    for a, b in zip(frames, frames[1:]):
+        step_counts[b - a] = step_counts.get(b - a, 0) + 1
+    modal_step = max(step_counts, key=step_counts.get)
+
+    runs: List[List[List[float]]] = []
+    current: List[List[float]] = []
+    prev_frame = None
+    last_box = None
+
     for f in frames:
         boxes, _ = pred_by_frame.get(f, (np.empty((0, 4)), np.empty(0)))
         if len(boxes) == 0:
-            continue
-        x, y, w, h = boxes[0]
-        boxes_xyxy.append([x, y, x + w, y + h])
+            if not (carry_forward and last_box is not None):
+                runs.append(current)
+                current = []
+                prev_frame = None
+                continue
+            box = last_box
+        else:
+            box = boxes[0]
+            last_box = box
 
-    if len(boxes_xyxy) < 2:
-        return {"m_cti": 0.0, "jerk": 0.0, "jump_rate": 0.0, "velocity": 0.0}
+        if prev_frame is not None and f - prev_frame != modal_step:
+            runs.append(current)
+            current = []
 
-    trajectory = np.array(boxes_xyxy, dtype=float)[:, None, :]  # (T, 1, 4)
-    return compute_m_cti(trajectory, jump_threshold=jump_threshold, box_format="xyxy")
+        x, y, w, h = box
+        current.append([x, y, x + w, y + h])
+        prev_frame = f
 
+    runs.append(current)
+    runs = [r for r in runs if len(r) >= min_run]
 
-# --------------------------------------------------------------------------
-# Reporting
-# --------------------------------------------------------------------------
+    keys = ("m_cti", "jerk", "jump_rate", "velocity")
+    if not runs:
+        empty = {k: 0.0 for k in keys}
+        empty["tracked_fraction"] = 0.0
+        return empty
+
+    totals = {k: 0.0 for k in keys}
+    weight = 0.0
+    for run in runs:
+        trajectory = np.array(run, dtype=float)[:, None, :]  # (T, 1, 4)
+        res = compute_m_cti(trajectory, jump_threshold=jump_threshold,
+                            box_format="xyxy")
+        run_weight = float(len(run))
+        weight += run_weight
+        for k in keys:
+            totals[k] += float(res[k]) * run_weight
+
+    out = {k: totals[k] / weight for k in keys}
+    out["tracked_fraction"] = weight / float(len(frames))
+    return out
+
+def _answered(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows the model actually answered.
+
+    `analyse_method` keeps a row for every ground-truth frame, including the
+    ones where nothing cleared the confidence threshold, so that `summarise`
+    can report coverage. Every breakdown below is defined over answered frames
+    only, which is what it meant before unanswered rows were kept.
+    """
+    if "answered" not in df.columns:
+        return df
+    return df[df["answered"] == 1.0]
+
 
 def summarise(df: pd.DataFrame, delta: float, k_max: int) -> dict:
+    """Fold-level aggregate.
+
+    Two families of numbers come back. The plain keys (`IR`, `I@d`, `BoK*`,
+    `OC*`) average over the frames the model answered, which is how a model is
+    usually described. The `_cov` keys score an unanswered frame as 0 and
+    divide by every ground-truth frame instead.
+
+    Report the second family, or restrict every method to a common frame set,
+    whenever methods with different `coverage` are compared. Raising a
+    confidence threshold deletes frames rather than improving predictions, and
+    the frames it deletes are the crowded ones, so the plain keys reward a
+    method for declining to answer where the task is hardest.
+    """
+    ans = _answered(df)
+    n_total = len(df)
+    n_ans = len(ans)
+    coverage = n_ans / n_total if n_total else 0.0
+
     out = {
-        "frames": len(df),
-        "IR": df["IR"].mean(),
-        f"I@{delta}": df[f"I@{delta}"].mean(),
-        "VD": df["VD_step"].mean(),
-        "mode_flip_rate": df["mode_flip"].mean(),
-        "top2_flip_rate": df["top2_flip"].mean(),
-        "mean_n_modes": df["n_modes"].mean(),
+        "frames": n_ans,
+        "frames_total": n_total,
+        "coverage": coverage,
+        "IR": ans["IR"].mean(),
+        f"I@{delta}": ans[f"I@{delta}"].mean(),
+        "VD": ans["VD_step"].mean(),
+        "mode_flip_rate": ans["mode_flip"].mean(),
+        "top2_flip_rate": ans["top2_flip"].mean(),
+        "mean_n_modes": ans["n_modes"].mean(),
     }
+    out["IR_cov"] = out["IR"] * coverage
+    out[f"I@{delta}_cov"] = out[f"I@{delta}"] * coverage
+
     for k in range(1, k_max + 1):
-        out[f"BoK{k}@{delta}"] = df[f"BoK{k}@{delta}"].mean()
-        out[f"OC{k}@{delta}"] = df[f"OC{k}@{delta}"].mean()
+        out[f"BoK{k}@{delta}"] = ans[f"BoK{k}@{delta}"].mean()
+        out[f"OC{k}@{delta}"] = ans[f"OC{k}@{delta}"].mean()
+        out[f"BoK{k}@{delta}_cov"] = out[f"BoK{k}@{delta}"] * coverage
+        out[f"OC{k}@{delta}_cov"] = out[f"OC{k}@{delta}"] * coverage
+
+    # Count calibration. MAE_n and Exact_n are the level of the region count;
+    # the responsiveness slope beta_n lives in scripts/budget_allocation.py,
+    # since it needs the E[n_pred | n_modes] table rather than per-frame rows.
+    # The level is the part a confidence threshold can buy outright, so the
+    # _cov forms matter here for the same reason they do above. An unanswered
+    # frame emits no region, so it enters them as n_pred = 0 rather than as a
+    # missing value.
+    err_ans = (ans["n_pred"] - ans["n_modes"]).abs()
+    out["MAE_n"] = err_ans.mean()
+    out["Exact_n"] = float((ans["n_pred"] == ans["n_modes"]).mean()) if n_ans else np.nan
+    err_all = (df["n_pred"].fillna(0) - df["n_modes"]).abs()
+    out["MAE_n_cov"] = err_all.mean()
+    out["Exact_n_cov"] = float((df["n_pred"].fillna(0) == df["n_modes"]).mean()) if n_total else np.nan
+    out["mean_n_pred"] = ans["n_pred"].mean()
+    # The diagnostic that makes the coverage trap visible at a glance: when
+    # mean_n_modes_all exceeds mean_n_modes, the frames the model declined
+    # were the crowded ones, and every plain key above is flattered by their
+    # absence.
+    out["mean_n_modes_all"] = df["n_modes"].mean()
+
+    # Forward fill: a declined frame holds the last viewport the model did
+    # produce, which is what a live system does with a real camera. It is
+    # scored against the ground truth of the frame it is held into, so a stale
+    # camera is charged for being stale rather than deleted from the average.
+    # Read it beside the _cov family: forward fill is the charitable treatment
+    # of a decline and zero fill the harsh one, and the honest figure is
+    # bracketed by the two. One caveat - VD_ff counts a held camera as
+    # motionless, so it favours stability; the accuracy keys carry no such
+    # favour.
+    ff_scored = df["IR_ff"].notna()
+    out["coverage_ff"] = float(ff_scored.mean()) if n_total else 0.0
+    out["carried_frac"] = float((df["carried"] == 1.0).mean()) if n_total else 0.0
+    out["IR_ff"] = df["IR_ff"].mean()
+    out[f"I@{delta}_ff"] = df[f"I@{delta}_ff"].mean()
+    out["VD_ff"] = df["VD_ff_step"].mean()
+    for k in range(1, k_max + 1):
+        out[f"BoK{k}@{delta}_ff"] = df[f"BoK{k}@{delta}_ff"].mean()
+        out[f"OC{k}@{delta}_ff"] = df[f"OC{k}@{delta}_ff"].mean()
+
     for label in ATTRIBUTIONS:
-        out[f"frac_{label}"] = float((df["attribution"] == label).mean())
-    misses = df[df[f"I@{delta}"] == 0]
-    out["miss_rate"] = float(len(misses)) / max(1, len(df))
+        out[f"frac_{label}"] = float((ans["attribution"] == label).mean()) if n_ans else np.nan
+    misses = ans[ans[f"I@{delta}"] == 0]
+    out["miss_rate"] = float(len(misses)) / max(1, n_ans)
     for label in ATTRIBUTIONS:
         out[f"miss_{label}"] = (
             float((misses["attribution"] == label).mean()) if len(misses) else np.nan
@@ -554,7 +813,7 @@ def by_quartile(df: pd.DataFrame, delta: float, k_max: int) -> pd.DataFrame:
 
 def by_margin(df: pd.DataFrame, delta: float) -> pd.DataFrame:
     rows = []
-    for margin, part in df.groupby("margin", observed=True):
+    for margin, part in _answered(df).groupby("margin", observed=True):
         rows.append({
             "margin": margin,
             "n_frames": len(part),
@@ -573,15 +832,17 @@ def by_replay(df: pd.DataFrame, delta: float) -> pd.DataFrame:
     mode_flip_rate/IR be checked for replays that dominate or skew it."""
     rows = []
     for replay, part in df.groupby("replay", observed=True):
+        ans = _answered(part)
         rows.append({
             "replay": replay,
-            "n_frames": len(part),
-            "IR": part["IR"].mean(),
-            f"I@{delta}": part[f"I@{delta}"].mean(),
-            "mode_flip_rate": part["mode_flip"].mean(),
-            "top2_flip_rate": part["top2_flip"].mean(),
-            "frac_straddle": float((part["attribution"] == "straddle").mean()),
-            "frac_served_minor": float((part["attribution"] == "served_minor").mean()),
+            "n_frames": len(ans),
+            "coverage": len(ans) / max(1, len(part)),
+            "IR": ans["IR"].mean(),
+            f"I@{delta}": ans[f"I@{delta}"].mean(),
+            "mode_flip_rate": ans["mode_flip"].mean(),
+            "top2_flip_rate": ans["top2_flip"].mean(),
+            "frac_straddle": float((ans["attribution"] == "straddle").mean()),
+            "frac_served_minor": float((ans["attribution"] == "served_minor").mean()),
         })
     return pd.DataFrame(rows).sort_values("replay")
 
@@ -589,12 +850,14 @@ def by_replay(df: pd.DataFrame, delta: float) -> pd.DataFrame:
 def by_n_modes(df: pd.DataFrame, delta: float) -> pd.DataFrame:
     rows = []
     for n, part in df.groupby("n_modes", observed=True):
+        ans = _answered(part)
         rows.append({
             "n_modes": n,
-            "n_frames": len(part),
-            "IR": part["IR"].mean(),
-            f"I@{delta}": part[f"I@{delta}"].mean(),
-            "frac_straddle": float((part["attribution"] == "straddle").mean()),
-            "frac_served_minor": float((part["attribution"] == "served_minor").mean()),
+            "n_frames": len(ans),
+            "coverage": len(ans) / max(1, len(part)),
+            "IR": ans["IR"].mean(),
+            f"I@{delta}": ans[f"I@{delta}"].mean(),
+            "frac_straddle": float((ans["attribution"] == "straddle").mean()),
+            "frac_served_minor": float((ans["attribution"] == "served_minor").mean()),
         })
     return pd.DataFrame(rows).sort_values("n_modes")

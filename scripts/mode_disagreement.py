@@ -164,9 +164,18 @@ def main() -> None:
             )
             df.insert(0, "replay", replay)
             per_method_frames[name].append(df)
-            per_method_mcti[name].append(
-                primary_track_m_cti(pred_by_frame, sorted(df["frame"]), args.jump_threshold)
+            frames_sorted = sorted(df["frame"])
+            mcti = primary_track_m_cti(
+                pred_by_frame, frames_sorted, args.jump_threshold
             )
+            # The same trajectory under the other treatment of a declined
+            # frame: hold the previous viewport rather than cut the run.
+            mcti_ff = primary_track_m_cti(
+                pred_by_frame, frames_sorted, args.jump_threshold,
+                carry_forward=True,
+            )
+            mcti.update({f"{key}_ff": value for key, value in mcti_ff.items()})
+            per_method_mcti[name].append(mcti)
         print()
 
     summaries = []
@@ -182,7 +191,12 @@ def main() -> None:
         row = {"method": name}
         row.update(summarise(df_all, args.delta, args.k_max))
         mcti_list = per_method_mcti[name]
-        for key in ("m_cti", "jerk", "jump_rate", "velocity"):
+        mcti_keys = (
+            "m_cti", "jerk", "jump_rate", "velocity", "tracked_fraction",
+            "m_cti_ff", "jerk_ff", "jump_rate_ff", "velocity_ff",
+            "tracked_fraction_ff",
+        )
+        for key in mcti_keys:
             row[key] = float(np.mean([m[key] for m in mcti_list])) if mcti_list else float("nan")
         summaries.append(row)
 
