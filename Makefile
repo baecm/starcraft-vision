@@ -40,7 +40,7 @@ PYDEBUG_SERVICE  ?= pydebug
 
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
-		zeppelin benchmark mode-disagreement mode-disagreement-fg test probe probe-resolution \
+		zeppelin benchmark mode-disagreement mode-disagreement-fg inference-fg test probe probe-resolution \
 		budget-allocation
 
 # 디렉토리 생성
@@ -99,6 +99,11 @@ inference:
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm inferencer inference $(ARGS) \
 		> logs/$$CONTAINER_NAME.log 2>&1 & \
 	echo $$CONTAINER_NAME > $(PID_DIR)/inference.cid
+
+# Foreground inference, so a shell can wait for it and chain the evaluation
+# that reads its predictions. Same reasoning as mode-disagreement-fg.
+inference-fg:
+	docker compose -f $(COMPOSE_FILE) run --rm inferencer inference $(ARGS)
 
 evaluate:
 	CONTAINER_NAME=evaluate_$$(date +%Y%m%d_%H%M%S); \
