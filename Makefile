@@ -220,11 +220,4 @@ stop:
 #   make run-registry SINCE=ed86508 ARGS="--out /workspace/results/run_registry.md"
 SINCE ?=
 run-registry:
-	@mkdir -p results
-	@EXTRA=""; \
-	if [ -n "$(SINCE)" ]; then \
-		git rev-list $(SINCE)..HEAD > results/.run_registry_commits.txt; \
-		git rev-parse HEAD >> results/.run_registry_commits.txt; \
-		EXTRA="--ok-commits-file /workspace/results/.run_registry_commits.txt"; \
-	fi; \
-	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/run_registry.py --models-root /workspace/models --pred-root /workspace/predictions $$EXTRA $(ARGS)"
+	@EXTRA=""; if [ -n "$(SINCE)" ]; then EXTRA="--ok-commits $$(git rev-list --abbrev-commit --abbrev=12 $(SINCE)..HEAD | tr '\n' ' ') $$(git rev-parse --short=12 HEAD)"; fi; docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/run_registry.py --models-root /workspace/models --pred-root /workspace/predictions $$EXTRA $(ARGS)"

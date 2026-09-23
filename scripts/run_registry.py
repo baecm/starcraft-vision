@@ -23,8 +23,10 @@ the feature and is reported as UNKNOWN rather than assumed good.
 
 The containers do not mount `.git` (see infra/docker-compose.yml), so ancestry
 cannot be resolved in-container. The Makefile target resolves it on the host
-and passes the result as --ok-commits-file; run the script directly on a host
-checkout and --since works on its own.
+and passes the commits as --ok-commits. They are arguments rather than a file
+because the only paths the container shares are the configured mounts, and
+where those point is per-machine. Run the script on a host checkout and --since
+works on its own.
 
 Usage:
   make run-registry ARGS="--since ed86508"
@@ -37,7 +39,7 @@ import json
 import os
 import subprocess
 from collections import defaultdict
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Sequence
 
 # Knobs that change what the model computes. Two runs differing in any of these
 # are different models, not different seeds of one.
@@ -106,7 +108,12 @@ def collect(models_root: str, pred_root: str) -> List[Dict]:
     return runs
 
 
-def status_of(rec: Dict, ok_commits: Optional[Set[str]]) -> str:
+def _is_current(commit: str, ok: Sequence[str]) -> bool:
+    """The host may abbreviate the commits, so match either way round."""
+    return any(commit.startswith(c) or c.startswith(commit) for c in ok)
+
+
+def status_of(rec: Dict, ok: Optional[Sequence[str]]) -> str:
     if not rec:
         return "UNKNOWN (no provenance)"
     git = rec.get("git") or {}
@@ -115,9 +122,9 @@ def status_of(rec: Dict, ok_commits: Optional[Set[str]]) -> str:
         return "UNKNOWN (no commit)"
     if git.get("dirty"):
         return "NOT REPRODUCIBLE (dirty tree)"
-    if ok_commits is None:
+    if ok is None:
         return "recorded"
-    return "ok" if commit in ok_commits else "STALE"
+    return "ok" if _is_current(commit, ok) else "STALE"
 
 
 def main() -> int:
@@ -127,34 +134,28 @@ def main() -> int:
     ap.add_argument("--repo", default=".")
     ap.add_argument("--since", default=None,
                     help="boundary commit; runs not trained in <since>..HEAD "
-                         "are STALE. Needs .git, so use --ok-commits-file in a "
-                         "container")
-    ap.add_argument("--ok-commits-file", default=None,
-                    help="file of commits considered current, one per line, "
-                         "as produced on the host by git rev-list <since>..HEAD")
+                         "are STALE. Needs .git, so in a container the "
+                         "Makefile passes --ok-commits instead")
+    ap.add_argument("--ok-commits", nargs="*", default=None,
+                    help="abbreviated commits considered current, as the "
+                         "Makefile resolves them on the host; matched by "
+                         "prefix against each run commit")
     ap.add_argument("--out", default=None, help="also write markdown here")
     args = ap.parse_args()
 
-    ok: Optional[Set[str]] = None
+    ok: Optional[List[str]] = None
     boundary_note = None
-    if args.ok_commits_file:
-        try:
-            with open(args.ok_commits_file, encoding="utf-8") as fh:
-                ok = {line.strip() for line in fh if line.strip()}
-            boundary_note = (f"{len(ok)} commits considered current "
-                             f"(from {args.ok_commits_file})")
-        except OSError as e:
-            print(f"could not read {args.ok_commits_file}: {e}")
-            return 1
+    if args.ok_commits:
+        ok = list(args.ok_commits)
+        boundary_note = f"{len(ok)} commits considered current"
     elif args.since:
         listed = _git(["rev-list", f"{args.since}..HEAD"], args.repo)
         head = _git(["rev-parse", "HEAD"], args.repo)
         if listed is None or head is None:
             print("git is unavailable here (the containers do not mount .git);"
-                  " pass --ok-commits-file instead")
+                  " run this on a host checkout, or use make run-registry")
             return 1
-        ok = {c for c in listed.splitlines() if c}
-        ok.add(head)
+        ok = [c for c in listed.splitlines() if c] + [head]
         boundary_note = f"trained after {args.since} ({len(ok)} commits)"
 
     runs = collect(args.models_root, args.pred_root)
