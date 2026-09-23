@@ -94,7 +94,12 @@ def main() -> None:
                          "(e.g. maskrcnn=<dir>, maskrcnn_kbrs=<dir>, centernet=<dir>)")
     ap.add_argument("--epoch", type=int, default=30,
                     help="default epoch for --model specs that omit :EPOCH")
-    ap.add_argument("--outdir", default="results")
+    ap.add_argument("--outdir", default="results",
+                    help="where the CSVs go. Output names carry the method "
+                         "but not whether --holdout was set, so a second run "
+                         "into the same directory overwrites the first; give "
+                         "the two runs separate directories. The summary "
+                         "records which kind of run wrote it.")
     ap.add_argument("--delta", type=float, default=0.5)
     ap.add_argument("--sigma", type=float, default=4.0,
                     help="Gaussian sigma (tiles) for smoothing the coverage map")
@@ -214,7 +219,9 @@ def main() -> None:
         df_all = pd.concat(dfs, ignore_index=True)
         df_all.to_csv(os.path.join(args.outdir, f"frames_{name}.csv"), index=False)
 
-        row = {"method": name}
+        # so a summary.csv says which kind of run wrote it, since the file
+        # name does not
+        row = {"method": name, "holdout": bool(args.holdout)}
         row.update(summarise(df_all, args.delta, args.k_max))
         mcti_list = per_method_mcti[name]
         mcti_keys = (
