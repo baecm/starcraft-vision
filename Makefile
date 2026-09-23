@@ -8,6 +8,14 @@ GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null)
 GIT_DIRTY  := $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo 1 || echo 0)
 export GIT_COMMIT
 export GIT_DIRTY
+
+# Which machine a run was launched on. The container cannot work this out for
+# itself - its hostname is the container id - so it is read here alongside the
+# commit. NVIDIA_VISIBLE_DEVICES already reaches the container via compose, and
+# it has to: inside, the selected card is always cuda:0, so torch cannot say
+# which physical GPU is in use either.
+HOST_NAME := $(shell hostname -s 2>/dev/null || hostname 2>/dev/null)
+export HOST_NAME
 JUPYTER_PORT ?= 8888
 DEBUG_PORT   ?= 5678
 ENABLE_SYNOLOGY_CHAT ?= false

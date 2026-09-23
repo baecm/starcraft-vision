@@ -35,6 +35,11 @@ x-common-config: &common-config
     # .git of its own, so this is the only way a run can record its commit
     - GIT_COMMIT=${GIT_COMMIT:-}
     - GIT_DIRTY=${GIT_DIRTY:-}
+    # also exported by the Makefile: the container's own hostname is its
+    # container id, so this is the only way a run can record which workstation
+    # it ran on. Paired with NVIDIA_VISIBLE_DEVICES above, which names the
+    # physical card - inside the container it is always cuda:0.
+    - HOST_NAME=${HOST_NAME:-}
   user: "${UID}:${GID}"
   shm_size: '${SHARED_MEMORY}'
   working_dir: /workspace

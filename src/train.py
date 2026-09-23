@@ -124,6 +124,31 @@ def _model_family(model_name: str) -> str:
     return name or "unknown"
 
 
+def _host_tag() -> Optional[str]:
+    """Which workstation and which physical GPU produced this run, e.g. worker07:0.
+
+    Neither half is discoverable from inside the container. Its hostname is the
+    container id, and NVIDIA_VISIBLE_DEVICES=2 exposes that one card as cuda:0,
+    so torch.cuda reports device 0 whichever card is actually in use. The
+    Makefile exports HOST_NAME for the same reason it exports GIT_COMMIT, and
+    compose already forwards NVIDIA_VISIBLE_DEVICES.
+
+    This matters beyond bookkeeping: a batch of ablations was once launched
+    across machines whose checkouts were at different commits, and a later
+    stride run came from a workstation that had not pulled, which made it a
+    silently different experiment. Recording the machine puts that in the run
+    itself rather than in someone's shell history.
+    """
+    host = (os.environ.get("HOST_NAME") or "").strip()
+    if not host:
+        return None
+    devices = (os.environ.get("NVIDIA_VISIBLE_DEVICES") or "").strip()
+    # "all"/"none"/"void" are the CDI keywords, not card indices
+    if not devices or devices.lower() in ("all", "none", "void"):
+        return host
+    return f"{host}:{devices}"
+
+
 def _build_run_tags(cfg) -> list:
     """Filterable W&B tags describing what actually varies between runs.
 
@@ -178,6 +203,10 @@ def _build_run_tags(cfg) -> list:
     if commit:
         tags.append(f"git:{commit[:9]}")
 
+    host = _host_tag()
+    if host:
+        tags.append(host)
+
     return [t for t in tags if t]
 
 
@@ -201,6 +230,7 @@ def _write_run_provenance(save_dir: str, model, id_string: str) -> None:
         "model_class": type(base).__name__,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "git": _git_state(),
+        "host": _host_tag(),
         "loss_weights": {k: float(v) for k, v in weights.items()} if weights else None,
     }
     for knob in (
