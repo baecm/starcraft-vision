@@ -96,7 +96,7 @@ def main() -> None:
                     help="default epoch for --model specs that omit :EPOCH")
     ap.add_argument("--outdir", default="results",
                     help="where the CSVs go. Output names carry the method "
-                         "but not whether --holdout was set, so a second run "
+                         "but not whether --drop-one-observer was set, so a second run "
                          "into the same directory overwrites the first; give "
                          "the two runs separate directories. The summary "
                          "records which kind of run wrote it.")
@@ -118,16 +118,19 @@ def main() -> None:
     ap.add_argument("--region-size", type=int, nargs=2, default=None,
                     metavar=("H", "W"),
                     help="viewport size in tiles; inferred per-replay from the GT if omitted")
-    ap.add_argument("--holdout", action="store_true",
-                    help="also score a held-out observer. The analysis runs "
-                         "once per observer with that one removed from the "
-                         "ground truth, and HO<k>@delta reports whether the "
-                         "regions the others produced still reach them. Costs "
-                         "one pass per observer. Point --label-root at the "
-                         "plain labels, not the _roci ones, or the augmented "
-                         "viewports will be counted as people.")
+    ap.add_argument("--drop-one-observer", action="store_true",
+                    help="also measure under a reduced ground truth. The "
+                         "analysis runs once per observer with that one "
+                         "removed, and the _drop1 keys report what every "
+                         "figure looks like against the rest. Use it to "
+                         "compare against published numbers scored on "
+                         "fewer observers; on this corpus that is worth "
+                         "about 0.05 of IR. Costs one pass per observer, "
+                         "and --label-root must be the plain labels, not "
+                         "the _roci ones, or the augmented viewports get "
+                         "counted as people.")
     ap.add_argument("--num-observers", type=int, default=5,
-                    help="observers per frame, used only to size --holdout")
+                    help="observers per frame, used only to size the sweep")
     ap.add_argument("--raw-pred-size", action="store_true",
                     help="measure predictions at the width/height stored in the "
                          "prediction file instead of anchoring each box at its "
@@ -171,24 +174,24 @@ def main() -> None:
                 continue
 
             # The baseline pass always runs, with every observer in the ground
-            # truth, and it is the one the main figures come from. --holdout
-            # adds a pass per observer on top, each with that one removed, and
-            # those rows carry a `holdout` column so `summarise` can keep the
-            # two apart. The flag is therefore additive: turning it on cannot
-            # move a number that was reported without it.
+            # truth, and it is the one the main figures come from.
+            # --drop-one-observer adds a pass per observer on top, each with
+            # that one removed, and those rows carry a `dropped` column so
+            # `summarise` can keep the two apart. The flag is additive:
+            # turning it on cannot move a number reported without it.
             passes = [None]
-            if args.holdout:
+            if args.drop_one_observer:
                 passes += list(range(args.num_observers))
 
             replay_frames = []
             for ho in passes:
-                tag = f"{replay}/{name}" if ho is None else f"{replay}/{name}/ho{ho}"
+                tag = f"{replay}/{name}" if ho is None else f"{replay}/{name}/drop{ho}"
                 df = analyse_method(
                     gt_by_frame, pred_by_frame, height, width,
                     size_hw=size_hw, sigma=args.sigma, min_sep=args.min_sep,
                     rel_threshold=args.rel_threshold, max_modes=args.max_modes,
                     delta=args.delta, straddle_floor=args.straddle_floor,
-                    k_max=args.k_max, label=tag, holdout=ho,
+                    k_max=args.k_max, label=tag, drop_observer=ho,
                 )
                 df.insert(0, "replay", replay)
                 replay_frames.append(df)
@@ -221,7 +224,7 @@ def main() -> None:
 
         # so a summary.csv says which kind of run wrote it, since the file
         # name does not
-        row = {"method": name, "holdout": bool(args.holdout)}
+        row = {"method": name, "drop_one_observer": bool(args.drop_one_observer)}
         row.update(summarise(df_all, args.delta, args.k_max))
         mcti_list = per_method_mcti[name]
         mcti_keys = (

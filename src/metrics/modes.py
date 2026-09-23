@@ -416,46 +416,6 @@ def _region_metrics(
     return out
 
 
-def _holdout_metrics(
-    boxes: np.ndarray,
-    held_mask: np.ndarray,
-    height: int,
-    width: int,
-    delta: float,
-    k_max: int,
-) -> dict:
-    """Whether the predicted regions serve an observer left out of the target.
-
-    The five observers who define a frame's modes are also the five the
-    coverage figures are scored against, so `OC@delta` says how well the output
-    serves the people whose data built it. This asks the other question: hold
-    one observer out of the ground truth entirely, and see whether the regions
-    the remaining four produced still reach them. A broadcast serves an
-    audience rather than the five people who happened to be recorded, so this
-    is the figure that speaks to deployment, and it is where extra regions
-    should pay off most - covering more modes is more chances to land on a
-    viewer nobody trained for.
-
-    The denominator is the held-out observer's own viewport, as in `OC@delta`.
-    """
-    out = {}
-    area = float(held_mask.sum())
-    if area <= 0:
-        for k in range(1, k_max + 1):
-            out[f"HO{k}@{delta}"] = np.nan
-        out["HO_best"] = np.nan
-        return out
-
-    slices = [box_slices(b, height, width) for b in boxes[:k_max]]
-    best = 0.0
-    for k in range(1, k_max + 1):
-        for ys, xs in slices[:k]:
-            best = max(best, float(held_mask[ys, xs].sum()) / area)
-        out[f"HO{k}@{delta}"] = float(best >= delta)
-    out["HO_best"] = best
-    return out
-
-
 def _unanswered_row(
     frame: int,
     first_frame: int,
@@ -463,7 +423,7 @@ def _unanswered_row(
     modes: Modes,
     delta: float,
     k_max: int,
-    holdout: Optional[int] = None,
+    drop_observer: Optional[int] = None,
 ) -> dict:
     """A row for a frame on which the model emitted no region.
 
@@ -505,13 +465,8 @@ def _unanswered_row(
         row[f"OC{k}@{delta}"] = np.nan
         row[f"BoK{k}@{delta}_ff"] = np.nan
         row[f"OC{k}@{delta}_ff"] = np.nan
-    if holdout is not None:
-        row["holdout"] = holdout
-        for k in range(1, k_max + 1):
-            row[f"HO{k}@{delta}"] = np.nan
-        row["HO_best"] = np.nan
-
-
+    if drop_observer is not None:
+        row["dropped"] = drop_observer
     return row
 
 
@@ -530,7 +485,7 @@ def analyse_method(
     straddle_floor: float,
     k_max: int,
     label: str = "",
-    holdout: Optional[int] = None,
+    drop_observer: Optional[int] = None,
 ) -> pd.DataFrame:
     # Every ground-truth frame is analysed, not only those the model answered.
     # The intersection of the two key sets used to be taken here, which removed
@@ -562,16 +517,16 @@ def analyse_method(
                   f"({(idx + 1) / total_frames * 100:.1f}%)", flush=True)
 
         obs = gt_by_frame[frame]
-        held_mask = None
-        if holdout is not None:
-            if len(obs) <= holdout:
+        if drop_observer is not None:
+            if len(obs) <= drop_observer:
                 continue
-            # One observer is removed from the ground truth entirely: the modes
-            # below are built from the others, and this frame then asks whether
-            # the regions those modes produced still reach the person nobody
-            # trained for.
-            held_mask = box_mask(obs[holdout], height, width)
-            obs = np.delete(obs, holdout, axis=0)
+            # One observer is removed from the ground truth, so every figure
+            # this pass produces is measured against the rest. Published
+            # numbers from a study that scored against fewer observers cannot
+            # be read beside ours without this, since a smaller union makes
+            # every overlap ratio smaller for a reason that has nothing to do
+            # with the model.
+            obs = np.delete(obs, drop_observer, axis=0)
         modes = extract_modes(
             obs, height, width,
             sigma=sigma, min_sep=min_sep,
@@ -590,7 +545,8 @@ def analyse_method(
             # crowded ones, so every average computed without them is higher
             # for a reason that has nothing to do with prediction quality.
             row = _unanswered_row(
-                frame, frames[0], span, modes, delta, k_max, holdout=holdout
+                frame, frames[0], span, modes, delta, k_max,
+                drop_observer=drop_observer,
             )
             if last_boxes is not None:
                 row.update(_region_metrics(
@@ -636,11 +592,8 @@ def analyse_method(
         # without paying for the arithmetic twice.
         row.update({f"{key}_ff": value for key, value in plain.items()})
 
-        if held_mask is not None:
-            row["holdout"] = holdout
-            row.update(_holdout_metrics(
-                boxes, held_mask, height, width, delta, k_max
-            ))
+        if drop_observer is not None:
+            row["dropped"] = drop_observer
 
         last_boxes = boxes
         records.append(row)
@@ -770,22 +723,21 @@ def primary_track_m_cti(
 def _baseline(df: pd.DataFrame) -> pd.DataFrame:
     """Rows from the pass that kept every observer in the ground truth.
 
-    A `--holdout` run appends one pass per observer, each with that observer
-    removed, so a pooled frame holds both families. Everything except the HO
-    keys is defined over the baseline pass alone, which is what keeps the flag
-    from moving a number that was reported without it.
+    A --drop-one-observer run appends one pass per observer, each with that
+    observer removed, so a pooled frame holds both families. Everything except
+    the _drop1 keys is defined over the baseline pass alone, which is what
+    keeps the flag from moving a number that was reported without it.
     """
-    if "holdout" not in df.columns:
+    if "dropped" not in df.columns:
         return df
-    return df[df["holdout"].isna()]
+    return df[df["dropped"].isna()]
 
 
-def _heldout(df: pd.DataFrame) -> pd.DataFrame:
-    """Rows from the passes that removed an observer."""
-    if "holdout" not in df.columns:
+def _reduced(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows from the passes that removed one observer."""
+    if "dropped" not in df.columns:
         return df.iloc[0:0]
-    return df[df["holdout"].notna()]
-
+    return df[df["dropped"].notna()]
 
 def _answered(df: pd.DataFrame) -> pd.DataFrame:
     """Rows the model actually answered.
@@ -813,9 +765,9 @@ def summarise(df: pd.DataFrame, delta: float, k_max: int) -> dict:
     the frames it deletes are the crowded ones, so the plain keys reward a
     method for declining to answer where the task is hardest.
 
-    Every key except the HO family comes from the baseline pass, the one that
-    kept all observers in the ground truth, so a --holdout run reports exactly
-    what a plain run does and adds to it.
+    Every key except the _drop1 family comes from the baseline pass, the one that
+    kept all observers in the ground truth, so a --drop-one-observer run reports
+    exactly what a plain run does and adds to it.
     """
     base = _baseline(df)
     ans = _answered(base)
@@ -863,16 +815,21 @@ def summarise(df: pd.DataFrame, delta: float, k_max: int) -> dict:
     # absence.
     out["mean_n_modes_all"] = base["n_modes"].mean()
 
-    # Held-out observer, from the passes that removed one. OC above says how
-    # well the output serves the people whose data built the target; this says
-    # whether it reaches someone it never saw, which is the claim a broadcast
-    # actually has to make. Absent unless the run was given --holdout.
-    ho = _answered(_heldout(df))
-    if len(ho) and f"HO{k_max}@{delta}" in ho.columns:
-        out["ho_frames"] = len(ho)
+    # Reduced-observer protocol, from the passes that removed one. A study that
+    # scores against fewer observers is not measuring the same thing: a smaller
+    # union makes every overlap ratio smaller whatever the model does, so these
+    # keys are what makes such a number comparable. On this corpus the gap is
+    # about 0.05 of IR, larger than the differences between the methods being
+    # compared, so it cannot be left as a footnote.
+    red = _answered(_reduced(df))
+    if len(red):
+        out["drop1_frames"] = len(red)
+        out["IR_drop1"] = red["IR"].mean()
+        out[f"I@{delta}_drop1"] = red[f"I@{delta}"].mean()
+        out["mean_n_modes_drop1"] = red["n_modes"].mean()
         for k in range(1, k_max + 1):
-            out[f"HO{k}@{delta}"] = ho[f"HO{k}@{delta}"].mean()
-        out["HO_best"] = ho["HO_best"].mean()
+            out[f"BoK{k}@{delta}_drop1"] = red[f"BoK{k}@{delta}"].mean()
+            out[f"OC{k}@{delta}_drop1"] = red[f"OC{k}@{delta}"].mean()
 
     # Forward fill: a declined frame holds the last viewport the model did
     # produce, which is what a live system does with a real camera. It is
