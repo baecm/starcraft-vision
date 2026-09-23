@@ -1298,10 +1298,18 @@ a frame whose evidence is genuinely divided that confidence is spread across
 more boxes, so fewer of them clear a fixed bar. Thresholding can move the level
 of the count but not its dependence on the scene, because that dependence is a
 property of how the scores are formed. Director-CenterNet attains
-$\beta_n = +0.135$. Vanilla CenterNet, trained on the same heatmap
-representation without the ranked-mode objectives, attains $\beta_n = +0.010$:
-the dense heatmap makes the correct sign reachable, and the supervision is what
-realises it.
+$\beta_n = +0.135$.
+
+The sign belongs to the representation and the decoding, not to the objectives
+proposed here. Measured across the ablation lattice, $\beta_n$ is $+0.151$ with
+$\mathcal{L}_{\text{hcm}}$ alone and between $+0.135$ and $+0.155$ for every
+other combination; adding the ranked-mode and repulsion objectives does not
+raise it. What produces the positive sign is scoring each peak against its own
+neighbourhood and admitting it on its own merits, so a frame with three
+well-supported modes yields three peaks that each clear the threshold
+independently. We state this explicitly because the natural reading — that
+supervising auxiliary modes is what teaches the model to emit more of them — is
+not what the data show.
 
 \paragraph{At a matched budget the ranking reverses.} The row to compare
 against is $\tau = 0.7$, where Mask R-CNN + prior emits $2.76$ regions per
@@ -1350,13 +1358,13 @@ former and the last row of the latter are the same configuration.
 \begin{table}[t]
   \centering
   \caption{Cumulative ablation (fold 1, seed 456, $148{,}644$ frames,
-  full-length evaluation). \checkmark~= included. OC is OC3@0.5. No row
-  differs from any other by more than $0.015$ in IR or $0.017$ in OC3, which
-  is below the seed-to-seed variation of the configuration
-  ($\pm 0.03$ in IR); the entries are reported for completeness and are not
-  separable from noise at one seed. \todo{Re-run at seeds 123 and 789 and
-  report the standard deviation; until then no row ordering here should be
-  claimed.}}
+  full-length evaluation). \checkmark~= included. OC is OC3@0.5. No row differs
+  from any other by more than $0.015$ in IR, $0.017$ in OC3 or $0.42$ in VD,
+  against measured seed-to-seed differences of $0.021$, $0.015$ and $0.38$ for
+  one fixed configuration. The entries are reported for completeness; none of
+  them is separable from noise at one seed, VD included. \todo{Re-run at seeds
+  123 and 789 and report the standard deviation; until then no row ordering
+  here should be claimed.}}
   \label{tab:ablation}
   \begin{tabular}{cccccccc}
     \toprule
@@ -1379,9 +1387,9 @@ former and the last row of the latter are the same configuration.
   \caption{Leave-one-out ablation (fold 1, seed 456). The
   $\mathcal{L}_{\text{hcm}} + \mathcal{L}_{\text{rep}}$ cell of the lattice is
   omitted because $\mathcal{L}_{\text{rep}}$ has no effect without
-  $\mathcal{L}_{\text{rmc}}$. The same caveat as
-  Table~\ref{tab:ablation} applies: only the VD column separates the rows by
-  more than seed noise.}
+  $\mathcal{L}_{\text{rmc}}$. The same caveat as Table~\ref{tab:ablation}
+  applies, to every column: no row is separated from another by more than the
+  measured seed-to-seed variation.}
   \label{tab:ablation_loo}
   \begin{tabular}{lcccc}
     \toprule
@@ -1401,13 +1409,17 @@ seed. The full span of IR across all seven measured configurations is $0.592$
 to $0.618$, and the seed-to-seed standard deviation of a single configuration
 is of the same order. We therefore make no claim about the relative
 contribution of $\mathcal{L}_{\text{rmc}}$ and $\mathcal{L}_{\text{rep}}$ from
-these data. The one effect that does exceed the noise is
-$\mathcal{L}_{\text{smooth}}$ on temporal stability: VD falls from $3.45$ to
-$3.30$ and jerk from $13.4$ to $12.3$ when it is added, and removing it is the
-only single change that moves VD consistently. This is the objective introduced
-to repair a deficit the architecture created (Table~\ref{tab:multi_results}),
-and it is also the only one whose target metric is measured directly rather
-than through the ranked-mode decoding.
+these data.
+
+Nor does temporal stability separate them, although at first it appeared to.
+Adding $\mathcal{L}_{\text{smooth}}$ moves VD from $3.45$ to $3.30$ and jerk
+from $13.4$ to $12.3$, and both are in the expected direction; but a replicate
+of the full configuration at a second seed moves VD by $0.38$, which is more
+than twice the effect. The direction is consistent across every row that
+carries the objective and the mechanism is not in doubt, but on one seed the
+magnitude is not measured. \todo{Three seeds per configuration. Until then this
+table supports no ordering on any metric, and the accompanying text should not
+be read as one.}
 
 An earlier formulation of $\mathcal{L}_{\text{smooth}}$, penalising squared
 displacement without normalisation, is worth recording because it failed in a
@@ -1498,10 +1510,12 @@ its sign: the level is a decision rule, the sign is a property of the
 representation.
 
 Two qualifications keep this from being a general claim of superiority. First,
-the sign is a property of the heatmap but its \emph{magnitude} is a property of
-the supervision: vanilla CenterNet reaches only $\beta_n = +0.010$, so the
-architecture makes the correct behaviour reachable and the ranked-mode
-objectives are what realise it. Second, the architecture change is costly
+the property belongs to the representation and the decoding rather than to the
+objectives this paper proposes: across the ablation lattice $\beta_n$ stays
+between $+0.135$ and $+0.155$, and it is highest with
+$\mathcal{L}_{\text{hcm}}$ alone. The ranked-mode supervision is what makes the
+auxiliary regions correspond to \emph{which} observers disagreed; it is not
+what makes the model emit more of them. Second, the architecture change is costly
 elsewhere. Untreated CenterNet is twice as unstable as Mask R-CNN
 (Table~\ref{tab:multi_results}), which is why $\mathcal{L}_{\text{smooth}}$ is
 a requirement rather than a refinement, and at its best operating point
@@ -1574,20 +1588,24 @@ a matched budget in Section~\ref{subsec:budget} reverses both, and we regard
 that as the meaningful one, but it does not dispose of the first: a
 practitioner who is content to display seven candidate regions and read only
 the top one is better served by the baseline on these data. We have not closed
-this gap and we do not know its cause. Heatmap resolution is the leading
-candidate and is under study; head capacity is a second. Until one of them
-accounts for it, the contribution of this work should be read as being about
+this gap and we do not know its cause. Head capacity is not it: widening every
+head from $64$ to $256$ channels changes IR by $-0.017$, inside the
+seed-to-seed band of $0.021$ we measure for this configuration. Heatmap
+resolution remains the leading candidate and is under study. Until it
+accounts for the gap, the contribution of this work should be read as being about
 \emph{how many} regions a model emits and \emph{how they are ranked}, not about
 the accuracy of the primary region.
 
 \paragraph{Statistical power of the ablation.} The per-objective results in
-Section~\ref{subsec:ablation} are single-seed, and the differences between
-neighbouring configurations are smaller than the seed-to-seed variation of a
-single configuration on every metric except VD. The ablation therefore
-establishes that $\mathcal{L}_{\text{smooth}}$ acts on temporal stability and
-does not establish anything about the relative contributions of
-$\mathcal{L}_{\text{rmc}}$ and $\mathcal{L}_{\text{rep}}$. Three seeds per cell
-are required before those rows can be ordered.
+Section~\ref{subsec:ablation} are single-seed, and a replicate of the full
+configuration at a second seed differs by $0.021$ in IR, $0.015$ in OC3@0.5 and
+$0.38$ in VD. Every difference between neighbouring configurations in both
+ablation tables is smaller than the corresponding band, VD included. The
+ablation therefore orders nothing, and no claim in this paper rests on it:
+what the objectives are argued to do is argued from their construction and from
+the aggregate comparisons, not from the lattice. Three seeds per cell are
+required before those rows can be read at all, and we report them as measured
+rather than omitting them so that the null result is on the record.
 
 \paragraph{Held-out conditions.} All results are reported on the standard test
 set, which fixes race matchup, map, and starting location. Earlier work
@@ -1644,8 +1662,9 @@ threshold we measured, because a per-proposal score is divided among boxes
 exactly when the evidence is. No threshold reverses the sign, and raising one
 does not improve the primary region — it only withholds answers, and withholds
 them disproportionately on the multimodal frames the task is about. The heatmap
-formulation reverses the sign, and the ranked-mode supervision is what
-determines its magnitude. Held to the same region budget, Director-CenterNet
+formulation reverses the sign, and it does so by virtue of how peaks are scored
+and admitted rather than through the objectives we add on top of it. Held to
+the same region budget, Director-CenterNet
 leads on per-observer coverage and on count calibration; released from that
 constraint, the strongest single-region baseline remains ahead on
 primary-region overlap, and closing that remaining gap — most plausibly a
