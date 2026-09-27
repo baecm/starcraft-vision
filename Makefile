@@ -41,7 +41,7 @@ PYDEBUG_SERVICE  ?= pydebug
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
 		zeppelin benchmark mode-disagreement mode-disagreement-fg inference-fg train-fg test probe probe-resolution \
-		budget-allocation run-registry
+		budget-allocation qualitative-figures-fg run-registry
 
 # 디렉토리 생성
 ifneq ($(OS),Windows_NT)
@@ -200,6 +200,12 @@ mode-disagreement-fg:
 #   --methods director prior_th07 --k-cap director=3"
 budget-allocation:
 	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/budget_allocation.py $(ARGS)"
+
+# The paper's qualitative figures (1)-(3); see the script's docstring. The
+# heatmap subcommand re-runs a checkpoint, so it wants the GPU. Example:
+# make qualitative-figures-fg ARGS="select #   --baseline-csv /workspace/results/mode_disagreement/fold1/frames_maskrcnn.csv #   --director-csv /workspace/results/mode_disagreement/fold1/frames_director.csv"
+qualitative-figures-fg:
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/qualitative_figures.py $(ARGS)"
 
 notebook:
 	CONTAINER_NAME=notebook_$$(date +%Y%m%d_%H%M%S); \
