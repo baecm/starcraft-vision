@@ -488,7 +488,9 @@ def cmd_heatmap(args) -> None:
     im = axes[1].imshow(smooth / max(smooth.max(), 1e-9), extent=ext, cmap="viridis",
                         vmin=0, vmax=1, interpolation="nearest")
     _draw_modes(axes[1], modes)
-    axes[1].set_title("(b) Smoothed, ranked modes", loc="left")
+    # Kept short: the panels are square images in wider slots, so a left-aligned
+    # title longer than "(d) Decoded regions" runs into the next panel's.
+    axes[1].set_title(r"(b) Modes of $\tilde{a}_t$", loc="left")
 
     axes[2].imshow(hm, extent=ext, cmap="viridis", vmin=0, vmax=1, interpolation="nearest")
     for r, b in enumerate(saved_boxes):
@@ -568,7 +570,12 @@ def cmd_trajectory(args) -> None:
             ax.axvspan(f - step / 2, f + step / 2, color="#ece6f4", lw=0, zorder=0)
     ax.scatter(fr, top1, s=6, color=C_TOP1, alpha=0.35, lw=0, zorder=1, label="Top-1 mode")
     ax.scatter(fr, top2, s=6, color=C_MINOR, alpha=0.35, lw=0, zorder=1, label="Top-2 mode")
-    ax.plot(fr, b_track, color=C_BASE, lw=1.0, zorder=3, label=f"{base.name} top-1")
+    # Drawn wider than the Director track and under it, so that a window where
+    # the two primaries coincide - which is the common case, since both are
+    # anchored on the Top-1 mode - reads as one line inside another rather than
+    # as a missing baseline.
+    ax.plot(fr, b_track, color=C_BASE, lw=3.5, alpha=0.45, solid_capstyle="butt",
+            zorder=3, label=f"{base.name} top-1")
     if pip_f:
         ax.scatter(pip_f, pip_v, s=5, marker="s", color=C_PIP, lw=0, zorder=3,
                    label="Director-CenterNet PIP")
