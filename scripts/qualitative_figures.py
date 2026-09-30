@@ -136,10 +136,22 @@ plt.rcParams.update({
 
 
 def _save(fig, outdir: str, stem: str) -> None:
+    """Write the figure at exactly DOUBLE_COL wide, in pdf and png.
+
+    Not `bbox_inches="tight"`. That crops the canvas down to its content, so a
+    figure declared at 190 mm came out at 148-175 mm depending on how much
+    whitespace each layout happened to leave. The paper includes all three at
+    `width=\\textwidth`, which then scales each by a different factor and lands
+    the 8 pt tick labels anywhere between 8.7 and 10.3 pt on the page. Fitting
+    the content into the fixed canvas instead keeps the scale at 1.0, so the
+    font sizes set in rcParams are the sizes that print.
+    """
     os.makedirs(outdir, exist_ok=True)
+    if fig.get_layout_engine() is None:
+        fig.tight_layout(pad=0.3)
     for ext in ("pdf", "png"):
         path = os.path.join(outdir, f"{stem}.{ext}")
-        fig.savefig(path, bbox_inches="tight", pad_inches=0.02)
+        fig.savefig(path)
         print(f"[qualitative] wrote {path}", flush=True)
     plt.close(fig)
 
@@ -376,7 +388,8 @@ def cmd_compare(args) -> None:
                              straddle_floor=0.15, k_max=args.k).iloc[0]
         oc[src] = row.get(f"OC{args.k}@{args.delta}", np.nan)
 
-    fig, axes = plt.subplots(1, 3, figsize=(DOUBLE_COL, DOUBLE_COL / 3 + 0.35))
+    fig, axes = plt.subplots(1, 3, figsize=(DOUBLE_COL, DOUBLE_COL / 3 + 0.55),
+                             layout="constrained")
     titles = [f"(a) Human observers, U = {len(obs)}",
               f"(b) {base.name}, top-{args.k}",
               "(c) Director-CenterNet"]
@@ -407,8 +420,11 @@ def cmd_compare(args) -> None:
         patches.Patch(fill=False, edgecolor=C_MAIN, label="main"),
         patches.Patch(fill=False, edgecolor=C_PIP, label="PIP"),
     ]
-    fig.legend(handles=handles, loc="lower center", ncol=6, frameon=False,
-               bbox_to_anchor=(0.5, -0.04))
+    # "outside" so the constrained layout reserves the strip for it. Anchoring
+    # it below the canvas instead only worked while _save cropped with
+    # bbox_inches="tight", which grew the canvas to take the legend in; without
+    # that it landed on top of the OC labels.
+    fig.legend(handles=handles, loc="outside lower center", ncol=6, frameon=False)
     print(f"[compare] replay {replay} frame {args.frame}: {len(modes.centers)} modes, "
           f"support {modes.support.tolist()}; {base.name} {len(b_boxes)} boxes, "
           f"Director {len(d_boxes)} regions; OC{args.k}@{args.delta} "
@@ -478,7 +494,13 @@ def cmd_heatmap(args) -> None:
               f"saved {np.round(saved_scores, 3).tolist()}; check checkpoint / threshold",
               flush=True)
 
-    fig, axes = plt.subplots(1, 4, figsize=(DOUBLE_COL, DOUBLE_COL / 4 + 0.55))
+    # The colorbar gets a row of its own rather than `colorbar(ax=axes[1:3])`,
+    # which takes its space *out of* those two axes. They carry imshow and so
+    # have a fixed aspect: losing height loses width with it, and (b) and (c)
+    # came out smaller than (a) and (d) and centred at a different height.
+    fig = plt.figure(figsize=(DOUBLE_COL, DOUBLE_COL / 4 + 0.75), layout="constrained")
+    gs = fig.add_gridspec(2, 4, height_ratios=[1.0, 0.05])
+    axes = [fig.add_subplot(gs[0, i]) for i in range(4)]
     ext = (0, width, height, 0)
     axes[0].imshow(cov, extent=ext, cmap="Greys", vmin=0, vmax=1, interpolation="nearest")
     for b in obs:
@@ -504,7 +526,7 @@ def cmd_heatmap(args) -> None:
 
     for ax in axes:
         _map_axes(ax, height, width)
-    cb = fig.colorbar(im, ax=axes[1:3], orientation="horizontal", fraction=0.05, pad=0.04)
+    cb = fig.colorbar(im, cax=fig.add_subplot(gs[1, 1:3]), orientation="horizontal")
     cb.set_ticks([0, 0.2, 0.5, 1])
     cb.ax.tick_params(labelsize=6.5)
     cb.set_label(f"(b) normalised to its maximum; (c) sigmoid score, 1/U = {1 / len(obs):.1f}",
