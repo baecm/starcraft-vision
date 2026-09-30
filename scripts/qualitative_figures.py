@@ -8,7 +8,7 @@ Draws the three qualitative figures of the Director-CenterNet paper
 
   compare     (1) one frame, three panels: the U observers and their ranked
                   modes / the baseline's top-K boxes / Director-CenterNet's
-                  main + PIP regions
+                  primary + auxiliary regions
   heatmap     (2) the same frame as four panels: coverage a_t / smoothed
                   coverage with ranked modes and support / predicted heatmap
                   Y_hat_t / decoded regions over the minimap
@@ -417,8 +417,8 @@ def cmd_compare(args) -> None:
         plt.Line2D([], [], marker="o", ls="", color=C_TOP1, label="Top-1 mode"),
         plt.Line2D([], [], marker="o", ls="", color=C_MINOR, label="minority mode"),
         patches.Patch(fill=False, edgecolor=C_BASE, label=f"{base.name} box"),
-        patches.Patch(fill=False, edgecolor=C_MAIN, label="main"),
-        patches.Patch(fill=False, edgecolor=C_PIP, label="PIP"),
+        patches.Patch(fill=False, edgecolor=C_MAIN, label="primary"),
+        patches.Patch(fill=False, edgecolor=C_PIP, label="auxiliary"),
     ]
     # "outside" so the constrained layout reserves the strip for it. Anchoring
     # it below the canvas instead only worked while _save cropped with
@@ -600,8 +600,8 @@ def cmd_trajectory(args) -> None:
             zorder=3, label=f"{base.name} top-1")
     if pip_f:
         ax.scatter(pip_f, pip_v, s=5, marker="s", color=C_PIP, lw=0, zorder=3,
-                   label="Director-CenterNet PIP")
-    ax.plot(fr, d_track, color=C_MAIN, lw=1.5, zorder=4, label="Director-CenterNet main")
+                   label="Director-CenterNet auxiliary")
+    ax.plot(fr, d_track, color=C_MAIN, lw=1.5, zorder=4, label="Director-CenterNet primary")
     ax.set_xlim(fr[0], fr[-1])
     ax.set_ylim(0, width if axis == 1 else height)
     ax.set_xlabel("frame")
