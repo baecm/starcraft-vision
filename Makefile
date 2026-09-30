@@ -22,8 +22,8 @@ ENABLE_SYNOLOGY_CHAT ?= false
 export ENABLE_SYNOLOGY_CHAT
 
 ifeq ($(OS),Windows_NT)
-    # Auto-mount Windows network drive Z: into WSL2 docker-desktop host
-    $(shell wsl -d docker-desktop -e sh -c "if [ -d /mnt/host ] && [ ! -d /mnt/host/z/starcraft-vision ]; then mkdir -p /mnt/host/z && mount -t drvfs 'Z:' /mnt/host/z 2>/dev/null; fi" 2>/dev/null)
+    # Auto-mount network share into WSL2 docker-desktop host (direct UNC path or via drive Z:)
+    $(shell wsl -d docker-desktop -e sh -c "if [ -d /mnt/host ] && ! mountpoint -q /mnt/host/z; then mkdir -p /mnt/host/z && (mount -t drvfs '\\\172.27.186.243\homes\baecm' /mnt/host/z 2>/dev/null || mount -t drvfs 'Z:' /mnt/host/z 2>/dev/null); fi" 2>/dev/null)
     # Use Git Bash on Windows (8.3 short path avoids space issues in Make)
     SHELL := C:/PROGRA~1/Git/bin/bash.exe
     .SHELLFLAGS := -c
@@ -200,6 +200,13 @@ mode-disagreement-fg:
 #   --methods director prior_th07 --k-cap director=3"
 budget-allocation:
 	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/budget_allocation.py $(ARGS)"
+
+# Are the primary region's cuts prepared by an auxiliary region? See the
+# script's docstring. Reads predictions only, so it needs no GPU. Example:
+# make switch-preparation ARGS="--replays 275 1725 3613 4520 4664 \
+#   --model director=dc_full_b16_f1_s456_v6 --epoch 30"
+switch-preparation:
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/switch_preparation.py $(ARGS)"
 
 # The paper's qualitative figures (1)-(3); see the script's docstring. The
 # heatmap subcommand re-runs a checkpoint, so it wants the GPU. Example:
