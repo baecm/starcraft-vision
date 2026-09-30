@@ -112,6 +112,7 @@ from mode_disagreement import parse_model_spec
 
 MM = 1 / 25.4
 DOUBLE_COL = 190 * MM   # ESWA double-column width
+SINGLE_COL = 88 * MM    # one column of the same two-column layout
 
 C_MAIN = "#2458a6"
 C_PIP = "#e07b24"
@@ -359,6 +360,52 @@ def cmd_select(args) -> None:
     print(rdf.sort_values("frames", ascending=False).head(args.top).to_string(index=False))
     print("  Caption: give this window's flip counts next to the fold-wide rates, so the "
           "example is read against the average and not as one.")
+
+
+# --------------------------------------------------------------------------
+# teaser
+# --------------------------------------------------------------------------
+
+def cmd_teaser(args) -> None:
+    """The opening figure: one real frame, its observers, and its ranked modes.
+
+    Panel (a) of `compare`, on its own and at one column rather than two. It
+    states the problem the paper is about - the observers do not agree, and
+    their disagreement has a ranking - without showing any model output, so
+    nothing here has to be qualified by how well a method happened to do on the
+    frame.
+    """
+    replay = str(args.replay)
+    gt, height, width, size_hw = load_gt(args, replay)
+    if args.frame not in gt:
+        raise KeyError(f"frame {args.frame} has no ground truth in replay {replay}")
+    obs = gt[args.frame]
+    modes = frame_modes(obs, height, width, args)
+    bg = minimap_rgb(load_frame_npy(args.input_root, replay, args.frame), fog=not args.no_fog)
+
+    fig, ax = plt.subplots(figsize=(SINGLE_COL, SINGLE_COL + 0.30), layout="constrained")
+    ax.imshow(bg, extent=(0, width, height, 0), interpolation="nearest", zorder=0)
+    _map_axes(ax, height, width)
+    for b in obs:
+        _rect(ax, b, C_OBS, lw=0.9, ls=(0, (3, 2)))
+    _draw_modes(ax, modes)
+
+    handles = [
+        patches.Patch(fill=False, edgecolor=C_OBS, linestyle="--", label="observer viewport"),
+        plt.Line2D([], [], marker="o", ls="", color=C_TOP1, label="Top-1 mode"),
+        plt.Line2D([], [], marker="o", ls="", color=C_MINOR, label="minority mode"),
+    ]
+    # One row: a legend of three entries at ncol=2 fills column-major and leaves
+    # the third entry alone on a second row.
+    fig.legend(handles=handles, loc="outside lower center", ncol=3, frameon=False,
+               fontsize=6.5, handletextpad=0.4, columnspacing=1.0)
+
+    sep = [float(np.linalg.norm(modes.centers[i] - modes.centers[j]))
+           for i in range(len(modes.centers)) for j in range(i + 1, len(modes.centers))]
+    print(f"[teaser] replay {replay} frame {args.frame}: {len(modes.centers)} modes, "
+          f"support {modes.support.tolist()}, min separation "
+          f"{min(sep) if sep else float('nan'):.0f} tiles", flush=True)
+    _save(fig, args.outdir, f"qual0_teaser_{replay}_{args.frame}")
 
 
 # --------------------------------------------------------------------------
@@ -651,6 +698,12 @@ def main() -> None:
     p.add_argument("--min-run", type=int, default=6, help="shortest tie run listed for (3)")
     p.add_argument("--top", type=int, default=15)
     p.set_defaults(func=cmd_select)
+
+    p = sub.add_parser("teaser", parents=[common],
+                       help="the opening figure: observers and ranked modes, one column wide")
+    p.add_argument("--replay", required=True)
+    p.add_argument("--frame", type=int, required=True)
+    p.set_defaults(func=cmd_teaser)
 
     p = sub.add_parser("compare", parents=[common], help="figure (1)")
     p.add_argument("--replay", required=True)
