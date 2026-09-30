@@ -420,9 +420,11 @@ def trajectory_smoothness_loss(
        an O(1) scale (worst case ~4.9).
 
     Normalising *first* and then applying Huber would place delta at
-    5/181 = 0.028 and shrink the term by ~10^4, which switches the objective
-    off rather than fixing it - and would make the full-vs-no_smooth ablation a
-    null comparison.
+    5/181 = 0.028, so the linear branch carries a slope of 0.028 instead of 5
+    and the term is divided by 181 a second time: ~10^4 below the unnormalised
+    squared form, ~10^2 below what this function returns. Either way it
+    switches the objective off rather than fixing it - and would make the
+    full-vs-no_smooth ablation a null comparison.
     """
     diff = primary_centers_t - primary_centers_next  # (B, 2)
     disp_sq = torch.sum(diff ** 2, dim=-1)  # (B,)
