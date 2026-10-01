@@ -6,7 +6,7 @@ reeval_missing_frames.py
 Re-derive single-region numbers reported from earlier versions of the evaluator,
 and measure how far each evaluator fix moved them.
 
-Three fixes are separated:
+Four fixes are separated:
 
     8de59a3 / cf46716 (2026-08-20)  frames on which the model emitted no
                                     prediction were skipped. Skipping them
@@ -21,16 +21,28 @@ Three fixes are separated:
                                     evaluator's clip and was scored as a
                                     viewport at the map's top-left corner, not
                                     as 0. Such frames now score exactly 0.
+    anchor (2026-10-01)             the kernel evaluator places a window at an
+                                    agent's position as its top-left corner,
+                                    but was passed each annotation's centroid.
+                                    Every window moved by half a viewport, and
+                                    past the far edge the clip stacked windows
+                                    onto one position, inflating overlap. Both
+                                    prediction and observers now pass corners.
 
-Each replay's ground truth and predictions are loaded once and scored four ways:
+Each replay's ground truth and predictions are loaded once and scored five ways:
 
-    a_legacy    skip missing, legacy centroid       should reproduce the CSV
-                                                    written at the time
-    b_centroid  skip missing                         a -> b is 0782acd
-    c_corner    missing scored as the corner         b -> c is the August fix as
-                                                    it was implemented
-    d_current   missing scored 0                     c -> d is the corner fix;
-                                                    d is the corrected value
+    a_legacy    skip missing, legacy centroid,       should reproduce the CSV
+                centroid anchor                      written at the time
+    b_centroid  skip missing, centroid anchor        a -> b is 0782acd
+    c_corner    missing as the corner, centroid      b -> c is the August fix as
+                anchor                               it was implemented
+    d_zero      missing scored 0, centroid anchor    c -> d is the corner fix
+    e_current   missing scored 0, corner anchor      d -> e is the anchor fix;
+                                                     e is the corrected value
+
+e_current should agree with scripts/mode_disagreement.py on the same run, which
+measures the same ratio from the stored boxes directly; the `ch9` set exists
+partly to check that.
 
 Every run with a CSV on file also carries `old`. If a_legacy does not match it,
 something else has changed too, and `legacy_check` says so.
@@ -111,16 +123,18 @@ RUN_SETS: Dict[str, List[str]] = {
 RERUNS = {"maskrcnn_win4_kbrs_fold1_s123_kbrs025_base_score_20260203_055642"}
 
 VARIANTS = {
-    "a_legacy": dict(skip_missing_preds=True, legacy_centroid=True, missing_as_corner=False),
-    "b_centroid": dict(skip_missing_preds=True, legacy_centroid=False, missing_as_corner=False),
-    "c_corner": dict(skip_missing_preds=False, legacy_centroid=False, missing_as_corner=True),
-    "d_current": dict(skip_missing_preds=False, legacy_centroid=False, missing_as_corner=False),
+    "a_legacy": dict(skip_missing_preds=True, legacy_centroid=True, missing_as_corner=False, legacy_anchor=True),
+    "b_centroid": dict(skip_missing_preds=True, legacy_centroid=False, missing_as_corner=False, legacy_anchor=True),
+    "c_corner": dict(skip_missing_preds=False, legacy_centroid=False, missing_as_corner=True, legacy_anchor=True),
+    "d_zero": dict(skip_missing_preds=False, legacy_centroid=False, missing_as_corner=False, legacy_anchor=True),
+    "e_current": dict(skip_missing_preds=False, legacy_centroid=False, missing_as_corner=False, legacy_anchor=False),
 }
 DELTAS = {  # name: (to, from)
     "d_centroid": ("b_centroid", "a_legacy"),
     "d_missing": ("c_corner", "b_centroid"),
-    "d_corner": ("d_current", "c_corner"),
-    "d_total": ("d_current", "old"),
+    "d_corner": ("d_zero", "c_corner"),
+    "d_anchor": ("e_current", "d_zero"),
+    "d_total": ("e_current", "old"),
 }
 METRICS = ["ic@000", "ic@030", "ic@050", "ic_ratio"]
 METRIC_LABEL = {"ic@000": "@any", "ic@030": "@0.3", "ic@050": "@0.5", "ic_ratio": "IR"}
@@ -227,7 +241,7 @@ def main() -> None:
     keys = ["run", "model", "fold", "seed", "variant"]
     per_run = per_replay.groupby(keys, as_index=False, dropna=False)[METRICS].mean()
     frames = (
-        per_replay[per_replay["variant"] == "d_current"]
+        per_replay[per_replay["variant"] == "e_current"]
         .groupby("run", as_index=False)[["missing_preds", "total_frames"]].sum()
     )
     wide = per_run.pivot_table(index=["run", "model", "fold", "seed"], columns="variant", values=METRICS)
@@ -247,15 +261,15 @@ def main() -> None:
 
     # Summary per model, reruns excluded.
     main_runs = wide[~wide["rerun"]]
-    cols = ["old", "a_legacy", "b_centroid", "c_corner", "d_current", "d_centroid", "d_missing", "d_corner", "d_total"]
+    cols = ["old", "a_legacy", "b_centroid", "c_corner", "d_zero", "e_current", "d_centroid", "d_missing", "d_corner", "d_anchor", "d_total"]
     lines = [
         f"# Re-evaluation: set `{args.set}`",
         "",
         f"Generated {dt.datetime.now():%Y-%m-%d %H:%M}. Kernel 20x12, all_correct labels, epoch 30.",
         "Frames averaged within a replay, then replays within a run, then runs.",
-        "`old` is the CSV written at the time; `a_legacy` should match it. `d_current` is the corrected value.",
+        "`old` is the CSV written at the time; `a_legacy` should match it. `e_current` is the corrected value.",
         "Deltas: d_centroid = b - a (0782acd), d_missing = c - b (August fix as implemented),",
-        "d_corner = d - c (corner fix), d_total = d - old.",
+        "d_corner = d - c (corner fix), d_anchor = e - d (anchor fix), d_total = e - old.",
         "",
     ]
     scopes = [("Fold 1", main_runs[main_runs["fold"] == 1])]
@@ -280,7 +294,7 @@ def main() -> None:
             k, v = sub[sub["model"] == "kbrs"], sub[sub["model"] == "maskrcnn"]
             diffs = [
                 f"{c} {k[f'ic_ratio__{c}'].mean() - v[f'ic_ratio__{c}'].mean():+.4f}"
-                for c in ["old", "a_legacy", "b_centroid", "c_corner", "d_current"] if f"ic_ratio__{c}" in sub.columns
+                for c in ["old", "a_legacy", "b_centroid", "c_corner", "d_zero", "e_current"] if f"ic_ratio__{c}" in sub.columns
             ]
             lines += ["", "KBRS minus Mask R-CNN, IR: " + ", ".join(diffs)]
         lines.append("")

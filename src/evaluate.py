@@ -88,6 +88,24 @@ def _centroid_from_coco_ann(
 centroid_from_coco_ann = _centroid_from_coco_ann
 
 
+def _topleft_from_coco_ann(ann: dict, img_w: int, img_h: int) -> Tuple[float, float]:
+    """
+    Return the top-left corner (x, y) of an annotation, in the same pixel
+    coordinates as `_centroid_from_coco_ann`.
+
+    This, not the centroid, is what the kernel evaluator expects. It descends
+    from the original evaluation script, whose agent traces store the camera's
+    top-left position in map pixels - max_x = 3456 is the 4096 px map less the
+    640 px screen - and it places each window at [px, px + x_len). Feeding it a
+    centroid shifts every window by half a viewport and, once the shift pushes
+    a window past the far edge, the clip below stacks windows from up to half a
+    viewport apart onto one position, which inflates overlap there.
+    """
+    # Reuse the centroid helper's bbox resolution, then undo the half-size step.
+    cx, cy = _centroid_from_coco_ann(ann, img_w, img_h, size_wh=(0.0, 0.0))
+    return cx, cy
+
+
 def coco_to_kernel_labels(
     coco_gt: COCO,
     preds_list: Union[List[dict], Dict[int, List[dict]]],
@@ -101,16 +119,24 @@ def coco_to_kernel_labels(
     score_thresh: float = 0.0,
     skip_missing_preds: bool = False,
     legacy_centroid: bool = False,
+    legacy_anchor: bool = False,
     return_stats: bool = False,
 ):
     """
     Convert COCO-style GT + preds into agent-trace tests for kernel-based evaluator.
     Only predictions with score >= score_thresh are considered valid.
 
-    `skip_missing_preds` and `legacy_centroid` reproduce the evaluator as it was
-    before 8de59a3/cf46716 and 0782acd respectively, so that numbers reported
-    from that version can be re-derived and the two fixes measured separately.
-    Leave both off for the current, corrected behaviour.
+    The evaluator places each window at the agent's position, as a top-left
+    corner, so that is what is passed for both the prediction and every
+    observer (see `_topleft_from_coco_ann`).
+
+    `skip_missing_preds`, `legacy_centroid` and `legacy_anchor` reproduce the
+    evaluator as it was before 8de59a3/cf46716, 0782acd and the anchor fix
+    respectively, so that numbers reported from those versions can be
+    re-derived and each fix measured separately. `legacy_anchor` passes
+    centroids where corners are expected; `legacy_centroid` only matters with
+    it, since the corrected path takes no centroid. Leave all off for the
+    current, corrected behaviour.
     """
     if isinstance(preds_list, dict):
         preds_by_img = preds_list
@@ -153,19 +179,25 @@ def coco_to_kernel_labels(
             agent0 = [{"vpx": dummy_vx, "vpy": dummy_vy, "missing": True}]
         else:
             best_pred = max(valid_preds, key=lambda q: float(q.get("score", 0.0)))
-            # a prediction denotes a top-left plus the fixed viewport size; its
-            # stored w/h are clamped at the map edge and would skew the centroid
-            pcx, pcy = _centroid_from_coco_ann(
-                best_pred, img_w, img_h,
-                size_wh=None if legacy_centroid else (x_len, y_len),
-            )
+            if legacy_anchor:
+                # a prediction denotes a top-left plus the fixed viewport size; its
+                # stored w/h are clamped at the map edge and would skew the centroid
+                pcx, pcy = _centroid_from_coco_ann(
+                    best_pred, img_w, img_h,
+                    size_wh=None if legacy_centroid else (x_len, y_len),
+                )
+            else:
+                pcx, pcy = _topleft_from_coco_ann(best_pred, img_w, img_h)
             vx = float(pcx) / max(1, (img_w - x_len)) * max_x
             vy = float(pcy) / max(1, (img_h - y_len)) * max_y
             agent0 = [{"vpx": vx, "vpy": vy}]
 
         ref_agents: List[List[Dict[str, float]]] = []
         for ann in anns:
-            gcx, gcy = _centroid_from_coco_ann(ann, img_w, img_h)
+            if legacy_anchor:
+                gcx, gcy = _centroid_from_coco_ann(ann, img_w, img_h)
+            else:
+                gcx, gcy = _topleft_from_coco_ann(ann, img_w, img_h)
             gvx = float(gcx) / max(1, (img_w - x_len)) * max_x
             gvy = float(gcy) / max(1, (img_h - y_len)) * max_y
             ref_agents.append([{"vpx": gvx, "vpy": gvy}])
@@ -195,6 +227,7 @@ def eval_kernel_from_coco(
     score_thresh: float = 0.0,
     legacy_centroid: bool = False,
     missing_as_corner: bool = False,
+    legacy_anchor: bool = False,
 ) -> Tuple[Dict[str, Any], List[ImageIR], Dict[str, float]]:
     """
     Evaluate kernel metrics directly from COCO objects.
@@ -215,6 +248,7 @@ def eval_kernel_from_coco(
         score_thresh=score_thresh,
         skip_missing_preds=skip_missing_preds,
         legacy_centroid=legacy_centroid,
+        legacy_anchor=legacy_anchor,
         return_stats=True,
     )
 
@@ -690,6 +724,7 @@ def compute_ic_for_replay(
     score_thresh: float = 0.0,
     legacy_centroid: bool = False,
     missing_as_corner: bool = False,
+    legacy_anchor: bool = False,
 ) -> Dict[str, float]:
     """
     Computes IC metrics for a replay sequence with a specified score threshold.
@@ -790,6 +825,7 @@ def compute_ic_for_replay(
             score_thresh=score_thresh,
             legacy_centroid=legacy_centroid,
             missing_as_corner=missing_as_corner,
+            legacy_anchor=legacy_anchor,
         )
         print(
             f"[IC replay={replay_id}] thresh={score_thresh} done (t={time.time() - t_ic:.2f}s) "
@@ -1231,6 +1267,12 @@ def parse_args() -> argparse.Namespace:
         help="Score a frame with no prediction as a viewport at the map corner instead of 0 "
              "(the behaviour from cf46716 until this flag was added)",
     )
+    p.add_argument(
+        "--legacy-anchor",
+        action="store_true",
+        help="Pass annotation centroids to the kernel evaluator where it expects top-left corners "
+             "(the behaviour until this flag was added; shifts every window by half a viewport)",
+    )
     p.add_argument("--ic-kernel", default="20,12")
     p.add_argument("--ic-grid", default="128,128")
     p.add_argument("--ic-maxcoord", default="3456,3720")
@@ -1397,6 +1439,7 @@ def main():
                     skip_missing_preds=args.skip_missing_preds,
                     legacy_centroid=args.legacy_centroid,
                     missing_as_corner=args.missing_as_corner,
+                    legacy_anchor=args.legacy_anchor,
                 )
             else:
                 ic_row = {"kernel": "20x12", "score_thresh": float(th), "num_images": len(images)}
