@@ -100,11 +100,17 @@ def coco_to_kernel_labels(
     max_y: float,
     score_thresh: float = 0.0,
     skip_missing_preds: bool = False,
+    legacy_centroid: bool = False,
     return_stats: bool = False,
 ):
     """
     Convert COCO-style GT + preds into agent-trace tests for kernel-based evaluator.
     Only predictions with score >= score_thresh are considered valid.
+
+    `skip_missing_preds` and `legacy_centroid` reproduce the evaluator as it was
+    before 8de59a3/cf46716 and 0782acd respectively, so that numbers reported
+    from that version can be re-derived and the two fixes measured separately.
+    Leave both off for the current, corrected behaviour.
     """
     if isinstance(preds_list, dict):
         preds_by_img = preds_list
@@ -149,7 +155,10 @@ def coco_to_kernel_labels(
             best_pred = max(valid_preds, key=lambda q: float(q.get("score", 0.0)))
             # a prediction denotes a top-left plus the fixed viewport size; its
             # stored w/h are clamped at the map edge and would skew the centroid
-            pcx, pcy = _centroid_from_coco_ann(best_pred, img_w, img_h, size_wh=(x_len, y_len))
+            pcx, pcy = _centroid_from_coco_ann(
+                best_pred, img_w, img_h,
+                size_wh=None if legacy_centroid else (x_len, y_len),
+            )
             vx = float(pcx) / max(1, (img_w - x_len)) * max_x
             vy = float(pcy) / max(1, (img_h - y_len)) * max_y
             agent0 = [{"vpx": vx, "vpy": vy}]
@@ -184,6 +193,7 @@ def eval_kernel_from_coco(
     maxcoord: Tuple[float, float] = (3456.0, 3720.0),
     skip_missing_preds: bool = False,
     score_thresh: float = 0.0,
+    legacy_centroid: bool = False,
 ) -> Tuple[Dict[str, Any], List[ImageIR], Dict[str, float]]:
     """
     Evaluate kernel metrics directly from COCO objects.
@@ -203,6 +213,7 @@ def eval_kernel_from_coco(
         max_y=max_y,
         score_thresh=score_thresh,
         skip_missing_preds=skip_missing_preds,
+        legacy_centroid=legacy_centroid,
         return_stats=True,
     )
 
@@ -675,6 +686,7 @@ def compute_ic_for_replay(
     model_tag: Optional[str] = None,
     skip_missing_preds: bool = False,
     score_thresh: float = 0.0,
+    legacy_centroid: bool = False,
 ) -> Dict[str, float]:
     """
     Computes IC metrics for a replay sequence with a specified score threshold.
@@ -773,6 +785,7 @@ def compute_ic_for_replay(
             maxcoord=(ic_max_x, ic_max_y),
             skip_missing_preds=skip_missing_preds,
             score_thresh=score_thresh,
+            legacy_centroid=legacy_centroid,
         )
         print(
             f"[IC replay={replay_id}] thresh={score_thresh} done (t={time.time() - t_ic:.2f}s) "
@@ -1196,6 +1209,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--multi-topk", type=int, default=3, help="Top-K predicted viewports to evaluate for Multi-Region metrics (default: 3, set 0 for all)")
 
     # IC metric kernel options
+    # Reproduce earlier evaluator behaviour, to re-derive numbers reported from it
+    # and measure each fix on its own. Both default to the corrected behaviour.
+    p.add_argument(
+        "--skip-missing-preds",
+        action="store_true",
+        help="Drop frames with no prediction instead of scoring them 0 (pre-8de59a3/cf46716 behaviour)",
+    )
+    p.add_argument(
+        "--legacy-centroid",
+        action="store_true",
+        help="Take prediction centroids from the stored, edge-clamped box size (pre-0782acd behaviour)",
+    )
     p.add_argument("--ic-kernel", default="20,12")
     p.add_argument("--ic-grid", default="128,128")
     p.add_argument("--ic-maxcoord", default="3456,3720")
@@ -1359,6 +1384,8 @@ def main():
                     preds_all=preds_by_img,
                     model_tag=model_tag,
                     score_thresh=th,
+                    skip_missing_preds=args.skip_missing_preds,
+                    legacy_centroid=args.legacy_centroid,
                 )
             else:
                 ic_row = {"kernel": "20x12", "score_thresh": float(th), "num_images": len(images)}
