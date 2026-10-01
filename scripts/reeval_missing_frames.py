@@ -41,8 +41,11 @@ Each replay's ground truth and predictions are loaded once and scored five ways:
                                                      e is the corrected value
 
 e_current should agree with scripts/mode_disagreement.py on the same run, which
-measures the same ratio from the stored boxes directly; the `ch9` set exists
-partly to check that.
+measures the same ratio from the stored boxes directly, once frames are pooled
+over a run's replays the way that script does (summary.md prints both); the
+`ch9` set exists partly to check that. On 2026-10-01 they agreed to 0.002 IR.
+
+An interrupted run continues with --resume and the same --out.
 
 Every run with a CSV on file also carries `old`. If a_legacy does not match it,
 something else has changed too, and `legacy_check` says so.
@@ -180,6 +183,19 @@ def load_old(results_root: str, run: str) -> pd.DataFrame:
     return out
 
 
+def load_gt_with_retry(label_root: str, replay: str, attempts: int = 3):
+    """The NAS mount has returned garbled reads under heavy concurrent writes; the
+    file itself parses on a second read, so retry before giving up."""
+    for i in range(attempts):
+        try:
+            return load_coco_gt(label_root, replay, "all_correct")
+        except ValueError as e:  # json.JSONDecodeError
+            if i == attempts - 1:
+                raise
+            print(f"[!] GT {replay} failed to parse ({e}); retrying in 10s", flush=True)
+            time.sleep(10)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--set", choices=sorted(RUN_SETS), default="kbrs")
@@ -188,6 +204,8 @@ def main() -> None:
     p.add_argument("--label-root", default="/workspace/data/label/dst")
     p.add_argument("--results-root", default="/workspace/results")
     p.add_argument("--out", default=None)
+    p.add_argument("--resume", action="store_true",
+                   help="Keep the rows already in --out/per_replay.csv and score only what is missing")
     args = p.parse_args()
 
     out_dir = args.out or os.path.join(args.results_root, "reeval", f"{args.set}_{dt.date.today():%Y%m%d}")
@@ -199,18 +217,32 @@ def main() -> None:
     rows: List[Dict[str, object]] = []
     gt_cache = {}
 
+    done = set()
+    prev_path = os.path.join(out_dir, "per_replay.csv")
+    if args.resume and os.path.isfile(prev_path):
+        prev = pd.read_csv(prev_path, dtype={"replay": str})
+        # A run x replay counts as done only if every variant was written for it.
+        scored = prev[prev["variant"].isin(VARIANTS)]
+        counts = scored.groupby(["run", "replay"])["variant"].nunique()
+        done = {k for k, n in counts.items() if n == len(VARIANTS)}
+        keep = prev["variant"].eq("old") | prev.set_index(["run", "replay"]).index.isin(done)
+        rows = prev[keep].to_dict("records")
+        print(f"[INFO] Resuming: {len(done)} run x replay pairs already scored", flush=True)
+
     for spec in specs:
         run, tau = split_spec(spec)
         meta = parse_run(spec)
         print(f"\n[RUN] {spec}", flush=True)
-        if tau is None:
+        if tau is None and not any(r["run"] == spec and r["variant"] == "old" for r in rows):
             for rec in load_old(args.results_root, run).to_dict("records"):
                 rows.append({"run": spec, **meta, **rec})
 
         for replay in FOLD_REPLAYS[meta["fold"]]:
+            if (spec, replay) in done:
+                continue
             t0 = time.time()
             if replay not in gt_cache:
-                gt_cache[replay] = load_coco_gt(args.label_root, replay, "all_correct")
+                gt_cache[replay] = load_gt_with_retry(args.label_root, replay)
             coco_gt = gt_cache[replay]
             preds = load_coco_preds(args.pred_root, run, 30, replay, "all_correct", score_threshold=tau)
             if not preds:
@@ -297,6 +329,21 @@ def main() -> None:
                 for c in ["old", "a_legacy", "b_centroid", "c_corner", "d_zero", "e_current"] if f"ic_ratio__{c}" in sub.columns
             ]
             lines += ["", "KBRS minus Mask R-CNN, IR: " + ", ".join(diffs)]
+        # mode_disagreement.py pools frames across a run's replays instead of
+        # averaging replay means, so long replays weigh more; e_current under that
+        # weighting is what it should reproduce.
+        cur = per_replay[(per_replay["variant"] == "e_current") & per_replay["run"].isin(sub["run"])].copy()
+        if not cur.empty:
+            lines += ["", "e_current with frames pooled over a run's replays (as mode_disagreement.py):", ""]
+            for model in sorted(cur["model"].unique()):
+                c = cur[cur["model"] == model]
+                pooled = {
+                    m: c.groupby("run").apply(
+                        lambda g, m=m: (g[m] * g["total_frames"]).sum() / g["total_frames"].sum()
+                    ).mean()
+                    for m in METRICS
+                }
+                lines.append(f"- {model}: " + ", ".join(f"{METRIC_LABEL[m]} {pooled[m]:.4f}" for m in METRICS))
         lines.append("")
 
     checks = [c for c in wide.columns if c.endswith("__legacy_check")]
