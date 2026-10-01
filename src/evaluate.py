@@ -150,7 +150,7 @@ def coco_to_kernel_labels(
             if skip_missing_preds:
                 continue
             dummy_vx, dummy_vy = -9999.0, -9999.0
-            agent0 = [{"vpx": dummy_vx, "vpy": dummy_vy}]
+            agent0 = [{"vpx": dummy_vx, "vpy": dummy_vy, "missing": True}]
         else:
             best_pred = max(valid_preds, key=lambda q: float(q.get("score", 0.0)))
             # a prediction denotes a top-left plus the fixed viewport size; its
@@ -194,6 +194,7 @@ def eval_kernel_from_coco(
     skip_missing_preds: bool = False,
     score_thresh: float = 0.0,
     legacy_centroid: bool = False,
+    missing_as_corner: bool = False,
 ) -> Tuple[Dict[str, Any], List[ImageIR], Dict[str, float]]:
     """
     Evaluate kernel metrics directly from COCO objects.
@@ -245,6 +246,7 @@ def eval_kernel_from_coco(
         height=grid_h,
         max_x=max_x,
         max_y=max_y,
+        missing_as_corner=missing_as_corner,
     )
 
     ir_values = np.array([x.ir for x in ir_per_image], dtype=float) if ir_per_image else np.array([])
@@ -687,6 +689,7 @@ def compute_ic_for_replay(
     skip_missing_preds: bool = False,
     score_thresh: float = 0.0,
     legacy_centroid: bool = False,
+    missing_as_corner: bool = False,
 ) -> Dict[str, float]:
     """
     Computes IC metrics for a replay sequence with a specified score threshold.
@@ -786,6 +789,7 @@ def compute_ic_for_replay(
             skip_missing_preds=skip_missing_preds,
             score_thresh=score_thresh,
             legacy_centroid=legacy_centroid,
+            missing_as_corner=missing_as_corner,
         )
         print(
             f"[IC replay={replay_id}] thresh={score_thresh} done (t={time.time() - t_ic:.2f}s) "
@@ -1221,6 +1225,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Take prediction centroids from the stored, edge-clamped box size (pre-0782acd behaviour)",
     )
+    p.add_argument(
+        "--missing-as-corner",
+        action="store_true",
+        help="Score a frame with no prediction as a viewport at the map corner instead of 0 "
+             "(the behaviour from cf46716 until this flag was added)",
+    )
     p.add_argument("--ic-kernel", default="20,12")
     p.add_argument("--ic-grid", default="128,128")
     p.add_argument("--ic-maxcoord", default="3456,3720")
@@ -1386,6 +1396,7 @@ def main():
                     score_thresh=th,
                     skip_missing_preds=args.skip_missing_preds,
                     legacy_centroid=args.legacy_centroid,
+                    missing_as_corner=args.missing_as_corner,
                 )
             else:
                 ic_row = {"kernel": "20x12", "score_thresh": float(th), "num_images": len(images)}

@@ -3,49 +3,59 @@
 reeval_missing_frames.py
 ========================
 
-Re-derive the Mask R-CNN / Mask R-CNN + KBRS numbers of the saliency-prior paper
-(ToG-2026-0161) and measure how far the evaluator faults behind them moved them.
+Re-derive single-region numbers reported from earlier versions of the evaluator,
+and measure how far each evaluator fix moved them.
 
-Those numbers were computed in December 2025 and January 2026, before two
-evaluator fixes:
+Three fixes are separated:
 
     8de59a3 / cf46716 (2026-08-20)  frames on which the model emitted no
-                                    prediction were skipped; they are now scored
-                                    0. Skipping them conditions every metric on
-                                    the frames the model chose to answer.
+                                    prediction were skipped. Skipping them
+                                    conditions every metric on the frames the
+                                    model chose to answer. The fix gave them a
+                                    -9999 sentinel, meant to score 0.
     0782acd (2026-09-18)            the prediction centroid was read off the
                                     stored box, which inference clamps at the
                                     map edge; it is now measured at the fixed
                                     viewport size.
+    missing-as-corner (2026-10-01)  the -9999 sentinel went through the
+                                    evaluator's clip and was scored as a
+                                    viewport at the map's top-left corner, not
+                                    as 0. Such frames now score exactly 0.
 
-Each replay's ground truth and predictions are loaded once and scored three
-ways, so the two fixes separate:
+Each replay's ground truth and predictions are loaded once and scored four ways:
 
-    a_legacy    --skip-missing-preds --legacy-centroid   should reproduce the
-                                                          numbers on file
-    b_centroid  --skip-missing-preds                      a -> b is 0782acd
-    c_current   (neither)                                 b -> c is the
-                                                          missing-frame fix;
-                                                          c is the corrected
-                                                          value
+    a_legacy    skip missing, legacy centroid       should reproduce the CSV
+                                                    written at the time
+    b_centroid  skip missing                         a -> b is 0782acd
+    c_corner    missing scored as the corner         b -> c is the August fix as
+                                                    it was implemented
+    d_current   missing scored 0                     c -> d is the corner fix;
+                                                    d is the corrected value
 
-Every run also carries `old`, the replay-level CSV written at the time. If a_legacy
-does not match it, something else has changed as well and the comparison says so
-in its `legacy_check` column rather than being trusted.
+Every run with a CSV on file also carries `old`. If a_legacy does not match it,
+something else has changed too, and `legacy_check` says so.
 
-Settings are those of the paper: kernel 20x12, grid 128x128, map 3456x3720,
-labels all_correct, epoch 30, no score threshold. Metrics are averaged over frames
-within a replay and then over replays, as the paper does.
+Two sets of runs:
 
-Outputs, under --out (default /workspace/results/reeval/missing_frames_<date>):
+    --set kbrs   the saliency-prior paper's (ToG-2026-0161) main comparison:
+                 9 Mask R-CNN and 9 Mask R-CNN + KBRS runs, plus the February
+                 KBRS rerun of fold 1 seed 123, kept outside the means
+    --set ch9    the Director-CenterNet comparison (thesis ch. 9): the full
+                 model and Mask R-CNN at tau = 0.5 and 0.9, fold 1, 3 seeds.
+                 No old CSVs exist for these; only c -> d is of interest
+
+A run is named `<run>` or `<run>@<tau>`; `@<tau>` reads predictions from
+`model_030_th<tau>`. Settings are fixed: kernel 20x12, grid 128x128, map
+3456x3720, labels all_correct, epoch 30, no further score threshold. Metrics are
+averaged over frames within a replay and then over replays.
+
+Outputs, under --out (default /workspace/results/reeval/<set>_<date>):
 
     per_replay.csv   one row per run x replay x variant
     per_run.csv      replay means per run x variant, with the deltas
-    summary.md       the two models aggregated over fold 1 and over all folds
+    summary.md       aggregated per model, with checks
 
-Run it from the repository root:
-
-    make reeval-missing-frames
+    make reeval-missing-frames ARGS="--set kbrs"
 """
 
 from __future__ import annotations
@@ -56,7 +66,7 @@ import os
 import re
 import sys
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -69,50 +79,77 @@ FOLD_REPLAYS: Dict[int, List[str]] = {
     3: ["36", "212", "438", "522", "1660"],
 }
 
-# The runs behind the paper's main comparison. The KBRS fold-1 seed-123 cell was
-# trained twice; the December run is the one the paper's period of reporting
-# covers, and the February rerun is kept as a separate row, outside the means.
-RUNS: List[str] = [
-    "maskrcnn_win4_vanilla_fold1_s123_20251201_072032",
-    "maskrcnn_win4_vanilla_fold1_s456_20251202_003952",
-    "maskrcnn_win4_vanilla_fold1_s789_20251202_163217",
-    "maskrcnn_win4_vanilla_fold2_s123_20251203_081925",
-    "maskrcnn_win4_vanilla_fold2_s456_20251204_002252",
-    "maskrcnn_win4_vanilla_fold2_s789_20251204_163313",
-    "maskrcnn_win4_vanilla_fold3_s123_20251205_081306",
-    "maskrcnn_win4_vanilla_fold3_s456_20251205_235535",
-    "maskrcnn_win4_vanilla_fold3_s789_20251206_161212",
-    "maskrcnn_win4_kbrs_fold1_s123_kbrs025_base_score_20251219_080334",
-    "maskrcnn_win4_kbrs_fold1_s456_kbrs025_base_score_20260101_175816",
-    "maskrcnn_win4_kbrs_fold1_s789_kbrs025_base_score_20251230_004200",
-    "maskrcnn_win4_kbrs_fold2_s123_kbrs025_base_score_20251222_080550",
-    "maskrcnn_win4_kbrs_fold2_s456_kbrs025_base_score_20251231_031613",
-    "maskrcnn_win4_kbrs_fold2_s789_kbrs025_base_score_20251231_215319",
-    "maskrcnn_win4_kbrs_fold3_s123_kbrs025_base_score_20251230_083127",
-    "maskrcnn_win4_kbrs_fold3_s456_kbrs025_base_score_20251231_151012",
-    "maskrcnn_win4_kbrs_fold3_s789_kbrs025_base_score_20260102_163643",
-    "maskrcnn_win4_kbrs_fold1_s123_kbrs025_base_score_20260203_055642",
-]
+RUN_SETS: Dict[str, List[str]] = {
+    "kbrs": [
+        "maskrcnn_win4_vanilla_fold1_s123_20251201_072032",
+        "maskrcnn_win4_vanilla_fold1_s456_20251202_003952",
+        "maskrcnn_win4_vanilla_fold1_s789_20251202_163217",
+        "maskrcnn_win4_vanilla_fold2_s123_20251203_081925",
+        "maskrcnn_win4_vanilla_fold2_s456_20251204_002252",
+        "maskrcnn_win4_vanilla_fold2_s789_20251204_163313",
+        "maskrcnn_win4_vanilla_fold3_s123_20251205_081306",
+        "maskrcnn_win4_vanilla_fold3_s456_20251205_235535",
+        "maskrcnn_win4_vanilla_fold3_s789_20251206_161212",
+        "maskrcnn_win4_kbrs_fold1_s123_kbrs025_base_score_20251219_080334",
+        "maskrcnn_win4_kbrs_fold1_s456_kbrs025_base_score_20260101_175816",
+        "maskrcnn_win4_kbrs_fold1_s789_kbrs025_base_score_20251230_004200",
+        "maskrcnn_win4_kbrs_fold2_s123_kbrs025_base_score_20251222_080550",
+        "maskrcnn_win4_kbrs_fold2_s456_kbrs025_base_score_20251231_031613",
+        "maskrcnn_win4_kbrs_fold2_s789_kbrs025_base_score_20251231_215319",
+        "maskrcnn_win4_kbrs_fold3_s123_kbrs025_base_score_20251230_083127",
+        "maskrcnn_win4_kbrs_fold3_s456_kbrs025_base_score_20251231_151012",
+        "maskrcnn_win4_kbrs_fold3_s789_kbrs025_base_score_20260102_163643",
+        "maskrcnn_win4_kbrs_fold1_s123_kbrs025_base_score_20260203_055642",
+    ],
+    "ch9": [
+        *[f"dc_full_b16_f1_s{s}_v6" for s in (123, 456, 789)],
+        *[f"maskrcnn_win4_vanilla_f1_s{s}_v6@0.5" for s in (123, 456, 789)],
+        *[f"maskrcnn_win4_vanilla_f1_s{s}_v6@0.9" for s in (123, 456, 789)],
+    ],
+}
+# Trained twice; the December run is the one the paper's reporting period covers.
 RERUNS = {"maskrcnn_win4_kbrs_fold1_s123_kbrs025_base_score_20260203_055642"}
 
 VARIANTS = {
-    "a_legacy": dict(skip_missing_preds=True, legacy_centroid=True),
-    "b_centroid": dict(skip_missing_preds=True, legacy_centroid=False),
-    "c_current": dict(skip_missing_preds=False, legacy_centroid=False),
+    "a_legacy": dict(skip_missing_preds=True, legacy_centroid=True, missing_as_corner=False),
+    "b_centroid": dict(skip_missing_preds=True, legacy_centroid=False, missing_as_corner=False),
+    "c_corner": dict(skip_missing_preds=False, legacy_centroid=False, missing_as_corner=True),
+    "d_current": dict(skip_missing_preds=False, legacy_centroid=False, missing_as_corner=False),
+}
+DELTAS = {  # name: (to, from)
+    "d_centroid": ("b_centroid", "a_legacy"),
+    "d_missing": ("c_corner", "b_centroid"),
+    "d_corner": ("d_current", "c_corner"),
+    "d_total": ("d_current", "old"),
 }
 METRICS = ["ic@000", "ic@030", "ic@050", "ic_ratio"]
 METRIC_LABEL = {"ic@000": "@any", "ic@030": "@0.3", "ic@050": "@0.5", "ic_ratio": "IR"}
 
 
-def parse_run(name: str) -> Dict[str, object]:
-    m = re.search(r"maskrcnn_win4_(vanilla|kbrs)_fold(\d)_s(\d+)", name)
-    if not m:
-        raise ValueError(f"cannot parse run name: {name}")
-    return {"model": m.group(1), "fold": int(m.group(2)), "seed": int(m.group(3))}
+def split_spec(spec: str) -> Tuple[str, Optional[str]]:
+    run, _, tau = spec.partition("@")
+    return run, (tau or None)
+
+
+def parse_run(spec: str) -> Dict[str, object]:
+    run, tau = split_spec(spec)
+    fold = re.search(r"_f(?:old)?(\d)_", run)
+    seed = re.search(r"_s(\d{3})(?:_|$)", run)
+    if not fold or not seed:
+        raise ValueError(f"cannot find fold/seed in run name: {run}")
+    if run.startswith("dc_"):
+        model = "director"
+    elif "_kbrs_" in run:
+        model = "kbrs"
+    else:
+        model = "maskrcnn"
+    if tau:
+        model = f"{model}@{tau}"
+    return {"model": model, "fold": int(fold.group(1)), "seed": int(seed.group(1)), "tau": tau}
 
 
 def load_old(results_root: str, run: str) -> pd.DataFrame:
-    """The replay-level CSV written when the run was first evaluated."""
+    """The replay-level CSV written when the run was first evaluated, if any."""
     path = os.path.join(results_root, f"{run}_e30.csv")
     if not os.path.isfile(path):
         return pd.DataFrame()
@@ -131,54 +168,54 @@ def load_old(results_root: str, run: str) -> pd.DataFrame:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--set", choices=sorted(RUN_SETS), default="kbrs")
+    p.add_argument("--runs", nargs="*", default=None, help="Run specs <run>[@tau] (default: the whole --set)")
     p.add_argument("--pred-root", default="/workspace/predictions")
     p.add_argument("--label-root", default="/workspace/data/label/dst")
     p.add_argument("--results-root", default="/workspace/results")
     p.add_argument("--out", default=None)
-    p.add_argument("--runs", nargs="*", default=None, help="Subset of run names (default: all)")
     args = p.parse_args()
 
-    out_dir = args.out or os.path.join(
-        args.results_root, "reeval", f"missing_frames_{dt.date.today():%Y%m%d}"
-    )
+    out_dir = args.out or os.path.join(args.results_root, "reeval", f"{args.set}_{dt.date.today():%Y%m%d}")
     os.makedirs(out_dir, exist_ok=True)
     print(f"[INFO] Writing to {out_dir}", flush=True)
 
     ic_args = argparse.Namespace(ic_kernel="20,12", ic_grid="128,128", ic_maxcoord="3456,3720", max_frames=0)
-    runs = args.runs or RUNS
+    specs = args.runs or RUN_SETS[args.set]
     rows: List[Dict[str, object]] = []
     gt_cache = {}
 
-    for run in runs:
-        meta = parse_run(run)
-        print(f"\n[RUN] {run}", flush=True)
-        old = load_old(args.results_root, run)
-        for rec in old.to_dict("records"):
-            rows.append({"run": run, **meta, **rec})
+    for spec in specs:
+        run, tau = split_spec(spec)
+        meta = parse_run(spec)
+        print(f"\n[RUN] {spec}", flush=True)
+        if tau is None:
+            for rec in load_old(args.results_root, run).to_dict("records"):
+                rows.append({"run": spec, **meta, **rec})
 
         for replay in FOLD_REPLAYS[meta["fold"]]:
             t0 = time.time()
             if replay not in gt_cache:
                 gt_cache[replay] = load_coco_gt(args.label_root, replay, "all_correct")
             coco_gt = gt_cache[replay]
-            preds = load_coco_preds(args.pred_root, run, 30, replay, "all_correct")
+            preds = load_coco_preds(args.pred_root, run, 30, replay, "all_correct", score_threshold=tau)
             if not preds:
-                print(f"[!] no predictions for {run} replay {replay}; skipped", flush=True)
+                print(f"[!] no predictions for {spec} replay {replay}; skipped", flush=True)
                 continue
             for variant, flags in VARIANTS.items():
                 r = compute_ic_for_replay(
                     replay_id=replay, mode="model", coco_gt=coco_gt, args=ic_args,
-                    preds_all=preds, model_tag=f"{run}_{variant}", score_thresh=0.0, **flags,
+                    preds_all=preds, model_tag=f"{spec}_{variant}", score_thresh=0.0, **flags,
                 )
                 rows.append({
-                    "run": run, **meta, "replay": replay, "variant": variant,
+                    "run": spec, **meta, "replay": replay, "variant": variant,
                     **{m: r.get(m) for m in METRICS},
                     "total_frames": r.get("total_frames"),
                     "missing_preds": r.get("missing_preds"),
                     "evaluated_frames": r.get("evaluated_frames"),
                 })
             del preds
-            print(f"[RUN] {run} replay {replay} done in {time.time() - t0:.1f}s", flush=True)
+            print(f"[RUN] {spec} replay {replay} done in {time.time() - t0:.1f}s", flush=True)
 
         # Write as we go, so an interrupted run keeps what it has.
         pd.DataFrame(rows).to_csv(os.path.join(out_dir, "per_replay.csv"), index=False)
@@ -186,72 +223,83 @@ def main() -> None:
     per_replay = pd.DataFrame(rows)
     per_replay.to_csv(os.path.join(out_dir, "per_replay.csv"), index=False)
 
-    # Replay means per run x variant (frames within a replay, then replays).
-    agg = {m: "mean" for m in METRICS}
-    agg.update({"missing_preds": "sum", "total_frames": "sum", "evaluated_frames": "sum"})
-    agg = {k: v for k, v in agg.items() if k in per_replay.columns}
-    per_run = (
-        per_replay.groupby(["run", "model", "fold", "seed", "variant"], as_index=False)
-        .agg(agg)
+    # Replay means per run x variant: frames within a replay, then replays.
+    keys = ["run", "model", "fold", "seed", "variant"]
+    per_run = per_replay.groupby(keys, as_index=False, dropna=False)[METRICS].mean()
+    frames = (
+        per_replay[per_replay["variant"] == "d_current"]
+        .groupby("run", as_index=False)[["missing_preds", "total_frames"]].sum()
     )
     wide = per_run.pivot_table(index=["run", "model", "fold", "seed"], columns="variant", values=METRICS)
     wide.columns = [f"{m}__{v}" for m, v in wide.columns]
     wide = wide.reset_index()
     for m in METRICS:
-        def col(v):
-            return wide.get(f"{m}__{v}")
-        if col("old") is not None and col("a_legacy") is not None:
-            wide[f"{m}__legacy_check"] = (col("a_legacy") - col("old")).abs()
-        if col("a_legacy") is not None and col("b_centroid") is not None:
-            wide[f"{m}__d_centroid"] = col("b_centroid") - col("a_legacy")
-        if col("b_centroid") is not None and col("c_current") is not None:
-            wide[f"{m}__d_missing"] = col("c_current") - col("b_centroid")
-        if col("old") is not None and col("c_current") is not None:
-            wide[f"{m}__d_total"] = col("c_current") - col("old")
-    frames = per_run[per_run["variant"] == "c_current"][["run", "missing_preds", "total_frames"]]
+        old_c, leg_c = f"{m}__old", f"{m}__a_legacy"
+        if old_c in wide.columns and leg_c in wide.columns:
+            wide[f"{m}__legacy_check"] = (wide[leg_c] - wide[old_c]).abs()
+        for name, (to, frm) in DELTAS.items():
+            if f"{m}__{to}" in wide.columns and f"{m}__{frm}" in wide.columns:
+                wide[f"{m}__{name}"] = wide[f"{m}__{to}"] - wide[f"{m}__{frm}"]
     wide = wide.merge(frames, on="run", how="left")
     wide["missing_rate"] = wide["missing_preds"] / wide["total_frames"]
     wide["rerun"] = wide["run"].isin(RERUNS)
     wide.to_csv(os.path.join(out_dir, "per_run.csv"), index=False)
 
-    # Summary: the two models over fold 1 and over all folds, reruns excluded.
+    # Summary per model, reruns excluded.
     main_runs = wide[~wide["rerun"]]
+    cols = ["old", "a_legacy", "b_centroid", "c_corner", "d_current", "d_centroid", "d_missing", "d_corner", "d_total"]
     lines = [
-        "# Re-evaluation of the saliency-prior paper's Mask R-CNN / KBRS runs",
+        f"# Re-evaluation: set `{args.set}`",
         "",
-        f"Generated {dt.datetime.now():%Y-%m-%d %H:%M}. Kernel 20x12, all_correct labels, epoch 30,",
-        "no score threshold; frames averaged within a replay, then replays within a run,",
-        "then runs. `old` is the CSV written at the time; `a_legacy` should match it.",
+        f"Generated {dt.datetime.now():%Y-%m-%d %H:%M}. Kernel 20x12, all_correct labels, epoch 30.",
+        "Frames averaged within a replay, then replays within a run, then runs.",
+        "`old` is the CSV written at the time; `a_legacy` should match it. `d_current` is the corrected value.",
+        "Deltas: d_centroid = b - a (0782acd), d_missing = c - b (August fix as implemented),",
+        "d_corner = d - c (corner fix), d_total = d - old.",
         "",
     ]
-    for scope, sub in [("Fold 1, 3 seeds", main_runs[main_runs["fold"] == 1]), ("All folds, 9 runs", main_runs)]:
-        lines += [f"## {scope}", "", "| Model | Metric | old | a_legacy | b_centroid | c_current | 0782acd | missing-frame fix | total |", "|---|---|---|---|---|---|---|---|---|"]
-        for model in ["vanilla", "kbrs"]:
+    scopes = [("Fold 1", main_runs[main_runs["fold"] == 1])]
+    if main_runs["fold"].nunique() > 1:
+        scopes.append(("All folds", main_runs))
+    for scope, sub in scopes:
+        lines += [
+            f"## {scope}", "",
+            "| Model | runs | Metric | " + " | ".join(cols) + " |",
+            "|---|---|---|" + "---|" * len(cols),
+        ]
+        for model in sorted(sub["model"].unique()):
             s = sub[sub["model"] == model]
             for m in METRICS:
-                def mean(suffix):
-                    c = f"{m}__{suffix}"
-                    return s[c].mean() if c in s.columns else float("nan")
-                lines.append(
-                    f"| {model} | {METRIC_LABEL[m]} | {mean('old'):.4f} | {mean('a_legacy'):.4f} | "
-                    f"{mean('b_centroid'):.4f} | {mean('c_current'):.4f} | {mean('d_centroid'):+.4f} | "
-                    f"{mean('d_missing'):+.4f} | {mean('d_total'):+.4f} |"
-                )
+                cells = []
+                for c in cols:
+                    k = f"{m}__{c}"
+                    v = s[k].mean() if k in s.columns else float("nan")
+                    cells.append("—" if pd.isna(v) else (f"{v:+.4f}" if c.startswith("d_") else f"{v:.4f}"))
+                lines.append(f"| {model} | {len(s)} | {METRIC_LABEL[m]} | " + " | ".join(cells) + " |")
+        if {"kbrs", "maskrcnn"} <= set(sub["model"]):
+            k, v = sub[sub["model"] == "kbrs"], sub[sub["model"] == "maskrcnn"]
+            diffs = [
+                f"{c} {k[f'ic_ratio__{c}'].mean() - v[f'ic_ratio__{c}'].mean():+.4f}"
+                for c in ["old", "a_legacy", "b_centroid", "c_corner", "d_current"] if f"ic_ratio__{c}" in sub.columns
+            ]
+            lines += ["", "KBRS minus Mask R-CNN, IR: " + ", ".join(diffs)]
         lines.append("")
-        lines.append("KBRS minus vanilla, IR: " + ", ".join(
-            f"{v} {sub[sub['model']=='kbrs'][f'ic_ratio__{v}'].mean() - sub[sub['model']=='vanilla'][f'ic_ratio__{v}'].mean():+.4f}"
-            for v in ["old", "a_legacy", "b_centroid", "c_current"] if f"ic_ratio__{v}" in sub.columns
-        ))
-        lines.append("")
-    lines += [
-        "## Checks",
-        "",
-        f"- Largest |a_legacy - old| over runs and metrics: "
-        f"{max(wide[c].max() for c in wide.columns if c.endswith('__legacy_check')):.6f}"
-        " (should be ~0; if not, something besides the two fixes differs)",
-        f"- Missing-prediction rate per run: min {wide['missing_rate'].min():.4%}, max {wide['missing_rate'].max():.4%}",
-        "",
-    ]
+
+    checks = [c for c in wide.columns if c.endswith("__legacy_check")]
+    lines += ["## Checks", ""]
+    if checks and wide[checks].notna().any().any():
+        lines.append(
+            f"- Largest |a_legacy - old| over runs and metrics: {wide[checks].max().max():.6f} "
+            "(should be ~0; if not, something besides these fixes differs)"
+        )
+    lines.append("- Missing-prediction rate per run:")
+    for r in wide.sort_values("run").itertuples():
+        if pd.isna(r.total_frames):
+            lines.append(f"  - {r.run}: not evaluated")
+            continue
+        lines.append(f"  - {r.run}: {r.missing_rate:.4%} ({int(r.missing_preds)} of {int(r.total_frames)})")
+    lines.append("")
+
     with open(os.path.join(out_dir, "summary.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     print("\n".join(lines), flush=True)

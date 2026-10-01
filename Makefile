@@ -208,11 +208,13 @@ budget-allocation:
 switch-preparation:
 	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/switch_preparation.py $(ARGS)"
 
-# Re-derive the saliency-prior paper's Mask R-CNN / KBRS numbers and separate the
-# two evaluator fixes behind them (missing-prediction frames, edge-clamped
-# centroids). Reads predictions only, so it needs no GPU. Output goes to
-# results/reeval/missing_frames_<date>/; see the script's docstring.
-# Check one run first: make reeval-missing-frames ARGS="--runs maskrcnn_win4_vanilla_fold1_s123_20251201_072032"
+# Re-derive single-region numbers reported from earlier evaluator versions and
+# separate the fixes behind them (missing-prediction frames, edge-clamped
+# centroids, the sentinel scored as a corner viewport). Reads predictions only,
+# so it needs no GPU. Output goes to results/reeval/<set>_<date>/; see the
+# script's docstring. --set kbrs is the saliency-prior paper, --set ch9 the
+# Director-CenterNet comparison. Check one run first:
+# make reeval-missing-frames ARGS="--set kbrs --runs maskrcnn_win4_vanilla_fold1_s123_20251201_072032 --out /workspace/results/reeval/check"
 reeval-missing-frames:
 	CONTAINER_NAME=reeval_$$(date +%Y%m%d_%H%M%S); \
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/reeval_missing_frames.py $(ARGS)" \

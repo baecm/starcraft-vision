@@ -203,6 +203,7 @@ def eval_intersection_run(
     grid_h: Optional[int] = None,
     max_x: float = 3456.0,
     max_y: float = 3720.0,
+    missing_as_corner: bool = False,
     **kwargs: Any,
 ) -> Tuple[List[ImageIR], Dict[str, float]]:
     """
@@ -210,6 +211,12 @@ def eval_intersection_run(
     labels_tests[test_idx][agent_idx][frame_idx] => dict with 'vpx','vpy'
     Agent 0 is the predictor to evaluate; agents[1:] are references.
     Returns per_image list and aggregates dict (same keys as modern).
+
+    A predictor frame marked `missing` (or carrying the -9999 sentinel) is a
+    frame the model emitted nothing for, and scores exactly 0. Before this was
+    handled here, the sentinel went through the clip below and was scored as a
+    viewport at the map's top-left corner, which is not 0 whenever a spectator
+    was watching that corner; `missing_as_corner=True` reproduces that.
     """
     if width is None:
         width = grid_w if grid_w is not None else 128
@@ -267,16 +274,22 @@ def eval_intersection_run(
                 synthetic_img_id += 1
                 continue
 
-            pred_x = int(np.round(pvx / max_x * (width - x_len)))
-            pred_y = int(np.round(pvy / max_y * (height - y_len)))
-            pred_x = np.clip(pred_x, 0, width - x_len)
-            pred_y = np.clip(pred_y, 0, height - y_len)
+            missing = bool(pred_frame.get("missing", False)) or (pvx <= -9999.0 and pvy <= -9999.0)
+            if missing and not missing_as_corner:
+                intersect_multi = 0.0
+                intersection = 0.0
+                pred_tiles = np.zeros((0, 0), dtype=np.int32)
+            else:
+                pred_x = int(np.round(pvx / max_x * (width - x_len)))
+                pred_y = int(np.round(pvy / max_y * (height - y_len)))
+                pred_x = np.clip(pred_x, 0, width - x_len)
+                pred_y = np.clip(pred_y, 0, height - y_len)
 
-            pred_tiles = total_tiles[pred_x : pred_x + x_len, pred_y : pred_y + y_len]
+                pred_tiles = total_tiles[pred_x : pred_x + x_len, pred_y : pred_y + y_len]
 
-            intersect_multi = float(pred_tiles.mean())
-            binary = (pred_tiles > 0).astype(np.float32)
-            intersection = float(binary.mean())
+                intersect_multi = float(pred_tiles.mean())
+                binary = (pred_tiles > 0).astype(np.float32)
+                intersection = float(binary.mean())
 
             # KBRS-like centeredness/mixture using gaussian weighting on binary
 
