@@ -274,7 +274,7 @@ def main() -> None:
                 for c in cols:
                     k = f"{m}__{c}"
                     v = s[k].mean() if k in s.columns else float("nan")
-                    cells.append("—" if pd.isna(v) else (f"{v:+.4f}" if c.startswith("d_") else f"{v:.4f}"))
+                    cells.append("—" if pd.isna(v) else (f"{v:+.4f}" if c in DELTAS else f"{v:.4f}"))
                 lines.append(f"| {model} | {len(s)} | {METRIC_LABEL[m]} | " + " | ".join(cells) + " |")
         if {"kbrs", "maskrcnn"} <= set(sub["model"]):
             k, v = sub[sub["model"] == "kbrs"], sub[sub["model"] == "maskrcnn"]
