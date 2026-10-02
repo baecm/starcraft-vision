@@ -158,46 +158,61 @@ def _build_run_tags(cfg) -> list:
     otherwise. The commit is tagged too: an earlier round had ablations
     launched from checkouts at different commits, and that was only caught by
     checksumming prediction files afterwards.
+
+    Every tag is "key:value", so the W&B tag list sorts by key and a filter
+    can match a whole axis ("seed:", "machine:worker08"). Runs started before
+    2026-10-02 carry the older bare tags (s123, fold1, worker07:0).
     """
     arch = getattr(cfg, "architecture", None)
     model_name = str(getattr(arch, "model_name", "unknown"))
     family = _model_family(model_name)
-    tags = [model_name] if model_name == family else [family, model_name]
+    tags = [f"arch:{model_name}"]
+    if model_name != family:
+        tags.append(f"family:{family}")
 
     use_kbrs = _is_kbrs_enabled(cfg)
-    tags.append("kbrs" if use_kbrs else "vanilla")
-    tags.append(f"win{cfg.window_size}")
-    tags.append(str(_get_choice("dataset") or "fold?"))
-    tags.append(f"s{cfg.seed}")
+    tags.append(f"kbrs:{'on' if use_kbrs else 'off'}")
+    tags.append(f"win:{cfg.window_size}")
+    dataset = str(_get_choice("dataset") or "?")
+    tags.append(f"fold:{dataset[4:]}" if dataset.startswith("fold") else f"dataset:{dataset}")
+    tags.append(f"seed:{cfg.seed}")
+    tags.append(f"batch:{getattr(cfg, 'batch_size', '?')}")
+    tags.append(f"sched:{getattr(cfg, 'lr_schedule', '?')}")
 
     # Which of the optional objectives are actually on. This is the ablation
     # axis, and reading it off the run name is error-prone.
     weights = getattr(arch, "loss_weights", None) or {}
     active = [k for k in ("rmc", "rep", "sm") if float(weights.get(f"lambda_{k}", 0.0)) > 0.0]
     if "director" in model_name.lower():
-        tags.append("L:" + ("+".join(active) if active else "hcm_only"))
+        tags.append("loss:" + ("+".join(active) if active else "hcm_only"))
         lam_sm = float(weights.get("lambda_sm", 0.0))
         if lam_sm > 0.0:
-            tags.append(f"sm{lam_sm:g}")
+            tags.append(f"lambda_sm:{lam_sm:g}")
 
     # Non-default knobs only, so the tag list stays short when nothing is swept.
     for key, default, fmt in (
-        ("dense_positives", False, lambda v: "dense"),
-        ("head_conv", config.DIRECTOR_HEAD_CONV, lambda v: f"hc{v}"),
-        ("centernet_down_ratio", 4, lambda v: f"stride{v}"),
-        ("render_sigma", config.DIRECTOR_RENDER_SIGMA, lambda v: f"sig{v:g}"),
-        ("trainable_layers", config.DIRECTOR_TRAINABLE_LAYERS, lambda v: f"tl{v}"),
-        ("conf_threshold", config.DIRECTOR_TAU, lambda v: f"tau{v:g}"),
+        ("dense_positives", False, lambda v: "pos:dense"),
+        ("head_conv", config.DIRECTOR_HEAD_CONV, lambda v: f"head_conv:{v}"),
+        ("centernet_down_ratio", 4, lambda v: f"stride:{v}"),
+        ("render_sigma", config.DIRECTOR_RENDER_SIGMA, lambda v: f"sigma:{v:g}"),
+        ("trainable_layers", config.DIRECTOR_TRAINABLE_LAYERS, lambda v: f"trainable_layers:{v}"),
+        ("conf_threshold", config.DIRECTOR_TAU, lambda v: f"tau:{v:g}"),
     ):
         value = getattr(arch, key, default)
         if value != default:
             tags.append(fmt(value))
 
     if use_kbrs:
-        for group in ("kbrs_loss", "kbrs_score"):
+        for group, key in (("plugins/kbrs/loss", "kbrs_loss"), ("plugins/kbrs/score", "kbrs_score"),
+                           ("kbrs_loss", "kbrs_loss"), ("kbrs_score", "kbrs_score")):
             choice = _get_choice(group)
-            if choice:
-                tags.append(str(choice).replace("/", "_"))
+            if choice and not any(t.startswith(f"{key}:") for t in tags):
+                tags.append(f"{key}:{str(choice).replace('/', '_')}")
+        # The knobs that tell apart KBRS variants trained from the same group
+        # choices; a run differing only here was otherwise indistinguishable.
+        kp = getattr(getattr(cfg, "kbrs", None), "kbrs_params", None) or {}
+        tags.append(f"kbrs_gate:{'on' if list(kp.get('gate_channels') or []) else 'off'}")
+        tags.append(f"kbrs_mix:{kp.get('mixture_nonneg') or 'raw'}")
 
     commit = _git_state().get("commit")
     if commit:
@@ -205,7 +220,7 @@ def _build_run_tags(cfg) -> list:
 
     host = _host_tag()
     if host:
-        tags.append(host)
+        tags.append(f"machine:{host}")
 
     return [t for t in tags if t]
 
