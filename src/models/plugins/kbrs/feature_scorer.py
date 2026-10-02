@@ -50,8 +50,17 @@ class KBRSFeatureScorer(nn.Module):
         mixture_power: float = 1.0,
         score_stride: int = 1,
         downsample_before: Optional[Dict] = None,
+        mixture_nonneg: Optional[str] = None,
     ) -> None:
         super().__init__()
+        # Feature activations are signed. When the two group sums are negative,
+        # p = A / (A + B) is clamped to 0 or 1 and the mixture is 0 with no
+        # gradient, so whether the original mixture contributed at all depended
+        # on the sign of the FPN output. "relu" rectifies the group channels
+        # before summing; None keeps the original behaviour.
+        if mixture_nonneg not in (None, "relu"):
+            raise ValueError(f"mixture_nonneg must be None or 'relu', got {mixture_nonneg!r}")
+        self.mixture_nonneg = mixture_nonneg
         self.kh, self.kw = region_size
         self.weights: Dict[str, float] = dict(
             weights or {"density": 1.0, "mixture": 1.0, "centeredness": 1.0}
@@ -98,8 +107,11 @@ class KBRSFeatureScorer(nn.Module):
         idx_b = self.projections.get("B", [])
         if idx_a and idx_b:
             # Each group is summed into one channel, windowed, and mixed as 4p(1-p).
-            xa = x[:, idx_a, :, :].sum(dim=1, keepdim=True)
-            xb = x[:, idx_b, :, :].sum(dim=1, keepdim=True)
+            ga, gb = x[:, idx_a, :, :], x[:, idx_b, :, :]
+            if self.mixture_nonneg == "relu":
+                ga, gb = F.relu(ga), F.relu(gb)
+            xa = ga.sum(dim=1, keepdim=True)
+            xb = gb.sum(dim=1, keepdim=True)
             k1 = self._cast_buf(self.k_ones_f32, xa)
             a = torch.nan_to_num(F.conv2d(xa, k1, stride=self.score_stride), nan=0.0, posinf=0.0, neginf=0.0)
             b = torch.nan_to_num(F.conv2d(xb, k1, stride=self.score_stride), nan=0.0, posinf=0.0, neginf=0.0)

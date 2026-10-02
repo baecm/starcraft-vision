@@ -61,6 +61,7 @@ class KBRSHook(nn.Module):
             mixture_power=float(self.kbrs_params.get("mixture_power", 1.0)),
             score_stride=int(self.kbrs_params.get("score_stride", 1)),
             downsample_before=self.kbrs_params.get("downsample_before", None),
+            mixture_nonneg=self.kbrs_params.get("mixture_nonneg", None),
         )
         # Last components, kept so a smoke test or a logger can inspect them.
         self.last_components: Dict[str, torch.Tensor] = {}

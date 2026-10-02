@@ -39,6 +39,9 @@ kbrs_params:
     A: [0, 1, 2, 3]
     B: [4, 5, 6, 7]
     
+  # null keeps the original scorer; relu rectifies the group channels so the
+  # mixture does not vanish when the feature sums go negative (feature_scorer.py)
+  mixture_nonneg: null
   mixture_mode: 'confusion'
   mixture_power: 1.0
   mixture_tau: 2.0

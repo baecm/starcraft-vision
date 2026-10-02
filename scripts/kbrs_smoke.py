@@ -48,6 +48,9 @@ def main() -> int:
         do_normalize=False,
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Seed before building: the FPN initialisation decides the sign of the
+    # feature sums, and with it whether the unrectified mixture is zero.
+    torch.manual_seed(int(cfg.seed))
     model = build_model(args).to(device).train()
     hook = model.kbrs_hook
 
@@ -57,10 +60,10 @@ def main() -> int:
     print(f"gate channels        : {hook.gate_channels} gain={hook.gate_gain} reduce={hook.gate_reduce}")
     print(f"tau / detach / fmap  : {hook.tau} / {hook.detach_scorer_input} / {hook.feature_map_name}")
     print(f"region (kh, kw)      : {hook.region_size}")
+    print(f"mixture_nonneg       : {hook.scorer.mixture_nonneg}")
     print(f"loss_kbrs weight     : {loss_weights.get('loss_kbrs', 0.25)}")
 
     # Sparse non-negative counts, like the channelised game state.
-    torch.manual_seed(0)
     images = [(torch.rand(in_channels, 128, 128) > 0.97).float().to(device) for _ in range(2)]
     targets = []
     for _ in images:
@@ -73,7 +76,7 @@ def main() -> int:
         })
 
     losses = model(images, targets)
-    print("losses               : " + ", ".join(f"{k}={float(v):.4f}" for k, v in losses.items()))
+    print("losses               : " + ", ".join(f"{k}={float(v.detach()):.4f}" for k, v in losses.items()))
 
     failures = []
     comps = hook.last_components
