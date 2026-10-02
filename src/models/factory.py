@@ -22,21 +22,48 @@ from .backbones import (
     build_rtdetr_backbone,
 )
 from .plugins import KBRSHook
+from .utils import pick_feature_map
 
 class KBRSWrapper(nn.Module):
     """
-    Generic KBRS Model Wrapper that attaches KBRSHook to any base backbone model.
+    Attaches the KBRS auxiliary loss to a base model that has a `.backbone`.
+
+    The score field is computed on the backbone's feature map, as in
+    KBRS_MaskRCNN at e949efa, which trained the saliency-prior paper's models.
+    A forward hook captures the backbone output during the base model's own
+    forward pass, so the features are the ones the detection heads see (after
+    the model's resize transform) and are not recomputed. An earlier version
+    of this wrapper scored the raw input tensor instead, which has no trainable
+    parameters upstream and so gave the loss no gradient.
     """
     def __init__(self, base_model: nn.Module, kbrs_params: dict = None, loss_weights: dict = None):
         super().__init__()
         self.base_model = base_model
         self.kbrs_hook = KBRSHook(kbrs_params=kbrs_params, loss_weights=loss_weights)
+        backbone = getattr(base_model, "backbone", None)
+        if backbone is None:
+            raise ValueError("KBRSWrapper needs a base model with a .backbone attribute")
+        self._captured = None
+        backbone.register_forward_hook(self._capture)
+
+    def _capture(self, module, inputs, output):
+        self._captured = output
+
+    def _feature_map(self) -> torch.Tensor:
+        feats = self._captured
+        self._captured = None
+        if feats is None:
+            raise RuntimeError("KBRSWrapper: the backbone did not run during the forward pass")
+        if isinstance(feats, torch.Tensor):
+            return feats
+        _, fmap = pick_feature_map(feats, self.kbrs_hook.feature_map_name)
+        return fmap
 
     def forward(self, images, targets=None):
         if self.training:
             base_out = self.base_model(images, targets)
-            batched_images = torch.stack(images, dim=0) if isinstance(images, list) else images
-            _, loss_kbrs, comp = self.kbrs_hook(batched_images, raw_images=images if isinstance(images, list) else None)
+            fmap = self._feature_map()
+            _, loss_kbrs, comp = self.kbrs_hook(fmap, raw_images=images if isinstance(images, list) else None)
 
             losses = {}
             if isinstance(base_out, dict):
@@ -50,7 +77,9 @@ class KBRSWrapper(nn.Module):
             losses["loss_kbrs"] = w_kbrs * loss_kbrs
             return losses
         else:
-            return self.base_model(images, targets)
+            out = self.base_model(images, targets)
+            self._captured = None
+            return out
 
 def build_model(args: Any) -> nn.Module:
     """

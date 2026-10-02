@@ -100,6 +100,13 @@ train:
 train-fg:
 	docker compose -f $(COMPOSE_FILE) run --rm trainer train $(ARGS)
 
+# One training forward pass of Mask R-CNN + KBRS from the Hydra config, checking
+# the weights the scorer received, that every component is non-zero, and that
+# loss_kbrs reaches the backbone. Run it before launching KBRS training. ARGS
+# are extra Hydra overrides, e.g. ARGS="plugins/kbrs/score=mixture/000".
+kbrs-smoke:
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/kbrs_smoke.py $(ARGS)"
+
 inference:
 	CONTAINER_NAME=inference_$(shell date +%Y%m%d_%H%M%S); \
 	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm inferencer inference $(ARGS) \
