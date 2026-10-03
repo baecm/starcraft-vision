@@ -1409,7 +1409,8 @@ def cmd_single_failure(args) -> None:
         patches.Patch(fill=False, edgecolor=C_OBS, linestyle="--", label="spectator viewport"),
         plt.Line2D([], [], marker="o", ls="", color=C_TOP1, label="Top-1 mode"),
         plt.Line2D([], [], marker="o", ls="", color=C_MINOR, label="minority / Top-2 mode"),
-        plt.Line2D([], [], color=C_BASE, lw=1.4, label=f"{src.name} region"),
+        plt.Line2D([], [], color=C_BASE, lw=1.4,
+                   label=f"{(args.label or src.name).replace('_', ' ')} region"),
     ]
     fig.legend(handles=handles, loc="outside lower center", ncol=4, frameon=False)
     print(f"[single-failure] (a) replay {replay} frame {args.frame}: {len(modes.centers)} "
@@ -1578,6 +1579,8 @@ def main() -> None:
     p.add_argument("--pad", type=int, default=0, help="frame ids added either side")
     p.add_argument("--axis", choices=["x", "y"], default="x")
     p.add_argument("--baseline", required=True, metavar="SPEC", help=spec)
+    p.add_argument("--label", default=None,
+                   help="model name in the legend, words joined by '_' (default: the spec's NAME)")
     p.set_defaults(func=cmd_single_failure)
 
     args = ap.parse_args()
