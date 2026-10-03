@@ -1250,6 +1250,172 @@ def cmd_trajectory(args) -> None:
 
 
 # --------------------------------------------------------------------------
+# single-region failure modes (thesis, chapter on the single-region baseline)
+# --------------------------------------------------------------------------
+
+def cmd_select_single(args) -> None:
+    """Candidates for `single-failure`, from one method's frames CSV.
+
+    (a) frames with at least --n-modes attention modes that the model answered,
+        ranked by distance from the pool's median OC1 - a typical multi-mode
+        frame, not the worst one;
+    (b) the longest runs of consecutive margin-0 frames, with the model's top-2
+        flips inside each, next to the fold-wide flip rate on tied frames.
+    """
+    df = pd.read_csv(args.csv)
+    oc = f"OC1@{args.delta}"
+    print(f"[select-single] {len(df)} frames in {args.csv}", flush=True)
+
+    pool = df[(df["n_modes"] >= args.n_modes) & (df["n_pred"] > 0)].copy()
+    if pool.empty:
+        print(f"(a) no answered frame with n_modes >= {args.n_modes}")
+    else:
+        target = pool[oc].median()
+        pool["dist"] = (pool[oc] - target).abs()
+        print()
+        print(f"(a) pool: {len(pool)} answered frames with n_modes >= {args.n_modes}; "
+              f"{oc} mean {pool[oc].mean():.3f}, median {target:.3f}; "
+              f"IR mean {pool['IR'].mean():.3f}")
+        cols = ["replay", "frame", "n_modes", "support_top1", "support_top2", "IR", oc,
+                "nearest_mode_rank"]
+        print(pool.sort_values(["dist", "replay", "frame"]).head(args.top)[cols]
+              .to_string(index=False))
+
+    runs = []
+    for replay, g in df.sort_values("frame").groupby("replay"):
+        step = g["frame"].diff()
+        modal = step.mode().iloc[0] if len(step.mode()) else np.nan
+        tie = (g["margin"] == 0).to_numpy()
+        adjacent = (step == modal).to_numpy()
+        frames = g["frame"].to_numpy()
+        flip = g["top2_flip"].to_numpy()
+        start = None
+        for i in range(len(g) + 1):
+            inside = i < len(g) and tie[i] and (start is None or adjacent[i])
+            if inside and start is None:
+                start = i
+            elif not inside and start is not None:
+                if i - start >= args.min_run:
+                    runs.append({"replay": replay, "start": int(frames[start]),
+                                 "end": int(frames[i - 1]), "frames": i - start,
+                                 "flips": int(np.nansum(flip[start:i]))})
+                start = i if (i < len(g) and tie[i]) else None
+    print()
+    if not runs:
+        print(f"(b) no run of >= {args.min_run} consecutive margin-0 frames")
+        return
+    rdf = pd.DataFrame(runs)
+    rdf["rate"] = rdf["flips"] / rdf["frames"]
+    tied = df[df["margin"] == 0]
+    print(f"(b) {len(rdf)} runs of >= {args.min_run} margin-0 frames; fold-wide top-2 flip "
+          f"rate on margin-0 frames {tied['top2_flip'].mean():.4f}")
+    print(rdf.sort_values("frames", ascending=False).head(args.top).to_string(index=False))
+    print("  Caption: give the chosen run's flip rate next to the fold-wide one.")
+
+
+def cmd_single_failure(args) -> None:
+    """The two failure modes of a single-region observer, one panel each.
+
+    (a) one multi-mode frame: the observers, their ranked modes and the single
+        region the model emits, with how many observers that region serves;
+    (b) the region centre over a run of tied frames against the Top-1 and
+        Top-2 mode tracks, with the run's top-2 flips.
+    Only the model's highest-scoring box is drawn: that is the output of the
+    single-region formulation, whatever else the detector proposed.
+    """
+    # ---- (a)
+    replay = str(args.replay)
+    gt, height, width, size_hw = load_gt(args, replay)
+    if args.frame not in gt:
+        raise KeyError(f"frame {args.frame} has no ground truth in replay {replay}")
+    obs = gt[args.frame]
+    modes = frame_modes(obs, height, width, args)
+    bg = minimap_rgb(load_frame_npy(args.input_root, replay, args.frame), fog=not args.no_fog)
+    src = Source(args.baseline, args, replay, size_hw)
+    boxes, _ = src.get(args.frame)
+    boxes = boxes[:1]
+    row = analyse_method({args.frame: obs}, {args.frame: (boxes, np.ones(len(boxes)))},
+                         height, width, size_hw=size_hw, sigma=args.sigma,
+                         min_sep=args.min_sep, rel_threshold=args.rel_threshold,
+                         max_modes=args.max_modes, delta=args.delta,
+                         straddle_floor=0.15, k_max=1).iloc[0]
+    served = row.get(f"OC1@{args.delta}", np.nan)
+
+    # ---- (b)
+    t_replay = str(args.tie_replay)
+    if t_replay == replay:
+        t_gt, t_h, t_w, t_size, t_src = gt, height, width, size_hw, src
+    else:
+        t_gt, t_h, t_w, t_size = load_gt(args, t_replay)
+        t_src = Source(args.baseline, args, t_replay, t_size)
+    frames = [f for f in sorted(t_gt) if args.start - args.pad <= f <= args.end + args.pad]
+    if len(frames) < 4:
+        raise ValueError(f"only {len(frames)} ground-truth frames in the window")
+    axis = 1 if args.axis == "x" else 0          # centres are (row, col)
+    top1, top2, tie, track = [], [], [], []
+    for f in frames:
+        m = frame_modes(t_gt[f], t_h, t_w, args)
+        top1.append(m.centers[0][axis] if len(m.centers) else np.nan)
+        top2.append(m.centers[1][axis] if len(m.centers) > 1 else np.nan)
+        tie.append(len(m.support) > 1 and m.support[0] == m.support[1])
+        b, _ = t_src.get(f)
+        track.append(box_center(b[0])[axis] if len(b) else np.nan)
+    one = {}
+    for f in frames:
+        b, s = t_src.get(f)
+        one[f] = (b[:1], s[:1])
+    df = analyse_method({f: t_gt[f] for f in frames}, one, t_h, t_w, size_hw=t_size,
+                        sigma=args.sigma, min_sep=args.min_sep,
+                        rel_threshold=args.rel_threshold, max_modes=args.max_modes,
+                        delta=args.delta, straddle_floor=0.15, k_max=1, label="single")
+    flips = int(np.nansum(df["top2_flip"]))
+
+    fig = plt.figure(figsize=(DOUBLE_COL, 72 * MM), layout="constrained")
+    gs = fig.add_gridspec(1, 2, width_ratios=[1, 1.9])
+    ax = fig.add_subplot(gs[0])
+    ax.imshow(bg, extent=(0, width, height, 0), interpolation="nearest", zorder=0)
+    _map_axes(ax, height, width)
+    for b in obs:
+        _rect(ax, b, C_OBS, lw=0.8, ls=(0, (3, 2)))
+    _draw_modes(ax, modes)
+    _draw_regions(ax, boxes, 1, C_BASE, C_BASE, number=False)
+    u = len(obs)
+    ax.set_title(f"(a) {len(modes.centers)} attention modes", loc="left")
+    ax.set_xlabel(f"region serves {served * u:.0f} of {u} spectators", fontsize=7)
+
+    ax2 = fig.add_subplot(gs[1])
+    fr = np.array(frames)
+    step = np.median(np.diff(fr))
+    for f, t in zip(fr, tie):
+        if t:
+            ax2.axvspan(f - step / 2, f + step / 2, color="#ece6f4", lw=0, zorder=0)
+    ax2.scatter(fr, top1, s=6, color=C_TOP1, alpha=0.45, lw=0, zorder=1)
+    ax2.scatter(fr, top2, s=6, color=C_MINOR, alpha=0.45, lw=0, zorder=1)
+    ax2.plot(fr, track, color=C_BASE, lw=1.4, zorder=3)
+    ax2.set_xlim(fr[0], fr[-1])
+    ax2.set_ylim(0, t_w if axis == 1 else t_h)
+    ax2.set_xlabel("frame")
+    ax2.set_ylabel(f"region centre {args.axis} (tiles)")
+    ax2.grid(True, lw=0.4, alpha=0.4)
+    ax2.set_title(f"(b) tied frames shaded; {flips} top-2 flips over {len(frames)} frames",
+                  loc="left")
+
+    handles = [
+        patches.Patch(fill=False, edgecolor=C_OBS, linestyle="--", label="spectator viewport"),
+        plt.Line2D([], [], marker="o", ls="", color=C_TOP1, label="Top-1 mode"),
+        plt.Line2D([], [], marker="o", ls="", color=C_MINOR, label="minority / Top-2 mode"),
+        plt.Line2D([], [], color=C_BASE, lw=1.4, label=f"{src.name} region"),
+    ]
+    fig.legend(handles=handles, loc="outside lower center", ncol=4, frameon=False)
+    print(f"[single-failure] (a) replay {replay} frame {args.frame}: {len(modes.centers)} "
+          f"modes, support {modes.support.tolist()}, serves {served * u:.0f}/{u}; "
+          f"(b) replay {t_replay} frames {frames[0]}-{frames[-1]} ({len(frames)}): "
+          f"{sum(tie)} tied, {flips} top-2 flips", flush=True)
+    _save(fig, args.outdir,
+          f"single_failure_{replay}_{args.frame}_{t_replay}_{args.start}_{args.end}")
+
+
+# --------------------------------------------------------------------------
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
@@ -1387,6 +1553,26 @@ def main() -> None:
     p.add_argument("--baseline", required=True, metavar="SPEC", help=spec)
     p.add_argument("--director", required=True, metavar="SPEC", help=spec)
     p.set_defaults(func=cmd_trajectory)
+
+    p = sub.add_parser("select-single", parents=[common],
+                       help="candidates for single-failure, from one frames CSV")
+    p.add_argument("--csv", required=True, help="frames_<method>.csv from mode_disagreement.py")
+    p.add_argument("--n-modes", type=int, default=4, help="fewest modes for (a)")
+    p.add_argument("--min-run", type=int, default=6, help="shortest tie run listed for (b)")
+    p.add_argument("--top", type=int, default=15)
+    p.set_defaults(func=cmd_select_single)
+
+    p = sub.add_parser("single-failure", parents=[common],
+                       help="the two failure modes of a single-region observer")
+    p.add_argument("--replay", required=True, help="replay of the multi-mode frame (a)")
+    p.add_argument("--frame", type=int, required=True)
+    p.add_argument("--tie-replay", required=True, help="replay of the tie run (b)")
+    p.add_argument("--start", type=int, required=True)
+    p.add_argument("--end", type=int, required=True)
+    p.add_argument("--pad", type=int, default=0, help="frame ids added either side")
+    p.add_argument("--axis", choices=["x", "y"], default="x")
+    p.add_argument("--baseline", required=True, metavar="SPEC", help=spec)
+    p.set_defaults(func=cmd_single_failure)
 
     args = ap.parse_args()
     args.func(args)
