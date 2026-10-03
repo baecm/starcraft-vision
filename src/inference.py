@@ -157,6 +157,17 @@ def _load_model(model_path: str, device: torch.device, in_channels: int, window_
     elif 'model' in state:
         state = state['model']
 
+    # A run trained with the KBRS plugin saves the KBRSWrapper, whose detector
+    # parameters sit under "base_model.". KBRS only adds a training loss, so the
+    # detector alone is what predicts; unwrap it unless the wrapper is built too.
+    if not use_kbrs and any(k.startswith("base_model.") for k in state):
+        detector = {k[len("base_model."):]: v for k, v in state.items()
+                    if k.startswith("base_model.")}
+        dropped = len(state) - len(detector)
+        Logger.info(f"[Inference] KBRS checkpoint: loading the wrapped detector "
+                    f"({len(detector)} tensors, {dropped} wrapper-only dropped)")
+        state = detector
+
     sniffed = _architecture_from_state_dict(state)
     if sniffed and sniffed != architecture.lower():
         Logger.warn(
