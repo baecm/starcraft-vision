@@ -1386,7 +1386,7 @@ def cmd_single_failure(args) -> None:
     _draw_regions(ax, boxes, 1, C_BASE, C_BASE, number=False)
     u = len(obs)
     ax.set_title(f"(a) {len(modes.centers)} attention modes", loc="left")
-    ax.set_xlabel(f"region serves {served * u:.0f} of {u} spectators", fontsize=7)
+    ax.set_xlabel(f"region serves {served * u:.0f} of {u} {args.person}s", fontsize=7)
 
     ax2 = fig.add_subplot(gs[1])
     fr = np.array(frames)
@@ -1406,7 +1406,7 @@ def cmd_single_failure(args) -> None:
                   loc="left")
 
     handles = [
-        patches.Patch(fill=False, edgecolor=C_OBS, linestyle="--", label="spectator viewport"),
+        patches.Patch(fill=False, edgecolor=C_OBS, linestyle="--", label=f"{args.person} viewport"),
         plt.Line2D([], [], marker="o", ls="", color=C_TOP1, label="Top-1 mode"),
         plt.Line2D([], [], marker="o", ls="", color=C_MINOR, label="minority / Top-2 mode"),
         plt.Line2D([], [], color=C_BASE, lw=1.4,
@@ -1418,7 +1418,7 @@ def cmd_single_failure(args) -> None:
           f"(b) replay {t_replay} frames {frames[0]}-{frames[-1]} ({len(frames)}): "
           f"{sum(tie)} tied, {flips} top-2 flips", flush=True)
     _save(fig, args.outdir,
-          f"single_failure_{replay}_{args.frame}_{t_replay}_{args.start}_{args.end}")
+          f"single_failure_{replay}_{args.frame}_{t_replay}_{args.start}_{args.end}{args.suffix}")
 
 
 # --------------------------------------------------------------------------
@@ -1581,6 +1581,9 @@ def main() -> None:
     p.add_argument("--baseline", required=True, metavar="SPEC", help=spec)
     p.add_argument("--label", default=None,
                    help="model name in the legend, words joined by '_' (default: the spec's NAME)")
+    p.add_argument("--person", choices=["spectator", "observer"], default="spectator",
+                   help="what the figure calls a human viewer (thesis: spectator, paper: observer)")
+    p.add_argument("--suffix", default="", help="appended to the output file stem")
     p.set_defaults(func=cmd_single_failure)
 
     args = ap.parse_args()
