@@ -41,7 +41,7 @@ PYDEBUG_SERVICE  ?= pydebug
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
 		zeppelin benchmark mode-disagreement mode-disagreement-fg inference-fg train-fg test probe probe-resolution \
-		budget-allocation qualitative-figures-fg run-registry
+		budget-allocation qualitative-figures-fg figure-fg run-registry
 
 # 디렉토리 생성
 ifneq ($(OS),Windows_NT)
@@ -234,6 +234,17 @@ reeval-missing-frames:
 # make qualitative-figures-fg ARGS="select #   --baseline-csv /workspace/results/mode_disagreement/fold1/frames_maskrcnn.csv #   --director-csv /workspace/results/mode_disagreement/fold1/frames_director.csv"
 qualitative-figures-fg:
 	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/qualitative_figures.py $(ARGS)"
+
+# One figure, by the name of its script in scripts/figures/ (the figures of
+# qualitative-figures-fg, one script each; see the script's docstring).
+# scripts/figures/render_all.sh lists the commands behind every published
+# figure. Example:
+# make figure-fg FIG=single_failure ARGS="--replay 4664 --frame 10331 \
+#   --tie-replay 1725 --start 11970 --end 12097 --pad 10 \
+#   --baseline maskrcnn=maskrcnn_win4_vanilla_f1_s456_v6:30@0.5 --label Mask_R-CNN"
+figure-fg:
+	@test -n "$(FIG)" || { echo "usage: make figure-fg FIG=<script in scripts/figures> ARGS=\"...\""; exit 1; }
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/figures/$(FIG).py $(ARGS)"
 
 notebook:
 	CONTAINER_NAME=notebook_$$(date +%Y%m%d_%H%M%S); \

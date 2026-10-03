@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     libxrender1 \
     libxext6 \
+    fonts-liberation \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY infra/docker/requirements.txt .
