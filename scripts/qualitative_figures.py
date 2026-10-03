@@ -1257,8 +1257,9 @@ def cmd_select_single(args) -> None:
     """Candidates for `single-failure`, from one method's frames CSV.
 
     (a) frames with at least --n-modes attention modes that the model answered,
-        ranked by distance from the pool's median OC1 - a typical multi-mode
-        frame, not the worst one;
+        ranked by distance from the pool's median OC1 and median IR - a typical
+        multi-mode frame, not the worst one - and listed --per-replay at a time
+        so that one replay cannot fill the list;
     (b) the longest runs of consecutive margin-0 frames, with the model's top-2
         flips inside each, next to the fold-wide flip rate on tied frames.
     """
@@ -1270,16 +1271,20 @@ def cmd_select_single(args) -> None:
     if pool.empty:
         print(f"(a) no answered frame with n_modes >= {args.n_modes}")
     else:
+        # OC1 takes only the values k/U, so thousands of frames sit exactly on
+        # its median; the IR term breaks that tie towards a typical frame.
         target = pool[oc].median()
-        pool["dist"] = (pool[oc] - target).abs()
+        target_ir = pool["IR"].median()
+        pool["dist"] = (pool[oc] - target).abs() + (pool["IR"] - target_ir).abs()
         print()
         print(f"(a) pool: {len(pool)} answered frames with n_modes >= {args.n_modes}; "
               f"{oc} mean {pool[oc].mean():.3f}, median {target:.3f}; "
-              f"IR mean {pool['IR'].mean():.3f}")
-        cols = ["replay", "frame", "n_modes", "support_top1", "support_top2", "IR", oc,
-                "nearest_mode_rank"]
-        print(pool.sort_values(["dist", "replay", "frame"]).head(args.top)[cols]
-              .to_string(index=False))
+              f"IR mean {pool['IR'].mean():.3f}, median {target_ir:.3f}")
+        cols = ["replay", "frame", "progression", "n_modes", "support_top1", "support_top2",
+                "IR", oc, "nearest_mode_rank"]
+        best = (pool.sort_values(["dist", "replay", "frame"])
+                .groupby("replay", sort=False).head(args.per_replay))
+        print(best.head(args.top)[[c for c in cols if c in best]].to_string(index=False))
 
     runs = []
     for replay, g in df.sort_values("frame").groupby("replay"):
@@ -1558,6 +1563,7 @@ def main() -> None:
                        help="candidates for single-failure, from one frames CSV")
     p.add_argument("--csv", required=True, help="frames_<method>.csv from mode_disagreement.py")
     p.add_argument("--n-modes", type=int, default=4, help="fewest modes for (a)")
+    p.add_argument("--per-replay", type=int, default=3, help="frames listed per replay for (a)")
     p.add_argument("--min-run", type=int, default=6, help="shortest tie run listed for (b)")
     p.add_argument("--top", type=int, default=15)
     p.set_defaults(func=cmd_select_single)
