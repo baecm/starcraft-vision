@@ -104,7 +104,7 @@ def run(args) -> None:
     ax[0].imshow(bg, extent=ext, interpolation="nearest")
     for b in obs:
         _rect(ax[0], b, C_OBS, lw=0.9, ls=(0, (3, 2)))
-    ax[0].set_title(f"observer viewports, $U = {len(obs)}$", loc="left", fontsize=7)
+    ax[0].set_title(f"{args.person} viewports, $U = {len(obs)}$", loc="left", fontsize=7)
 
     # Scaled to the frame's own maximum, not to U: on a frame where no more
     # than three of the five overlap, a 0..U scale renders the panel blank and
@@ -162,7 +162,7 @@ def run(args) -> None:
     print(f"[supervision] replay {replay} frame {args.frame}: "
           f"{len(modes.centers)} modes, support {modes.support.tolist()}, "
           f"target max {target.max():.3f}", flush=True)
-    _save(fig, args.outdir, f"qual4_supervision_{replay}_{args.frame}")
+    _save(fig, args.outdir, f"qual4_supervision_{replay}_{args.frame}{args.suffix}")
 
 
 def main() -> None:

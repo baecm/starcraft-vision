@@ -40,6 +40,7 @@ from figures.common import (
     analyse_method,
     box_center,
     common_parser,
+    display_name,
     frame_modes,
     load_gt,
     plt,
@@ -114,7 +115,7 @@ def run(args) -> None:
     # anchored on the Top-1 mode - reads as one line inside another rather than
     # as a missing baseline.
     ax.plot(fr, b_track, color=C_BASE, lw=3.5, alpha=0.45, solid_capstyle="butt",
-            zorder=3, label=f"{base.name} top-1")
+            zorder=3, label=f"{display_name(base.name)} top-1")
     if pip_f:
         ax.scatter(pip_f, pip_v, s=5, marker="s", color=C_PIP, lw=0, zorder=3,
                    label="Director-CenterNet auxiliary")
@@ -122,16 +123,16 @@ def run(args) -> None:
     ax.set_xlim(fr[0], fr[-1])
     ax.set_ylim(0, width if axis == 1 else height)
     ax.set_xlabel("frame")
-    ax.set_ylabel(f"region centre {args.axis} (tiles)")
+    ax.set_ylabel(f"region center {args.axis} (tiles)")
     ax.grid(True, lw=0.4, alpha=0.4)
     ax.legend(loc="upper center", ncol=5, frameon=False, bbox_to_anchor=(0.5, -0.2))
-    ax.text(1, 1.02, f"shaded: support margin 0 · top-2 flips {base.name} {flips['base']}, "
-            f"Director {flips['dir']}", transform=ax.transAxes, ha="right", va="bottom",
+    ax.text(1, 1.02, f"shaded: support margin 0 · top-2 flips {display_name(base.name)} {flips['base']}, "
+            f"Director-CenterNet {flips['dir']}", transform=ax.transAxes, ha="right", va="bottom",
             fontsize=6.5, color="#5b6474")
     print(f"[trajectory] replay {replay} frames {frames[0]}-{frames[-1]} ({len(frames)}): "
           f"{sum(tie)} tie frames; top-2 flips {base.name} {flips['base']}, "
           f"Director {flips['dir']}", flush=True)
-    _save(fig, args.outdir, f"qual3_trajectory_{replay}_{args.start}_{args.end}")
+    _save(fig, args.outdir, f"qual3_trajectory_{replay}_{args.start}_{args.end}{args.suffix}")
 
 
 def main() -> None:

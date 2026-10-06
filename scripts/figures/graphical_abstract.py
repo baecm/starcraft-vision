@@ -128,7 +128,7 @@ def run(args) -> None:
         c = box_center(b)
         _label(a1, c[1], c[0] - 7, str(r + 1), C_MAIN if r == 0 else C_PIP, 7)
     _map_axes(a1, height, width)
-    a1.set_title("Director-CenterNet\ncentre heatmap", loc="left", fontsize=7)
+    a1.set_title("Director-CenterNet\ncenter heatmap", loc="left", fontsize=7)
 
     # (3) the decoded region set
     a2 = fig.add_subplot(gs[0, 4])
@@ -168,7 +168,7 @@ def run(args) -> None:
     # Two lines of about eighty characters. Wider than that and the text is
     # centred on a box narrower than itself, so both ends fall off the canvas.
     fig.supxlabel(
-        rf"{len(obs)} observers disagree; their attention splits into modes ranked by support."
+        rf"{len(obs)} {args.person}s disagree; their attention splits into modes ranked by support."
         "\n"
         r"Top-1 trains the primary region, the rest the auxiliary ones.",
         fontsize=6.5)
@@ -176,7 +176,7 @@ def run(args) -> None:
     print(f"[graphical-abstract] replay {replay} frame {args.frame}: "
           f"{len(hist)} stacked frames, {len(boxes)} regions, "
           f"scores {np.round(scores[:args.k], 3).tolist()}", flush=True)
-    _save(fig, args.outdir, f"graphical_abstract_{replay}_{args.frame}")
+    _save(fig, args.outdir, f"graphical_abstract_{replay}_{args.frame}{args.suffix}")
 
 
 def main() -> None:

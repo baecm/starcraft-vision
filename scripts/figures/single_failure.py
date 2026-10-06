@@ -66,9 +66,6 @@ def add_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--baseline", required=True, metavar="SPEC", help=SPEC_HELP)
     p.add_argument("--label", default=None,
                    help="model name in the legend, words joined by '_' (default: the spec's NAME)")
-    p.add_argument("--person", choices=["spectator", "observer"], default="spectator",
-                   help="what the figure calls a human viewer (thesis: spectator, paper: observer)")
-    p.add_argument("--suffix", default="", help="appended to the output file stem")
 
 
 def run(args) -> None:
@@ -153,7 +150,7 @@ def run(args) -> None:
     ax2.set_xlim(fr[0], fr[-1])
     ax2.set_ylim(0, t_w if axis == 1 else t_h)
     ax2.set_xlabel("frame")
-    ax2.set_ylabel(f"region centre {args.axis} (tiles)")
+    ax2.set_ylabel(f"region center {args.axis} (tiles)")
     ax2.grid(True, lw=0.4, alpha=0.4)
     ax2.set_title(f"(b) tied frames shaded; {flips} top-2 flips over {len(frames)} frames",
                   loc="left")

@@ -76,7 +76,7 @@ def run(args) -> None:
     fig = plt.figure(figsize=(DOUBLE_COL, DOUBLE_COL / sum(ratios) * nrow + 0.75),
                      layout="constrained")
     gs = fig.add_gridspec(nrow, len(ratios), width_ratios=ratios)
-    titles = ["observer viewports", r"coverage $a_t$",
+    titles = [f"{args.person} viewports", r"coverage $a_t$",
               r"ranked modes $\mathcal{M}_t$", r"target $\mathcal{Y}_t$"]
 
     for row, (replay, frame) in enumerate(pairs):
@@ -137,7 +137,7 @@ def run(args) -> None:
         r"Modes are ranked by support $n$ and rendered at amplitude $1$ for the "
         r"Top-1 mode and $n/U$ for the rest.",
         fontsize=6.5)
-    _save(fig, args.outdir, f"qual6_supervision_grid_{nrow}")
+    _save(fig, args.outdir, f"qual6_supervision_grid_{nrow}{args.suffix}")
 
 
 def main() -> None:

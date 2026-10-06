@@ -73,7 +73,7 @@ def run(args) -> None:
     _draw_modes(ax, modes)
 
     handles = [
-        patches.Patch(fill=False, edgecolor=C_OBS, linestyle="--", label="observer viewport"),
+        patches.Patch(fill=False, edgecolor=C_OBS, linestyle="--", label=f"{args.person} viewport"),
         plt.Line2D([], [], marker="o", ls="", color=C_TOP1, label="Top-1 mode"),
         plt.Line2D([], [], marker="o", ls="", color=C_MINOR, label="minority mode"),
     ]
@@ -87,7 +87,7 @@ def run(args) -> None:
     print(f"[teaser] replay {replay} frame {args.frame}: {len(modes.centers)} modes, "
           f"support {modes.support.tolist()}, min separation "
           f"{min(sep) if sep else float('nan'):.0f} tiles", flush=True)
-    _save(fig, args.outdir, f"qual0_teaser_{replay}_{args.frame}")
+    _save(fig, args.outdir, f"qual0_teaser_{replay}_{args.frame}{args.suffix}")
 
 
 def main() -> None:

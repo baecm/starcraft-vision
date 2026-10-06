@@ -355,4 +355,17 @@ def common_parser() -> argparse.ArgumentParser:
     common.add_argument("--rel-threshold", type=float, default=config.MODE_EXTRACTION_REL_THRESHOLD)
     common.add_argument("--max-modes", type=int, default=config.MODE_EXTRACTION_MAX_MODES)
     common.add_argument("--no-fog", action="store_true", help="do not darken unseen tiles")
+    common.add_argument("--person", choices=["spectator", "observer"], default="observer",
+                        help="what the figure calls a human viewer (thesis: spectator, paper: observer)")
+    common.add_argument("--suffix", default="", help="appended to the output file stem")
     return common
+
+
+# Names a figure prints for a model spec's NAME; anything else is printed with
+# underscores as spaces.
+DISPLAY_NAMES = {"maskrcnn": "Mask R-CNN", "director": "Director-CenterNet"}
+
+
+def display_name(name: str) -> str:
+    """The name a figure prints for a model spec's NAME."""
+    return DISPLAY_NAMES.get(name, name.replace("_", " "))

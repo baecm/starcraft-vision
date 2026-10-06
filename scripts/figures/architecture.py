@@ -169,7 +169,7 @@ def run(args) -> None:
          "drop the border ring",
          r"keep score $> \tau$,  $\tau < 1/U$",
          r"top-$K$, descending",
-         "cell + offset $\\rightarrow$ centre"])
+         "cell + offset $\\rightarrow$ center"])
 
     arrow(81.0, 85.0, cy)
 

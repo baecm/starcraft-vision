@@ -43,6 +43,7 @@ from figures.common import (
     _save,
     analyse_method,
     common_parser,
+    display_name,
     frame_modes,
     load_frame_npy,
     load_gt,
@@ -86,8 +87,8 @@ def run(args) -> None:
 
     fig, axes = plt.subplots(1, 3, figsize=(DOUBLE_COL, DOUBLE_COL / 3 + 0.55),
                              layout="constrained")
-    titles = [f"(a) Human observers, U = {len(obs)}",
-              f"(b) {base.name}, top-{args.k}",
+    titles = [f"(a) Human {args.person}s, U = {len(obs)}",
+              f"(b) {display_name(base.name)}, top-{args.k}",
               "(c) Director-CenterNet"]
     for ax, title in zip(axes, titles):
         ax.imshow(bg, extent=(0, width, height, 0), interpolation="nearest", zorder=0)
@@ -109,10 +110,10 @@ def run(args) -> None:
     axes[2].set_xlabel(f"OC{args.k}@{args.delta} = {oc['dir'] * u:.0f}/{u}", fontsize=7)
 
     handles = [
-        patches.Patch(fill=False, edgecolor=C_OBS, linestyle="--", label="observer viewport"),
+        patches.Patch(fill=False, edgecolor=C_OBS, linestyle="--", label=f"{args.person} viewport"),
         plt.Line2D([], [], marker="o", ls="", color=C_TOP1, label="Top-1 mode"),
         plt.Line2D([], [], marker="o", ls="", color=C_MINOR, label="minority mode"),
-        patches.Patch(fill=False, edgecolor=C_BASE, label=f"{base.name} box"),
+        patches.Patch(fill=False, edgecolor=C_BASE, label=f"{display_name(base.name)} box"),
         patches.Patch(fill=False, edgecolor=C_MAIN, label="primary"),
         patches.Patch(fill=False, edgecolor=C_PIP, label="auxiliary"),
     ]
@@ -125,7 +126,7 @@ def run(args) -> None:
           f"support {modes.support.tolist()}; {base.name} {len(b_boxes)} boxes, "
           f"Director {len(d_boxes)} regions; OC{args.k}@{args.delta} "
           f"{oc['base']:.2f} vs {oc['dir']:.2f}", flush=True)
-    _save(fig, args.outdir, f"qual1_compare_{replay}_{args.frame}")
+    _save(fig, args.outdir, f"qual1_compare_{replay}_{args.frame}{args.suffix}")
 
 
 def main() -> None:

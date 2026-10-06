@@ -120,12 +120,12 @@ def run(args) -> None:
     cb = fig.colorbar(im, cax=fig.add_subplot(gs[1, 1:3]), orientation="horizontal")
     cb.set_ticks([0, 0.2, 0.5, 1])
     cb.ax.tick_params(labelsize=6.5)
-    cb.set_label(f"(b) normalised to its maximum; (c) sigmoid score, 1/U = {1 / len(obs):.1f}",
+    cb.set_label(f"(b) normalized to its maximum; (c) sigmoid score, 1/U = {1 / len(obs):.1f}",
                  fontsize=6.5)
     axes[3].set_xlabel(rf"$\tau$ = {tau:g}, stride {stride}", fontsize=6.5)
     print(f"[heatmap] replay {replay} frame {args.frame}: modes support "
           f"{modes.support.tolist()}, peak scores {np.round(saved_scores, 3).tolist()}", flush=True)
-    _save(fig, args.outdir, f"qual2_heatmap_{replay}_{args.frame}")
+    _save(fig, args.outdir, f"qual2_heatmap_{replay}_{args.frame}{args.suffix}")
 
 
 def main() -> None:
