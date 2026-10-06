@@ -61,7 +61,10 @@ from mode_disagreement import parse_model_spec
 # --------------------------------------------------------------------------
 
 MM = 1 / 25.4
-DOUBLE_COL = 190 * MM   # ESWA double-column width
+# ESWA double-column width by default. FIG_WIDTH_MM sets the full-width canvas
+# for another document: the thesis text block is 155 mm, so its figures are
+# drawn at 155 mm and print at the font sizes below instead of at 82 % of them.
+DOUBLE_COL = float(os.environ.get("FIG_WIDTH_MM", "190")) * MM
 SINGLE_COL = 88 * MM    # one column of the same two-column layout
 
 C_MAIN = "#2458a6"
