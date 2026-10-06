@@ -291,6 +291,25 @@ def _axes_rect(host, x, y, w, h):
 # Director re-run (heatmap, graphical abstract)
 # --------------------------------------------------------------------------
 
+def _figure_device() -> "torch.device":
+    """CUDA if this PyTorch build has kernels for the GPU, otherwise the CPU.
+
+    `torch.cuda.is_available()` is true on a GPU newer than the build (an
+    RTX 5090, sm_120, under the cu126 wheels), and the first kernel then fails
+    with "no kernel image is available". A figure runs one frame, so the CPU
+    costs nothing that matters.
+    """
+    import torch
+
+    if torch.cuda.is_available():
+        major, minor = torch.cuda.get_device_capability()
+        if f"sm_{major}{minor}" in torch.cuda.get_arch_list():
+            return torch.device("cuda")
+        print(f"[figures] GPU sm_{major}{minor} is not in this PyTorch build; using the CPU",
+              flush=True)
+    return torch.device("cpu")
+
+
 def _director_heatmap(args, dire: Source, replay: str, frame: int):
     """Re-run the Director checkpoint on one frame; returns the sigmoid map,
     the decoded boxes (xyxy) and scores, and the stride."""
@@ -312,7 +331,7 @@ def _director_heatmap(args, dire: Source, replay: str, frame: int):
     x, _ = ds[idx]
 
     ckpt = os.path.join(args.model_root, dire.model, f"model_{dire.epoch:03d}.pth")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = _figure_device()
     model = _load_model(ckpt, device, in_channels=x.shape[0], window_size=window,
                         architecture="director_centernet", k_max=k_max, conf_threshold=tau)
     with torch.no_grad():
