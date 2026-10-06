@@ -20,6 +20,11 @@ For each subset it records, pooled over frames (as the thesis tables are):
   n_modes     - mean number of extracted modes, and the fraction with >= 2
   support_k   - mean support of the k-th ranked mode divided by U, so that
                 subsets of different size are comparable
+  held2       - fraction of frames whose second mode at least two of the
+                subset hold (absolute count, as in the thesis tables)
+  single2     - fraction of multi-modal frames whose second mode one holds
+  tie, tie22  - fraction of frames whose top two modes have equal support,
+                and of those, equal at two or more each
 
 and per U it reports the mean over subsets and the standard error across
 them. Observers are addressed by their position in each frame's annotation
@@ -72,7 +77,8 @@ def pairwise_agreement(obs: np.ndarray) -> float:
 
 
 def _sums(n_obs: int) -> Dict[str, float]:
-    d = {"frames": 0, "agreement": 0.0, "n_modes": 0.0, "multimodal": 0.0}
+    d = {"frames": 0, "agreement": 0.0, "n_modes": 0.0, "multimodal": 0.0,
+         "held2": 0.0, "single2": 0.0, "tie": 0.0, "tie22": 0.0}
     for k in range(1, K_MAX + 1):
         d[f"support_{k}"] = 0.0
         d[f"has_{k}"] = 0
@@ -108,6 +114,12 @@ def process_replay(job: Tuple) -> Tuple[List[dict], List[dict]]:
             a["agreement"] += pairwise_agreement(obs)
             a["n_modes"] += len(m.support)
             a["multimodal"] += float(len(m.support) >= 2)
+            if len(m.support) >= 2:
+                s1, s2 = int(m.support[0]), int(m.support[1])
+                a["held2"] += float(s2 >= 2)
+                a["single2"] += float(s2 == 1)
+                a["tie"] += float(s1 == s2)
+                a["tie22"] += float(s1 == s2 and s2 >= 2)
             for k in range(1, K_MAX + 1):
                 if len(m.support) >= k:
                     a[f"support_{k}"] += m.support[k - 1] / u
@@ -138,6 +150,10 @@ def pool_subsets(df: pd.DataFrame, keys: List[str]) -> pd.DataFrame:
     out["agreement"] = g["agreement"] / g["frames"]
     out["n_modes"] = g["n_modes"] / g["frames"]
     out["multimodal"] = g["multimodal"] / g["frames"]
+    for c in ("held2", "tie", "tie22"):
+        out[c] = g[c] / g["frames"]
+    # over the multi-modal frames, as the 61 % of the thesis
+    out["single2"] = g["single2"] / g["multimodal"].replace(0, np.nan)
     for k in range(1, K_MAX + 1):
         # support of the k-th mode over the frames that have one
         out[f"support_{k}"] = g[f"support_{k}"] / g[f"has_{k}"].replace(0, np.nan)
@@ -145,7 +161,7 @@ def pool_subsets(df: pd.DataFrame, keys: List[str]) -> pd.DataFrame:
 
 
 def by_U(per_subset: pd.DataFrame, keys: List[str]) -> pd.DataFrame:
-    metrics = ["agreement", "n_modes", "multimodal"] + [f"support_{k}" for k in range(1, K_MAX + 1)]
+    metrics = ["agreement", "n_modes", "multimodal", "held2", "single2", "tie", "tie22"] + [f"support_{k}" for k in range(1, K_MAX + 1)]
     rows = []
     for key, g in per_subset.groupby(keys + ["U"]):
         key = key if isinstance(key, tuple) else (key,)
@@ -196,7 +212,7 @@ def main() -> int:
         os.path.join(args.outdir, "by_U_replay.csv"), index=False)
 
     cols = ["U", "n_subsets", "frames", "agreement", "agreement_se", "n_modes", "n_modes_se",
-            "multimodal", "multimodal_se"] + [f"support_{k}" for k in range(1, K_MAX + 1)]
+            "multimodal", "multimodal_se", "held2", "held2_se", "single2", "tie", "tie22"] + [f"support_{k}" for k in range(1, K_MAX + 1)]
     with pd.option_context("display.width", 200, "display.precision", 4):
         print(pooled[cols].to_string(index=False))
 

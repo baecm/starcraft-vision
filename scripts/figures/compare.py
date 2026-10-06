@@ -86,7 +86,10 @@ def run(args) -> None:
                              straddle_floor=0.15, k_max=args.k).iloc[0]
         oc[src] = row.get(f"OC{args.k}@{args.delta}", np.nan)
 
-    fig, axes = plt.subplots(1, 3, figsize=(DOUBLE_COL, DOUBLE_COL / 3 + 0.55),
+    # Each extra legend row needs its own height, or the square panels push
+    # the titles off the top of the canvas.
+    legend_rows = -(-6 // legend_ncol(6))
+    fig, axes = plt.subplots(1, 3, figsize=(DOUBLE_COL, DOUBLE_COL / 3 + 0.55 + 0.2 * (legend_rows - 1)),
                              layout="constrained")
     titles = [f"(a) Human {args.person}s, U = {len(obs)}",
               f"(b) {display_name(base.name)}, top-{args.k}",
