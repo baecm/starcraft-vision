@@ -44,6 +44,7 @@ from figures.common import (
     analyse_method,
     common_parser,
     display_name,
+    legend_ncol,
     frame_modes,
     load_frame_npy,
     load_gt,
@@ -121,7 +122,7 @@ def run(args) -> None:
     # it below the canvas instead only worked while _save cropped with
     # bbox_inches="tight", which grew the canvas to take the legend in; without
     # that it landed on top of the OC labels.
-    fig.legend(handles=handles, loc="outside lower center", ncol=6, frameon=False)
+    fig.legend(handles=handles, loc="outside lower center", ncol=legend_ncol(6), frameon=False)
     print(f"[compare] replay {replay} frame {args.frame}: {len(modes.centers)} modes, "
           f"support {modes.support.tolist()}; {base.name} {len(b_boxes)} boxes, "
           f"Director {len(d_boxes)} regions; OC{args.k}@{args.delta} "

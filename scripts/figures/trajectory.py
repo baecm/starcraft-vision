@@ -41,6 +41,7 @@ from figures.common import (
     box_center,
     common_parser,
     display_name,
+    legend_ncol,
     frame_modes,
     load_gt,
     plt,
@@ -125,7 +126,7 @@ def run(args) -> None:
     ax.set_xlabel("frame")
     ax.set_ylabel(f"region center {args.axis} (tiles)")
     ax.grid(True, lw=0.4, alpha=0.4)
-    ax.legend(loc="upper center", ncol=5, frameon=False, bbox_to_anchor=(0.5, -0.2))
+    ax.legend(loc="upper center", ncol=legend_ncol(5), frameon=False, bbox_to_anchor=(0.5, -0.2))
     ax.text(1, 1.02, f"shaded: support margin 0 · top-2 flips {display_name(base.name)} {flips['base']}, "
             f"Director-CenterNet {flips['dir']}", transform=ax.transAxes, ha="right", va="bottom",
             fontsize=6.5, color="#5b6474")

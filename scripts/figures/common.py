@@ -67,6 +67,12 @@ MM = 1 / 25.4
 DOUBLE_COL = float(os.environ.get("FIG_WIDTH_MM", "190")) * MM
 SINGLE_COL = 88 * MM    # one column of the same two-column layout
 
+
+def legend_ncol(n: int) -> int:
+    """Legend columns for n entries: one row on the 190 mm canvas, two below it,
+    where a one-row legend of five or six entries runs past the figure edge."""
+    return n if DOUBLE_COL >= 180 * MM else -(-n // 2)
+
 C_MAIN = "#2458a6"
 C_PIP = "#e07b24"
 C_BASE = "#7a4fa8"
