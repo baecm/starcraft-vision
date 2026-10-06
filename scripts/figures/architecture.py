@@ -119,7 +119,7 @@ def run(args) -> None:
                     ha="center", va="top", zorder=4)
         return a
 
-    cy = 13.2                    # centre line the row sits on
+    cy = 13.2                    # center line the row sits on
     s = 13.5                     # side of the square image panels
     stack_drop = (len(hist) - 1) * 0.9 if hist else 0.0
 

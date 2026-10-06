@@ -3,12 +3,12 @@ figures/common.py
 =================
 
 What every figure script shares: the sys.path setup that makes src/ and
-scripts/ importable, the style (sizes, colours, rcParams and the font), data
+scripts/ importable, the style (sizes, colors, rcParams and the font), data
 access (ground truth, predictions, raw frames, ranked modes), the drawing
 helpers, the Director re-run behind the heatmap panels, and the argparse
 options every figure takes (`common_parser`).
 
-Moved out of scripts/qualitative_figures.py without changing behaviour; the
+Moved out of scripts/qualitative_figures.py without changing behavior; the
 only addition is the font selection below.
 """
 

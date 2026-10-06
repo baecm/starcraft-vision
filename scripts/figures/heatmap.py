@@ -88,7 +88,7 @@ def run(args) -> None:
     # The colorbar gets a row of its own rather than `colorbar(ax=axes[1:3])`,
     # which takes its space *out of* those two axes. They carry imshow and so
     # have a fixed aspect: losing height loses width with it, and (b) and (c)
-    # came out smaller than (a) and (d) and centred at a different height.
+    # came out smaller than (a) and (d) and centered at a different height.
     fig = plt.figure(figsize=(DOUBLE_COL, DOUBLE_COL / 4 + 0.75), layout="constrained")
     gs = fig.add_gridspec(2, 4, height_ratios=[1.0, 0.05])
     axes = [fig.add_subplot(gs[0, i]) for i in range(4)]

@@ -5,7 +5,7 @@ figures/single_failure.py
 The two failure modes of a single-region observer (thesis chapter on the
 single-region baseline; also used in the paper): (a) one multi-mode frame with
 the one region the model emits and how many viewers it serves, (b) the region
-centre over a run of tied frames against the Top-1 / Top-2 mode tracks. Writes
+center over a run of tied frames against the Top-1 / Top-2 mode tracks. Writes
 single_failure_<replay>_<frame>_<tie-replay>_<start>_<end><suffix>.{pdf,png}.
 
   make figure-fg FIG=single_failure ARGS="--replay 4664 --frame 10331 \
@@ -73,7 +73,7 @@ def run(args) -> None:
 
     (a) one multi-mode frame: the observers, their ranked modes and the single
         region the model emits, with how many observers that region serves;
-    (b) the region centre over a run of tied frames against the Top-1 and
+    (b) the region center over a run of tied frames against the Top-1 and
         Top-2 mode tracks, with the run's top-2 flips.
     Only the model's highest-scoring box is drawn: that is the output of the
     single-region formulation, whatever else the detector proposed.
@@ -106,7 +106,7 @@ def run(args) -> None:
     frames = [f for f in sorted(t_gt) if args.start - args.pad <= f <= args.end + args.pad]
     if len(frames) < 4:
         raise ValueError(f"only {len(frames)} ground-truth frames in the window")
-    axis = 1 if args.axis == "x" else 0          # centres are (row, col)
+    axis = 1 if args.axis == "x" else 0          # centers are (row, col)
     top1, top2, tie, track = [], [], [], []
     for f in frames:
         m = frame_modes(t_gt[f], t_h, t_w, args)

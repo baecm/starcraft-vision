@@ -56,7 +56,7 @@ def run(args) -> None:
 
     The same four panels as `supervision`, stacked, so that the construction is
     read as a procedure applied to different frames rather than as one picture.
-    Column headings appear once; each row is labelled by what distinguishes it,
+    Column headings appear once; each row is labeled by what distinguishes it,
     which is the support vector and how far apart the modes fell.
 
     Takes REPLAY:FRAME pairs, in the order they should appear.

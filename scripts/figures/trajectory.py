@@ -2,7 +2,7 @@
 figures/trajectory.py
 =====================
 
-Qualitative figure (3): the primary-region centre over a window of
+Qualitative figure (3): the primary-region center over a window of
 consecutive frames for both methods, with the Top-1 / Top-2 mode tracks, the
 tie frames (support margin 0) shaded and each method's top-2 flips in the
 window. Writes qual3_trajectory_<replay>_<start>_<end>.{pdf,png}.
@@ -68,7 +68,7 @@ def run(args) -> None:
         raise ValueError(f"only {len(frames)} ground-truth frames in the window")
     base = Source(args.baseline, args, replay, size_hw)
     dire = Source(args.director, args, replay, size_hw)
-    axis = 1 if args.axis == "x" else 0          # centres are (row, col)
+    axis = 1 if args.axis == "x" else 0          # centers are (row, col)
 
     top1, top2, tie = [], [], []
     for f in frames:

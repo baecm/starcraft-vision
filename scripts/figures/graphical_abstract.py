@@ -3,7 +3,7 @@ figures/graphical_abstract.py
 =============================
 
 The journal's graphical abstract, 13 x 5 cm, from one real frame: stacked
-game state, Director-CenterNet's centre heatmap (re-run from the checkpoint),
+game state, Director-CenterNet's center heatmap (re-run from the checkpoint),
 the ranked regions and the crops they select. Writes
 graphical_abstract_<replay>_<frame>.{pdf,png}. Re-runs a checkpoint, so it
 wants the GPU (it falls back to the CPU).
@@ -166,7 +166,7 @@ def run(args) -> None:
                    arrowprops=dict(arrowstyle="-|>", color="#39414f", lw=1.1))
 
     # Two lines of about eighty characters. Wider than that and the text is
-    # centred on a box narrower than itself, so both ends fall off the canvas.
+    # centered on a box narrower than itself, so both ends fall off the canvas.
     fig.supxlabel(
         rf"{len(obs)} {args.person}s disagree; their attention splits into modes ranked by support."
         "\n"
