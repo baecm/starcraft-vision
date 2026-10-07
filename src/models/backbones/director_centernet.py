@@ -117,8 +117,12 @@ class DirectorCenterNet(nn.Module):
         peak_border_margin: int = config.DIRECTOR_PEAK_BORDER_MARGIN,
         trainable_layers: int = config.DIRECTOR_TRAINABLE_LAYERS,
         dense_positives: bool = config.DIRECTOR_DENSE_POSITIVES,
+        hcm_negative_target: str = config.DIRECTOR_HCM_NEGATIVE_TARGET,
     ):
         super().__init__()
+        if hcm_negative_target not in ("joint", "primary"):
+            raise ValueError(f"hcm_negative_target must be 'joint' or 'primary', got {hcm_negative_target!r}")
+        self.hcm_negative_target = hcm_negative_target
         self.in_channels = in_channels
         self.num_classes = num_classes
         self.down_ratio = int(down_ratio)
@@ -570,9 +574,15 @@ class DirectorCenterNet(nn.Module):
             aux_ignore = (
                 rendered["aux_support"] if self.loss_weights["lambda_rmc"] > 0.0 else None
             )
+            neg_target = rendered["Y_all"]
+            if self.hcm_negative_target == "primary":
+                # The control for both modifications: CornerNet's focal loss
+                # with the primary as its one object, so the auxiliary modes
+                # are hard negatives like any other cell.
+                neg_target, aux_ignore = rendered["Y1"], None
             loss_hcm = human_consensus_match_loss(
                 pred_hm=pred_hm,
-                target_hm_top1=rendered["Y_all"],
+                target_hm_top1=neg_target,
                 pos_mask=rendered["pos_mask_top1"],
                 ignore_mask=aux_ignore,
                 neg_weight=self._hcm_neg_weight,

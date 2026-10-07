@@ -231,6 +231,7 @@ def _build_run_tags(cfg) -> list:
         ("render_sigma", config.DIRECTOR_RENDER_SIGMA, lambda v: f"sigma:{v:g}"),
         ("trainable_layers", config.DIRECTOR_TRAINABLE_LAYERS, lambda v: f"trainable_layers:{v}"),
         ("conf_threshold", config.DIRECTOR_TAU, lambda v: f"tau:{v:g}"),
+        ("hcm_negative_target", config.DIRECTOR_HCM_NEGATIVE_TARGET, lambda v: f"hcm_neg:{v}"),
     ):
         value = getattr(arch, key, default)
         if value != default:
@@ -286,7 +287,7 @@ def _write_run_provenance(save_dir: str, model, id_string: str) -> None:
         "down_ratio", "k_max", "conf_threshold", "render_sigma", "u_observers",
         "smooth_huber_delta", "smooth_warmup_start", "smooth_warmup_full",
         "soft_center_radius", "peak_border_margin", "trainable_layers",
-        "head_conv", "dense_positives",
+        "head_conv", "dense_positives", "hcm_negative_target",
     ):
         if hasattr(base, knob):
             record[knob] = getattr(base, knob)
@@ -641,7 +642,7 @@ _ARCHITECTURE_KEYS = (
     "k_max", "conf_threshold", "render_sigma", "u_observers",
     "smooth_huber_delta", "smooth_warmup_start", "smooth_warmup_full",
     "soft_center_radius", "peak_border_margin", "trainable_layers",
-    "head_conv", "dense_positives",
+    "head_conv", "dense_positives", "hcm_negative_target",
 )
 
 

@@ -1,19 +1,25 @@
 # H100 runbook (2026-10-12 .. 10-25)
 
 Commands for the dedicated H100 window, in queue order. Every run is
-launched from the tag **`h100-2026-10`** (commit `4c3aefd`), so each run's
-W&B tags carry `git:4c3aefd80`. Do not train on worker07.
+launched from the tag **`h100-2026-10`**, so each run's W&B `git:` tag must equal
+`git rev-parse --short=9 h100-2026-10`. Do not train on worker07.
 
 ```bash
-git fetch --tags && git checkout h100-2026-10
+git fetch --tags --force && git checkout h100-2026-10
 ```
 
 Before the first run on the machine, warm the page cache once (the first
-epoch otherwise waits on the CIFS share; see the training-throughput note):
+epoch otherwise waits on the CIFS share and runs about 10x slower):
 
 ```bash
 find /mnt/nas/baecm/starcraft-vision/data -type f -print0 | xargs -0 -P 32 -n 64 cat > /dev/null
 ```
+
+Check that the machine has the ImageNet ResNet-50 weights (in
+`.torch_cache`, or network access to download them). Mask R-CNN stops if
+they are missing, but Director-CenterNet only logs `Failed to load ImageNet
+weights` and trains from an untrained backbone, which would make A3 a
+different experiment. Look for that line in the first Director log.
 
 Queue order: **A1 → A2** (thesis, first week), **A3** alongside when the
 Director runs fit next to a Mask R-CNN run, then **fold 2/3** (ToG only; drop
@@ -102,10 +108,42 @@ of mode boxes from that of the support weighting.
 
 ---
 
-## A3 — Director-CenterNet with the unmodified CornerNet focal loss
+## A3 — Director-CenterNet with the unmodified CornerNet focal loss, fold 1, seeds 123 / 456 / 789
 
-**Not implemented yet.** The configuration switch has to be added and
-CPU-verified before 10/12; this section gets its commands then.
+The thesis says beta_n is already positive with L_hcm alone, and that L_hcm
+departs from CornerNet. In the `hcm_only` configuration (L_rmc, L_rep,
+L_smooth off) the auxiliary ignore mask is already off, so the one remaining
+departure is the negative weight: `(1 - Y_all)^beta`, which protects the
+auxiliary modes, where CornerNet uses the primary's own Gaussian
+`(1 - Y1)^beta`. `architecture.hcm_negative_target=primary` switches to the
+latter (and would also drop the ignore mask in configurations with L_rmc).
+
+Compared against `dc_hcm_only_b16_f1_s{123,456,789}_v6` (trained at
+`aae0d85`/`bed81e3`; the Director training path is unchanged since). Those
+were launched with `make run` (train, then inference at the architecture's
+score threshold 0.1 into `model_030/`), so A3 uses `make run` too.
+
+For each S in 123, 456, 789:
+
+```bash
+make run ARGS="architecture=director_centernet batch_size=16 seed=S architecture.loss_weights.lambda_rmc=0 architecture.loss_weights.lambda_rep=0 architecture.loss_weights.lambda_sm=0 architecture.hcm_negative_target=primary id_string=dc_hcm_only_cornernet_b16_f1_sS_v6"
+```
+
+W&B tags must show `loss:hcm_only` and `hcm_neg:primary`.
+
+Analysis next to the existing ablation (`results/mode_disagreement/v6_f1_sS`):
+
+```bash
+make mode-disagreement-fg ARGS="--replays 275 1725 3613 4520 4664 --model hcm_only=dc_hcm_only_b16_f1_sS_v6 --model hcm_only_cornernet=dc_hcm_only_cornernet_b16_f1_sS_v6 --outdir /workspace/results/mode_disagreement/a3_cornernet_sS"
+```
+```bash
+make analysis SCRIPT=count_validity ARGS="--model hcm_only=dc_hcm_only_b16_f1_sS_v6 --model hcm_only_cornernet=dc_hcm_only_cornernet_b16_f1_sS_v6"
+```
+
+Question it answers: does beta_n stay positive without the joint-target
+protection, i.e. is the sign a property of the heatmap formulation or of the
+modified loss? Director runs are input-bound, so they can share the H100 with
+a Mask R-CNN run.
 
 ---
 
@@ -134,7 +172,7 @@ Inference and analysis as in A1, with that fold's test replays and outdir
 
 ## After each run
 
-- Check the W&B tags show `git:4c3aefd80` and the intended `kbrs:` /
+- Check the W&B tags show the tag's commit (`git:`) and the intended `kbrs:` /
   `targets:` / `batch:` values.
 - Copy nothing by hand: checkpoints, predictions and results are on the NAS
   under the names above.

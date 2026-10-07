@@ -143,6 +143,7 @@ def build_model(args: Any) -> nn.Module:
             trainable_layers=getattr(args, "trainable_layers", config.DIRECTOR_TRAINABLE_LAYERS),
             head_conv=getattr(args, "head_conv", config.DIRECTOR_HEAD_CONV),
             dense_positives=getattr(args, "dense_positives", config.DIRECTOR_DENSE_POSITIVES),
+            hcm_negative_target=getattr(args, "hcm_negative_target", config.DIRECTOR_HCM_NEGATIVE_TARGET),
         )
 
     else:

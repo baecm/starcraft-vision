@@ -62,6 +62,14 @@ DIRECTOR_HEAD_CONV = 64
 # Place a focal positive at every observer's own viewport centre, not only at
 # the Top-1 mode. See _add_observer_positives in losses/director_losses.py.
 DIRECTOR_DENSE_POSITIVES = False
+# Which target the negative term of L_hcm is weighted by, (1 - Y)^beta:
+#   "joint"   Y_all = max(Y1, Y_minus), so the auxiliary modes are protected
+#             from suppression (the default; every reported run)
+#   "primary" Y1, the primary mode's own Gaussian, as CornerNet's focal loss
+#             does for a single object; the auxiliary modes are then ordinary
+#             negatives and no cells are excluded from L_hcm
+# See human_consensus_match_loss in losses/director_losses.py.
+DIRECTOR_HCM_NEGATIVE_TARGET = "joint"
 DIRECTOR_K = 3
 # The smallest meaningful mode amplitude is 1 observer out of U, i.e. 1/5 = 0.2
 # (the Gaussian is rendered on its assigned grid cell, so that is exact rather

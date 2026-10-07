@@ -34,4 +34,5 @@ soft_center_radius: 2        # soft-argmax window, in stride-4 cells (= 8 tiles)
 peak_border_margin: 1        # drop the outermost ring, in stride-4 cells (= 4 tiles)
 trainable_layers: 5          # unfreeze layer1; the heatmap head reads only that level
 head_conv: 64                # hidden width of each head
-dense_positives: false       # focal positive at every observer centre, not only the Top-1 mode
+dense_positives: false       # focal positive at every observer center, not only the Top-1 mode
+hcm_negative_target: joint   # (1 - Y)^beta in L_hcm weighted by the joint target; "primary" = CornerNet (src/config.py)
