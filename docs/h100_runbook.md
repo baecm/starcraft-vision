@@ -26,6 +26,57 @@ Director runs fit next to a Mask R-CNN run, then **fold 2/3** (ToG only; drop
 fold 3 first if time runs short). Run the KBRS and vanilla arms of one seed on
 the same GPU type.
 
+## Run list
+
+Tick a run when its checkpoint `model_030.pth` exists and its W&B tags are
+right. Hours are rough: Mask R-CNN is compute-bound (about 12 h on a 5090,
+measure the first H100 run and correct), Director-CenterNet input-bound
+(about 6 h) and able to share the GPU with a Mask R-CNN run. 21 Mask R-CNN
+runs at ~10 h fill about 210 of the window's ~330 hours.
+
+| # | Group | Run (`id_string`) | Model | Seed | For | Done |
+|---|---|---|---|---|---|---|
+| 1 | A1 | `maskrcnn_win4_kbrs_relu_nogate_f1_s1001_b16_v6` | Mask R-CNN + KBRS | 1001 | thesis RQ3, ToG | [ ] |
+| 2 | A1 | `maskrcnn_win4_vanilla_f1_s1001_b16_v6` | Mask R-CNN | 1001 | thesis RQ3, ToG | [ ] |
+| 3 | A1 | `maskrcnn_win4_kbrs_relu_nogate_f1_s2002_b16_v6` | Mask R-CNN + KBRS | 2002 | thesis RQ3, ToG | [ ] |
+| 4 | A1 | `maskrcnn_win4_vanilla_f1_s2002_b16_v6` | Mask R-CNN | 2002 | thesis RQ3, ToG | [ ] |
+| 5 | A1 | `maskrcnn_win4_kbrs_relu_nogate_f1_s3003_b16_v6` | Mask R-CNN + KBRS | 3003 | thesis RQ3, ToG | [ ] |
+| 6 | A1 | `maskrcnn_win4_vanilla_f1_s3003_b16_v6` | Mask R-CNN | 3003 | thesis RQ3, ToG | [ ] |
+| 7 | A2 | `maskrcnn_win4_modes_soft_f1_s123_v6` | Mask R-CNN, mode targets (soft) | 123 | thesis ch. 8–9 | [ ] |
+| 8 | A2 | `maskrcnn_win4_modes_soft_f1_s456_v6` | Mask R-CNN, mode targets (soft) | 456 | thesis ch. 8–9 | [ ] |
+| 9 | A2 | `maskrcnn_win4_modes_soft_f1_s789_v6` | Mask R-CNN, mode targets (soft) | 789 | thesis ch. 8–9 | [ ] |
+| 10 | A3 | `dc_hcm_only_cornernet_b16_f1_s123_v6` | Director, hcm_only, CornerNet weight | 123 | thesis ch. 9 | [ ] |
+| 11 | A3 | `dc_hcm_only_cornernet_b16_f1_s456_v6` | Director, hcm_only, CornerNet weight | 456 | thesis ch. 9 | [ ] |
+| 12 | A3 | `dc_hcm_only_cornernet_b16_f1_s789_v6` | Director, hcm_only, CornerNet weight | 789 | thesis ch. 9 | [ ] |
+| 13 | fold 2 | `maskrcnn_win4_kbrs_relu_nogate_f2_s123_b16_v6` | Mask R-CNN + KBRS | 123 | ToG | [ ] |
+| 14 | fold 2 | `maskrcnn_win4_vanilla_f2_s123_b16_v6` | Mask R-CNN | 123 | ToG | [ ] |
+| 15 | fold 2 | `maskrcnn_win4_kbrs_relu_nogate_f2_s456_b16_v6` | Mask R-CNN + KBRS | 456 | ToG | [ ] |
+| 16 | fold 2 | `maskrcnn_win4_vanilla_f2_s456_b16_v6` | Mask R-CNN | 456 | ToG | [ ] |
+| 17 | fold 2 | `maskrcnn_win4_kbrs_relu_nogate_f2_s789_b16_v6` | Mask R-CNN + KBRS | 789 | ToG | [ ] |
+| 18 | fold 2 | `maskrcnn_win4_vanilla_f2_s789_b16_v6` | Mask R-CNN | 789 | ToG | [ ] |
+| 19 | fold 3 | `maskrcnn_win4_kbrs_relu_nogate_f3_s123_b16_v6` | Mask R-CNN + KBRS | 123 | ToG | [ ] |
+| 20 | fold 3 | `maskrcnn_win4_vanilla_f3_s123_b16_v6` | Mask R-CNN | 123 | ToG | [ ] |
+| 21 | fold 3 | `maskrcnn_win4_kbrs_relu_nogate_f3_s456_b16_v6` | Mask R-CNN + KBRS | 456 | ToG | [ ] |
+| 22 | fold 3 | `maskrcnn_win4_vanilla_f3_s456_b16_v6` | Mask R-CNN | 456 | ToG | [ ] |
+| 23 | fold 3 | `maskrcnn_win4_kbrs_relu_nogate_f3_s789_b16_v6` | Mask R-CNN + KBRS | 789 | ToG | [ ] |
+| 24 | fold 3 | `maskrcnn_win4_vanilla_f3_s789_b16_v6` | Mask R-CNN | 789 | ToG | [ ] |
+| 25 | A2 (optional) | `maskrcnn_win4_modes_hard_f1_s123_v6` | Mask R-CNN, mode targets (hard) | 123 | thesis ch. 8–9 | [ ] |
+
+Each run is followed by its inference and analysis (sections below), which
+need no training time but do need the GPU for Mask R-CNN inference.
+
+### After the thesis (not implemented; not part of this window)
+
+Retraining for the ESWA paper, to be designed after the defense. Each is a
+new objective, so each needs code, a CPU check and its own runbook entry first.
+
+| Idea | Aimed at |
+|---|---|
+| (A) penalize heatmap peaks where no spectator looks | the ~72 % of off auxiliary regions that cover no viewport |
+| (B) a decoder-aware false-peak loss | peaks the decoder turns into off regions |
+| (C) a floor on minority-mode amplitude | low-support modes (less promising: off regions do not score low) |
+| (D) a mode-count head | the region count itself |
+
 ---
 
 ## A1 — KBRS controlled comparison, fold 1, seeds 1001 / 2002 / 3003
