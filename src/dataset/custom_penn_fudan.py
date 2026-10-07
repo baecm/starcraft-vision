@@ -6,7 +6,16 @@ import numpy as np
 import torch
 from .penn_fudan import PennFudanDataset as BasePennFudanDataset
 from utils.logger import Logger
+from metrics.modes import box_from_center, box_slices
 import config
+
+# What the box targets are:
+#   none - the observers' own viewports, one box per observer (the default)
+#   hard - one viewport-sized box per ranked attention mode, every box label 1
+#   soft - the same boxes, plus each box's support / U as "mode_weight", which
+#          a detector can use as a graded class target (see
+#          models/backbones/maskrcnn.py, SupportTargetRoIHeads)
+MODE_TARGET_CHOICES = ("none", "hard", "soft")
 
 
 class CustomPennFudanDataset(BasePennFudanDataset):
@@ -32,7 +41,15 @@ class CustomPennFudanDataset(BasePennFudanDataset):
         trim_tail: int = 0,
         pair_mode: bool = False,
         use_mode_cache: bool = True,
+        mode_targets: str = "none",
     ):
+        if mode_targets not in MODE_TARGET_CHOICES:
+            raise ValueError(f"mode_targets must be one of {MODE_TARGET_CHOICES}, got {mode_targets!r}")
+        # Box targets from the ranked modes need the mode cache, whatever the
+        # caller asked for.
+        if mode_targets != "none":
+            use_mode_cache = True
+        self.mode_targets = mode_targets
         self.input_root = input_root
         self.label_root = label_root
         self.label_method = label_method
@@ -134,18 +151,27 @@ class CustomPennFudanDataset(BasePennFudanDataset):
         if target_img_id not in image_dict:
             raise KeyError(f"[CustomDataset] Target Image ID {target_img_id} not found in image_dict")
 
-        anns = ann_dict.get(target_img_id, [])
-        target = self._make_target_from_anns(anns, H, W, target_img_id)
-
-        # Mode cache 정보 주입
+        m_info = None
         if self.use_mode_cache and self.mode_caches.get(rid) is not None:
             m_info = self.mode_caches[rid].get(target_img_id)
-            if m_info is not None:
-                target["modes"] = {
-                    "centers": torch.from_numpy(m_info["centers"]),
-                    "support": torch.from_numpy(m_info["support"]),
-                    "n_observers": m_info.get("n_observers", 5),
-                }
+
+        if self.mode_targets == "none":
+            anns = ann_dict.get(target_img_id, [])
+            target = self._make_target_from_anns(anns, H, W, target_img_id)
+        else:
+            if self.mode_caches.get(rid) is None:
+                raise RuntimeError(f"[CustomDataset] mode_targets={self.mode_targets!r} but replay {rid} has no mode cache")
+            # A frame missing from the cache had no observer boxes, so it has
+            # no modes either: an empty target, as with mode_targets=none.
+            target = self._make_target_from_modes(m_info, H, W, target_img_id)
+
+        # Mode cache 정보 주입
+        if m_info is not None:
+            target["modes"] = {
+                "centers": torch.from_numpy(m_info["centers"]),
+                "support": torch.from_numpy(m_info["support"]),
+                "n_observers": m_info.get("n_observers", 5),
+            }
 
         # 연속 프레임 페어링 모드 (L_smooth용)
         if self.pair_mode:
@@ -393,6 +419,51 @@ class CustomPennFudanDataset(BasePennFudanDataset):
                 "area": torch.zeros((0,), dtype=torch.float32),
                 "iscrowd": torch.zeros((0,), dtype=torch.int64),
             }
+        return target
+
+    @staticmethod
+    def _make_target_from_modes(m_info, H: int, W: int, image_id: int) -> dict:
+        """
+        One viewport-sized box per ranked attention mode, in the same target
+        format as _make_target_from_anns.
+
+        This is the control for the question whether a proposal detector's
+        redundant and empty boxes come from its supervision: five observer
+        viewports put up to five near-identical boxes on one mode, whereas
+        modes are at least MODE_EXTRACTION_MIN_SEP tiles apart, so here each
+        mode is one box. The box is centered on the mode and shifted (not
+        cropped) to stay inside the map, as the evaluation's canonical mode
+        region is (metrics.modes.box_from_center).
+
+        "mode_weight" is support / U per box. It is a target field the
+        standard RoIHeads ignores; SupportTargetRoIHeads reads it.
+        """
+        centers = np.zeros((0, 2)) if m_info is None else np.asarray(m_info["centers"], dtype=float)
+        support = np.zeros(0) if m_info is None else np.asarray(m_info["support"], dtype=float)
+        n_obs = 1 if m_info is None else max(1, int(m_info.get("n_observers", config.NUM_OBSERVERS_U)))
+
+        boxes, masks, weights = [], [], []
+        for center, s in zip(centers, support):
+            box = box_from_center(center, config.VIEWPORT_SIZE_HW, H, W)
+            ys, xs = box_slices(box, H, W)
+            if ys.stop <= ys.start or xs.stop <= xs.start:
+                continue
+            m = np.zeros((H, W), dtype=np.uint8)
+            m[ys, xs] = 1
+            boxes.append([xs.start, ys.start, xs.stop, ys.stop])
+            masks.append(torch.from_numpy(m))
+            weights.append(float(s) / n_obs)
+
+        n = len(boxes)
+        target = {
+            "boxes": torch.tensor(boxes, dtype=torch.float32).reshape(n, 4),
+            "labels": torch.ones((n,), dtype=torch.int64),
+            "masks": torch.stack(masks) if n else torch.zeros((0, H, W), dtype=torch.uint8),
+            "image_id": torch.tensor([image_id]),
+            "area": torch.tensor([(b[2] - b[0]) * (b[3] - b[1]) for b in boxes], dtype=torch.float32),
+            "iscrowd": torch.zeros((n,), dtype=torch.int64),
+            "mode_weight": torch.tensor(weights, dtype=torch.float32),
+        }
         return target
 
     # (선택) 정렬 키 유틸이 필요하면 유지

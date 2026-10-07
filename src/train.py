@@ -149,6 +149,19 @@ def _host_tag() -> Optional[str]:
     return f"{host}:{devices}"
 
 
+def _mode_targets(cfg) -> str:
+    """cfg.mode_targets, validated. Only Mask R-CNN reads it: the heatmap
+    models take the ranked modes as their own targets already."""
+    from dataset.custom_penn_fudan import MODE_TARGET_CHOICES
+    value = str(cfg.get("mode_targets", "none") or "none")
+    if value not in MODE_TARGET_CHOICES:
+        raise ValueError(f"mode_targets must be one of {MODE_TARGET_CHOICES}, got {value!r}")
+    model_name = str(getattr(getattr(cfg, "architecture", None), "model_name", "")).lower()
+    if value != "none" and model_name != "maskrcnn":
+        raise ValueError(f"mode_targets={value!r} is implemented for maskrcnn only, not {model_name!r}")
+    return value
+
+
 def _build_run_tags(cfg) -> list:
     """Filterable W&B tags describing what actually varies between runs.
 
@@ -178,6 +191,9 @@ def _build_run_tags(cfg) -> list:
     tags.append(f"seed:{cfg.seed}")
     tags.append(f"batch:{getattr(cfg, 'batch_size', '?')}")
     tags.append(f"sched:{getattr(cfg, 'lr_schedule', '?')}")
+    mode_targets = _mode_targets(cfg)
+    if mode_targets != "none":
+        tags.append(f"targets:modes_{mode_targets}")
 
     # Which of the optional objectives are actually on. This is the ablation
     # axis, and reading it off the run name is error-prone.
@@ -679,8 +695,9 @@ def run_training(cfg: DictConfig):
 
     model_arch = str(getattr(cfg.architecture, "model_name", "")).lower()
     is_director = "director" in model_arch
+    mode_targets = _mode_targets(cfg)
 
-    if is_director:
+    if is_director or mode_targets != "none":
         from dataset.mode_cache import ensure_mode_cache
         ensure_mode_cache(
             label_root=label_root,
@@ -709,7 +726,8 @@ def run_training(cfg: DictConfig):
         val_count=cfg.val_count,
         seed=int(seed),
         pair_mode=is_director,
-        use_mode_cache=is_director,
+        use_mode_cache=is_director or mode_targets != "none",
+        mode_targets=mode_targets,
     )
 
     # 8) test 로더 (test_replays 전체)
@@ -808,6 +826,7 @@ def run_training(cfg: DictConfig):
     cfg.num_classes = num_classes
     cfg.kbrs_params = kbrs_params
     cfg.loss_weights = loss_weights
+    cfg.soft_mode_cls = mode_targets == "soft"
 
     # build_model reads these off the top level, so an architecture yaml that
     # defines them is otherwise inert and the model silently falls back to the

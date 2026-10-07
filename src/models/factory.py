@@ -105,7 +105,8 @@ def build_model(args: Any) -> nn.Module:
             window_size=window_size,
             in_channels=in_channels,
             resize_mode=getattr(args, "resize_mode", "fixed_square"),
-            do_normalize=getattr(args, "do_normalize", False)
+            do_normalize=getattr(args, "do_normalize", False),
+            soft_mode_cls=getattr(args, "soft_mode_cls", False),
         )
 
     elif model_name == "rtdetr":

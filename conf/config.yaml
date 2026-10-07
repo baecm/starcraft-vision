@@ -25,6 +25,12 @@ include_components: [worker, ground, air, building, vision]
 # preprocessing writes only when generated with --roci. Changing this requires
 # training from scratch; it cannot be applied to an existing checkpoint.
 roci: false
+# Mask R-CNN box targets (src/dataset/custom_penn_fudan.py, MODE_TARGET_CHOICES).
+# none: the five observer viewports. hard: one viewport-sized box per ranked
+# mode. soft: the same boxes with support / U as the class target. hard and
+# soft test whether the detector's redundant/empty boxes come from five
+# overlapping viewports per frame. Mask R-CNN only; trains from scratch.
+mode_targets: none
 label_method: all_correct
 data_root: /workspace/data
 
