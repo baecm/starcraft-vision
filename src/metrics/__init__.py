@@ -1,4 +1,9 @@
-# src/metrics/__init__.py
+"""Evaluation metrics.
+
+  custom_evaluator  single-region IR and Intersection@{any,0.3,0.5} (evaluate.py)
+  evaluator         multi-region metrics: CWO, M-CTI, pairwise overlap (evaluate.py)
+  modes             ranked attention modes and the per-frame mode analysis (scripts/)
+"""
 from .evaluator import (
     MultiRegionEvaluator,
     compute_cwo,
@@ -9,11 +14,8 @@ from .evaluator import (
 from .custom_evaluator import (
     ImageIR,
     eval_intersection_run,
-    eval_run,
     intersection_ratio,
-    kernel_scores,
 )
-from .multi_region_eval import compute_multi_region_metrics
 from .modes import (
     Modes,
     analyse_method,
@@ -40,10 +42,7 @@ __all__ = [
     "compute_pairwise_overlap",
     "ImageIR",
     "eval_intersection_run",
-    "eval_run",
     "intersection_ratio",
-    "kernel_scores",
-    "compute_multi_region_metrics",
     "Modes",
     "analyse_method",
     "attribute",

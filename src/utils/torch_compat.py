@@ -1,4 +1,3 @@
-# src/utils/torch_compat.py
 """Runtime guards for torch features the container cannot support."""
 from __future__ import annotations
 

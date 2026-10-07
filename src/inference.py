@@ -1,29 +1,42 @@
 #!/usr/bin/env python
-# src/inference.py
+"""
+Run a trained checkpoint over replays and write COCO-style prediction files.
 
-import os
-import sys
-import tqdm
-import multiprocessing
-import json
+    make inference ARGS="--model-name <run> --model-number 30 --replays 275 1725 ..."
+
+Writes <output-dir>/<model-name>/model_<NNN>[_th<score-threshold>]/<replay>.rep/<label-method>.json,
+plus seed.txt and inference_provenance.json next to them. evaluate.py and the
+analysis scripts read that layout (evaluate.load_coco_preds).
+
+run_inference does, in order:
+  1. seed and device
+  2. checkpoint path, output directory, provenance     _checkpoint_path, _prepare_run_dir
+  3. what to build: input channels, architecture, tau  _input_channels, _resolve_architecture,
+                                                       _resolve_decoder_threshold
+  4. build the model and load the weights              _load_model
+  5. per replay: predict and save                      _predict_replay, save_predictions_as_coco
+"""
+
 import gc
-
-import random
+import json
+import multiprocessing
+import os
 import secrets
-import numpy as np
+import sys
+from types import SimpleNamespace
 
 import torch
+import tqdm
+from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Subset
 
+import config
 from cli import parse_inference_args
 from dataset.inference_dataset import InferenceDataset
-
 from models.factory import build_model
-from types import SimpleNamespace
-from omegaconf import OmegaConf  # KBRS YAML 로드를 위해 추가
-
-import config
 from utils.logger import Logger
+from utils.provenance import write_provenance
+from utils.seed import set_global_seed
 from utils.synology_chat import send_message
 from utils.torch_compat import disable_inductor
 
@@ -31,9 +44,7 @@ from utils.torch_compat import disable_inductor
 # Mask R-CNN inference down on images without a C compiler.
 disable_inductor()
 
-
-from utils.seed import set_global_seed
-from utils.provenance import write_provenance
+NUM_CLASSES = 2  # background + viewport
 
 
 def collate_fn(batch):
@@ -65,6 +76,10 @@ def _auto_num_workers(device: torch.device) -> int:
     return max(0, avail - 1)
 
 
+# ---------------------------------------------------------------------------
+# Building the model a checkpoint was trained as
+# ---------------------------------------------------------------------------
+
 # Keys that train.py records in run_provenance.json, mapped to the attribute
 # names build_model reads. Only knobs that change what the model *is* or how it
 # decodes belong here; training-only settings (render_sigma, dense_positives,
@@ -80,10 +95,9 @@ def _apply_recorded_architecture(model_args: SimpleNamespace, model_folder: str)
     """Rebuild the model the way the checkpoint was trained, in place.
 
     build_model takes a flat namespace rather than the Hydra config, because
-    inference, evaluation and the benchmark tools all call it from outside
-    Hydra. The consequence is that this function has to forward every
-    architecture knob by hand, and until now it forwarded two - so a run
-    trained with `architecture.head_conv=256` would be rebuilt here at the
+    inference runs outside Hydra. The consequence is that every architecture
+    knob has to be forwarded by hand: a run trained with
+    `architecture.head_conv=256` would otherwise be rebuilt at the
     src/config.py default of 64 and load_state_dict would fail on a shape
     mismatch, after the training had already finished.
 
@@ -127,7 +141,7 @@ def _architecture_from_state_dict(state) -> "str | None":
     The caller's guess comes from substring-matching the run's id_string, so a
     name containing neither "director" nor "centernet" silently becomes
     "maskrcnn" - and load_state_dict(strict=False) then accepts the mismatch,
-    leaving a freshly initialised Mask R-CNN that crashes later in roi_heads.
+    leaving a freshly initialized Mask R-CNN that crashes later in roi_heads.
     The weights themselves are unambiguous, so ask them instead.
     """
     keys = list(state.keys())
@@ -145,10 +159,9 @@ def _architecture_from_state_dict(state) -> "str | None":
 
 
 def _load_model(model_path: str, device: torch.device, in_channels: int, window_size: int,
-                architecture: str, num_classes: int = 2, use_kbrs: bool = False,
-                kbrs_params: dict = None, rtdetr_version: str = "v1", rtdetr_size: str = "l",
-                k_max: int = 3, conf_threshold: float = 0.2):
-
+                architecture: str, num_classes: int = NUM_CLASSES, use_kbrs: bool = False,
+                kbrs_params: dict = None, k_max: int = 3, conf_threshold: float = 0.2):
+    """Build the model a checkpoint was trained as and load its weights (eval mode)."""
     # Settle the architecture before building anything: building the wrong one
     # and loading non-strict fails much later and much less obviously.
     state = torch.load(model_path, map_location=device)
@@ -178,7 +191,8 @@ def _load_model(model_path: str, device: torch.device, in_channels: int, window_
     elif sniffed:
         Logger.info(f"[Inference] Architecture confirmed from checkpoint: {sniffed}")
 
-    # 1. factory.py가 요구하는 인자들을 담을 dummy args(SimpleNamespace) 생성
+    # What build_model reads (models/factory.py). Anything left out takes its
+    # default there, as in training: notably Mask R-CNN's 640x640 input.
     model_args = SimpleNamespace(
         model_name=architecture.lower(),
         use_kbrs=use_kbrs,
@@ -187,18 +201,12 @@ def _load_model(model_path: str, device: torch.device, in_channels: int, window_
         window_size=window_size,
         kbrs_params=kbrs_params,
         loss_weights=None,
-        rtdetr_version=rtdetr_version,
-        rtdetr_size=rtdetr_size,
         k_max=k_max,
         conf_threshold=conf_threshold,
     )
-
     _apply_recorded_architecture(model_args, os.path.dirname(model_path))
 
-    # 2. factory를 통해 모델 구조 생성 (Train과 완벽히 동일한 경로)
     model = build_model(model_args)
-    
-    # 3. 학습된 가중치 로드 (state는 위에서 이미 읽었다)
     missing, unexpected = model.load_state_dict(state, strict=False)
 
     # strict=False is kept so a plugin wrapper can be attached or dropped, but
@@ -213,13 +221,17 @@ def _load_model(model_path: str, device: torch.device, in_channels: int, window_
             f"[Inference] Checkpoint does not match the model that was built: "
             f"{len(missing)} missing and {len(unexpected)} unexpected keys. "
             f"Built '{architecture}' from {model_path}. Refusing to run inference on "
-            f"partially initialised weights."
+            f"partially initialized weights."
         )
-        
+
     model.to(device)
     model.eval()
     return model
 
+
+# ---------------------------------------------------------------------------
+# Writing predictions
+# ---------------------------------------------------------------------------
 
 def save_predictions_as_coco(
     replay_id: str,
@@ -296,49 +308,31 @@ def save_predictions_as_coco(
     return out_path
 
 
-def run_inference(args):
-    Logger.info("[Inference] Starting...")
+# ---------------------------------------------------------------------------
+# Steps of run_inference, in the order they run
+# ---------------------------------------------------------------------------
 
-    if getattr(args, "seed", None) is None:
-        generated = secrets.randbits(31)
-        args.seed = generated
-        Logger.info(f"[Seed] No --seed provided for inference; generated seed={generated}")
-    else:
-        Logger.info(f"[Seed] Using provided inference seed={args.seed}")
-    # deterministic=False on purpose. torchvision's CUDA roi_align kernel is
-    # non-deterministic, so with torch.use_deterministic_algorithms enabled it
-    # falls back to a pure-Python reference implementation that materialises a
-    # [K, C, PH, PW, IY, IX] tensor - 2.3 GiB per call at batch 16, which OOMs
-    # a 32 GiB card, and is orders of magnitude slower besides. That path is
-    # written to be torch.compile'd, which needs a C compiler the image lacks.
-    #
-    # Nothing is lost here: inference runs fixed weights with no dropout and no
-    # sampling, so the only non-determinism is float accumulation order inside
-    # roi_align, which does not move any metric we report. Weight loading, data
-    # order and any sampling stay seeded.
-    set_global_seed(int(args.seed), deterministic=False)
+def _checkpoint_path(args) -> str:
+    path = os.path.join(args.model_root, args.model_name, f"model_{int(args.model_number):03d}.pth")
+    Logger.info(f"[Inference] Checkpoint path: {path}")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Checkpoint not found: {path}")
+    return path
 
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-    Logger.info(f"[Inference] Using device: {device}")
 
-    # Checkpoint path
-    model_folder = os.path.join(args.model_root, args.model_name)
-    model_number = int(getattr(args, "model_number"))
-    model_path = os.path.join(model_folder, f"model_{model_number:03d}.pth")
-    Logger.info(f"[Inference] Checkpoint path: {model_path}")
-    if not os.path.isfile(model_path):
-        raise FileNotFoundError(f"Checkpoint not found: {model_path}")
+def _prepare_run_dir(args, model_path: str) -> str:
+    """Create the output directory and write seed.txt and inference_provenance.json.
 
-    # Decide output run dir
-    if not getattr(args, "output_dir", None):   
+    The directory is <output-dir>/<model-name>/model_<NNN>[_th<score-threshold>],
+    unless --run-name replaces the part under --output-dir.
+    """
+    if not getattr(args, "output_dir", None):
         args.output_dir = "predictions"
-        
+    model_number = int(args.model_number)
     th_suffix = f"_th{args.score_threshold}" if getattr(args, "score_threshold", None) is not None else ""
-    default_run_name = os.path.join(args.model_name, f"model_{model_number:03d}{th_suffix}")
-    run_name = getattr(args, "run_name", None) or default_run_name
+    run_name = getattr(args, "run_name", None) or os.path.join(args.model_name, f"model_{model_number:03d}{th_suffix}")
     run_dir = os.path.join(args.output_dir, run_name)
-    
+
     Logger.info(f"[Inference] Output run dir: {run_dir}")
     try:
         os.makedirs(run_dir, exist_ok=True)
@@ -383,70 +377,80 @@ def run_inference(args):
             )
     except Exception as e:
         Logger.warn(f"[Inference] Failed to write inference_provenance.json: {e}")
+    return run_dir
 
-    # Infer input channels once from a small temp dataset (first replay)
-    temp_input_root = os.path.join(args.data_root, "input", "dst")
-    temp_dataset = InferenceDataset(
-        temp_input_root,
+
+def _input_channels(args) -> int:
+    """Channels per window, read off a dataset of the first replay."""
+    dataset = InferenceDataset(
+        os.path.join(args.data_root, "input", "dst"),
         [args.replays[0]],
         window_size=args.window_size,
         include_components=args.include_components
     )
-    in_channels = len(temp_dataset.channel_indices) * temp_dataset.window_size
-    del temp_dataset
+    return len(dataset.channel_indices) * dataset.window_size
 
-    # 1. KBRS 파라미터 로드 (kbrs.yaml 연동)
-    use_kbrs_flag = getattr(args, "use_kbrs", False)
-    kbrs_params = None
-    if use_kbrs_flag:
-        try:
-            yaml_path = os.path.join(os.path.dirname(__file__), "../conf/model/kbrs.yaml")
-            if os.path.exists(yaml_path):
-                kbrs_cfg = OmegaConf.load(yaml_path)
-                kbrs_params = OmegaConf.to_container(kbrs_cfg.kbrs_params, resolve=True) if hasattr(kbrs_cfg, 'kbrs_params') else OmegaConf.to_container(kbrs_cfg, resolve=True)
+
+def _kbrs_params(args):
+    """KBRS parameters for --use-kbrs, or None without it.
+
+    KBRS only adds a training loss, so it never changes predictions; this only
+    decides how the checkpoint's wrapper is rebuilt. conf/model/kbrs.yaml no
+    longer exists, so in practice the parameters are the two set here and the
+    wrapper's defaults fill the rest.
+    """
+    if not getattr(args, "use_kbrs", False):
+        return None
+    try:
+        yaml_path = os.path.join(os.path.dirname(__file__), "../conf/model/kbrs.yaml")
+        if os.path.exists(yaml_path):
+            kbrs_cfg = OmegaConf.load(yaml_path)
+            if hasattr(kbrs_cfg, "kbrs_params"):
+                kbrs_params = OmegaConf.to_container(kbrs_cfg.kbrs_params, resolve=True)
             else:
-                kbrs_params = {}
-            # Inference에 맞춰 동적 파라미터 주입
-            kbrs_params["window_size"] = args.window_size
-            kbrs_params.setdefault("per_window", 9)
-        except Exception as e:
-            Logger.warning(f"[Inference] KBRS YAML 로드 실패: {e}")
+                kbrs_params = OmegaConf.to_container(kbrs_cfg, resolve=True)
+        else:
             kbrs_params = {}
+        kbrs_params["window_size"] = args.window_size
+        kbrs_params.setdefault("per_window", 9)
+    except Exception as e:
+        Logger.warn(f"[Inference] Failed to load the KBRS YAML: {e}")
+        kbrs_params = {}
+    return kbrs_params
 
-    # 2. 아키텍처 결정. --architecture 가 있으면 그것을 쓰고, 없을 때만 이름으로
-    # 추측한다. 어느 쪽이든 _load_model 이 체크포인트로 최종 확인한다.
+
+def _resolve_architecture(args) -> str:
+    """--architecture if given, otherwise a guess from the run name.
+    Either way _load_model checks it against the checkpoint's parameters."""
     arch_name = getattr(args, "architecture", None)
     if arch_name:
         Logger.info(f"[Inference] Architecture from --architecture: {arch_name}")
+        return arch_name
+    name = args.model_name.lower()
+    if "director" in name:
+        arch_name = "director_centernet"
+    elif "centernet" in name:
+        arch_name = "centernet"
     else:
-        model_name_lower = args.model_name.lower()
-        if "director" in model_name_lower:
-            arch_name = "director_centernet"
-        elif "centernet" in model_name_lower:
-            arch_name = "centernet"
-        elif "deformable" in model_name_lower or ("detr" in model_name_lower and "rtdetr" not in model_name_lower):
-            arch_name = "deformable_detr"
-        elif "rtdetr" in model_name_lower:
-            arch_name = "rtdetr"
-        else:
-            arch_name = "maskrcnn"
-        Logger.warn(
-            f"[Inference] No --architecture given; guessed '{arch_name}' from the run name "
-            f"'{args.model_name}'. This is only reliable when the name contains the model's "
-            f"own name."
-        )
+        arch_name = "maskrcnn"
+    Logger.warn(
+        f"[Inference] No --architecture given; guessed '{arch_name}' from the run name "
+        f"'{args.model_name}'. This is only reliable when the name contains the model's "
+        f"own name."
+    )
+    return arch_name
 
-    rtdetr_version = getattr(args, "rtdetr_version", "v1")
-    rtdetr_size = getattr(args, "rtdetr_size", "l")
-     
-    # 3. Load model ONCE (reuse across replays)
+
+def _resolve_decoder_threshold(args) -> float:
+    """Director-CenterNet's peak threshold tau: --conf-threshold, else the score filter.
+
+    tau defaults to the score filter, because a filter set above tau removes
+    every region the model was willing to emit - which is how the auxiliary
+    regions were silently unreachable at tau 0.2 against a filter of 0.3.
+    """
     th = getattr(args, "score_threshold", None)
     if th is None:
         th = config.DIRECTOR_TAU
-
-    # tau defaults to the score filter, because a filter set above tau removes
-    # every region the model was willing to emit - which is how the auxiliary
-    # regions were silently unreachable at tau 0.2 against a filter of 0.3.
     tau = getattr(args, "conf_threshold", None)
     if tau is None:
         tau = float(th)
@@ -456,121 +460,132 @@ def run_inference(args):
             f"[{tau}, {th}) are emitted by the model and then discarded by the filter. "
             f"Minority regions are the ones in that band."
         )
+    return float(tau)
+
+
+def _predict_replay(model, args, replay_id: str, device) -> list:
+    """One entry per window of the replay: frame_id, and the boxes, scores and
+    labels that clear --score-threshold (all of them if it is unset)."""
+    dataset = InferenceDataset(
+        os.path.join(args.data_root, "input", "dst"),
+        [replay_id],
+        window_size=args.window_size,
+        include_components=args.include_components
+    )
+    if 0.0 < args.sample_ratio < 1.0:
+        total_len = len(dataset)
+        sample_size = int(total_len * args.sample_ratio)
+        indices = torch.randperm(total_len).tolist()[:sample_size]
+        dataset = Subset(dataset, indices)
+        Logger.info(f"[Inference] Applied sampling: {sample_size}/{total_len} frames for replay {replay_id}")
+
+    if args.workers is not None and args.workers >= 0:
+        num_workers = args.workers
+    else:
+        num_workers = _auto_num_workers(device)
+    Logger.info(f"[Inference] Dataset frames for {replay_id}: {len(dataset)}; num_workers={num_workers}")
+    data_loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        pin_memory=(device.type == "cuda"),
+        persistent_workers=False,
+    )
+
+    results = []
+    min_interval = 0.1 if (sys.stderr.isatty() or sys.stdout.isatty()) else 5.0
+    with torch.inference_mode():
+        for images, metas in tqdm.tqdm(data_loader, desc="Running inference for replay", unit="batch",
+                                       mininterval=min_interval):
+            images = [img.to(device, non_blocking=True) for img in images]
+            outputs = model(images)
+            for output, (_rid, frame_id) in zip(outputs, metas):
+                scores = output["scores"].detach().cpu().numpy().tolist()
+                boxes = output["boxes"].detach().cpu().numpy().tolist()
+                labels = output["labels"].detach().cpu().numpy().tolist()
+                if args.score_threshold is not None:
+                    keep = [i for i, s in enumerate(scores) if s >= args.score_threshold]
+                else:
+                    keep = list(range(len(scores)))
+                results.append({
+                    "frame_id": frame_id,
+                    "boxes": [boxes[i] for i in keep],
+                    "scores": [scores[i] for i in keep],
+                    "labels": [labels[i] for i in keep],
+                })
+            del outputs, images
+    return results
+
+
+def run_inference(args):
+    """Predict every replay in args.replays with one checkpoint; see the module docstring."""
+    Logger.info("[Inference] Starting...")
+
+    if getattr(args, "seed", None) is None:
+        args.seed = secrets.randbits(31)
+        Logger.info(f"[Seed] No --seed provided for inference; generated seed={args.seed}")
+    else:
+        Logger.info(f"[Seed] Using provided inference seed={args.seed}")
+    # deterministic=False on purpose. torchvision's CUDA roi_align kernel is
+    # non-deterministic, so with torch.use_deterministic_algorithms enabled it
+    # falls back to a pure-Python reference implementation that materializes a
+    # [K, C, PH, PW, IY, IX] tensor - 2.3 GiB per call at batch 16, which OOMs
+    # a 32 GiB card, and is orders of magnitude slower besides. That path is
+    # written to be torch.compile'd, which needs a C compiler the image lacks.
+    #
+    # Nothing is lost here: inference runs fixed weights with no dropout and no
+    # sampling, so the only non-determinism is float accumulation order inside
+    # roi_align, which does not move any metric we report. Weight loading, data
+    # order and any sampling stay seeded.
+    set_global_seed(int(args.seed), deterministic=False)
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    Logger.info(f"[Inference] Using device: {device}")
+
+    model_path = _checkpoint_path(args)
+    run_dir = _prepare_run_dir(args, model_path)
+    in_channels = _input_channels(args)
+    kbrs_params = _kbrs_params(args)
+    architecture = _resolve_architecture(args)
+    tau = _resolve_decoder_threshold(args)
 
     model = _load_model(
         model_path=model_path,
         device=device,
         in_channels=in_channels,
         window_size=args.window_size,
-        architecture=arch_name,           
-        num_classes=2,
-        use_kbrs=use_kbrs_flag,         
+        architecture=architecture,
+        num_classes=NUM_CLASSES,
+        use_kbrs=getattr(args, "use_kbrs", False),
         kbrs_params=kbrs_params,
-        rtdetr_version=rtdetr_version,
-        rtdetr_size=rtdetr_size,
         k_max=getattr(args, "k_max", None) or config.DIRECTOR_K,
-        conf_threshold=float(tau),
+        conf_threshold=tau,
     )
 
-    input_root = os.path.join(args.data_root, "input", "dst")
     for replay_id in args.replays:
         Logger.info(f"--- Processing replay: {replay_id} ---")
-
-        # Build dataset for this replay
-        dataset = InferenceDataset(
-            input_root,
-            [replay_id],
-            window_size=args.window_size,
-            include_components=args.include_components
-        )
-
-        if 0.0 < args.sample_ratio < 1.0:
-            total_len = len(dataset)
-            sample_size = int(total_len * args.sample_ratio)
-            indices = torch.randperm(total_len).tolist()[:sample_size]
-            dataset = Subset(dataset, indices)
-            Logger.info(f"[Inference] Applied sampling: {sample_size}/{total_len} frames for replay {replay_id}")
-
-        # Dataloader setup (conservative to avoid RAM issues)
-        if args.workers is not None and args.workers >= 0:
-            num_workers = args.workers
-        else:
-            num_workers = _auto_num_workers(device)
-
-        Logger.info(f"[Inference] Dataset frames for {replay_id}: {len(dataset)}; num_workers={num_workers}")
-
-        dl_kwargs = dict(
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            collate_fn=collate_fn,
-            pin_memory=(device.type == "cuda"),
-            persistent_workers=False,
-        )
-        data_loader = DataLoader(dataset, **dl_kwargs)
-        
-        # Run inference
-        replay_results = []
-        is_tty = sys.stderr.isatty() or sys.stdout.isatty()
-        min_interval = 0.1 if is_tty else 5.0
-        with torch.inference_mode():
-            for images, metas in tqdm.tqdm(data_loader, desc="Running inference for replay", unit="batch", mininterval=min_interval):
-                images = [img.to(device, non_blocking=True) for img in images]
-                outputs = model(images)
-
-                for output, (rid, frame_id) in zip(outputs, metas):
-                    scores_all = output["scores"].detach().cpu().numpy().tolist()
-                    if args.score_threshold is not None:
-                        keep_idx = [i for i, s in enumerate(scores_all) if s >= args.score_threshold]
-                    else:
-                        keep_idx = list(range(len(scores_all)))
-
-                    boxes_all = output["boxes"].detach().cpu().numpy().tolist()
-                    labels_all = output["labels"].detach().cpu().numpy().tolist()
-
-                    frame_boxes, frame_scores, frame_labels = [], [], []
-                    for idx in keep_idx:
-                        frame_boxes.append(boxes_all[idx])
-                        frame_scores.append(scores_all[idx])
-                        frame_labels.append(labels_all[idx])
-
-                    entry = {
-                        "frame_id": frame_id,
-                        "boxes": frame_boxes,
-                        "scores": frame_scores,
-                        "labels": frame_labels,
-                    }
-                    replay_results.append(entry)
-
-                del outputs, images
-
-        # Save predictions (COCO-style, bbox-only)
+        results = _predict_replay(model, args, replay_id, device)
         save_predictions_as_coco(
             replay_id=replay_id,
-            replay_results=replay_results,
+            replay_results=results,
             label_method=args.label_method,
             output_dir=run_dir,
             score_threshold=args.score_threshold,
         )
-
-        # Cleanup per-replay
-        del data_loader, dataset, replay_results
+        del results
         gc.collect()
         if device.type == "cuda":
             torch.cuda.empty_cache()
-
-        # Notify (best-effort)
         try:
             send_message(f"@work [Inference] Completed {replay_id}. Predictions saved at {run_dir}")
         except Exception as e:
             Logger.error(f"[Inference] Error sending message: {e}")
 
-    # Final cleanup
     del model
     gc.collect()
     if device.type == "cuda":
         torch.cuda.empty_cache()
-        
     Logger.info("[Inference] Complete!")
 
 

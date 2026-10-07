@@ -1,35 +1,42 @@
-# src/evaluate.py
 """
-Unified Evaluation Framework for StarCraft Vision:
-Integrates:
-  1. Single-Region Finding: KBRS Scores (Density, Centeredness, Mixture) & COCO IC Metrics (Coverage, IR, Multi-Coverage)
-  2. Score Threshold Sweep: Detailed IC metrics across multiple confidence thresholds
-  3. Multi-Region Finding: CWO (Consensus Overlap), M-CTI (Camera Thrashing/Jerk), Event Recall, Pairwise Overlap
-  4. End-to-End Model Benchmark: Direct PyTorch inference and Proposed Video DETR comparison
+Replay-level evaluation of stored predictions (make evaluate / make estimate).
+
+    python src/evaluate.py --mode model --model-name <run> --epoch 30 --replays 275 1725 ...
+
+For each replay, and each score threshold of --score-thresholds, one CSV row
+with
+  single-region   IR and Intersection@{any, 0.3, 0.5} of the top prediction
+                  (compute_ic_for_replay -> metrics.custom_evaluator), and the
+                  KBRS cue scores at the predicted windows (compute_kbrs_for_replay)
+  multi-region    CWO, M-CTI, jerk, jump rate, event recall, pairwise overlap
+                  (compute_multi_region_for_replay -> metrics.evaluator)
+--task single|multi|all picks which. --mode gt scores the observers
+themselves instead of a model.
+
+The flags --skip-missing-preds, --legacy-centroid, --missing-as-corner and
+--legacy-anchor re-enable the evaluator faults fixed in 2026-08..10, which
+reproduces the originally reported numbers exactly (thesis/tog-revision-notes.md).
+
+A second, older mode scores prediction files directly (--gt/--gt-dir with
+--pred/--pred-dir; run_kernel_eval).
 """
 from __future__ import annotations
 
 import os
 import sys
-import csv
 import json
 import time
 import argparse
-from dataclasses import asdict
-from typing import Any, Dict, List, Sequence, Tuple, Optional
+from typing import Any, Dict, List, Sequence, Tuple, Optional, Union
 from multiprocessing import Pool, cpu_count
 
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
 from pycocotools.coco import COCO
 import pycocotools.mask as mask_util
 
-# Local module imports
 from metrics import eval_intersection_run, ImageIR
 from metrics.evaluator import MultiRegionEvaluator
-from utils.logger import Logger
 from utils.report import ReportBlock, print_section_header
 
 # Ensure unbuffered stdout in container/redirection environments
@@ -58,7 +65,7 @@ def _centroid_from_coco_ann(
     comes out pulled toward that edge by (w_true - w_stored) / 2. Ground-truth
     annotations carry their true size, so they are measured as stored.
     """
-    def _centre(x, y, w, h) -> Tuple[float, float]:
+    def _center(x, y, w, h) -> Tuple[float, float]:
         if size_wh is not None:
             w, h = size_wh
         return float(x + w / 2.0), float(y + h / 2.0)
@@ -76,11 +83,11 @@ def _centroid_from_coco_ann(
                 bbox = None
         if bbox is not None:
             x, y, w, h = bbox
-            return _centre(x, y, w, h)
+            return _center(x, y, w, h)
 
     if "bbox" in ann and ann["bbox"]:
         x, y, w, h = ann["bbox"]
-        return _centre(x, y, w, h)
+        return _center(x, y, w, h)
 
     return float(img_w) / 2.0, float(img_h) / 2.0
 
@@ -136,7 +143,7 @@ def coco_to_kernel_labels(
     re-derived and each fix measured separately. `legacy_anchor` passes
     centroids where corners are expected; `legacy_centroid` only matters with
     it, since the corrected path takes no centroid. Leave all off for the
-    current, corrected behaviour.
+    current, corrected behavior.
     """
     if isinstance(preds_list, dict):
         preds_by_img = preds_list
@@ -1042,134 +1049,7 @@ def run_kernel_eval(
 
 
 # =====================================================================
-# 5. E2E Benchmark Runner (Integrated from run_benchmark.py)
-# =====================================================================
-
-def run_e2e_benchmark(args: argparse.Namespace):
-    """
-    Executes End-to-End model benchmark inference & Proposed model comparison.
-    """
-    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    sys_paths = [root_dir, os.path.join(root_dir, "src")]
-    for p in sys_paths:
-        if p not in sys.path:
-            sys.path.insert(0, p)
-
-    from dataset.custom_penn_fudan import CustomPennFudanDataset
-    from models import build_model, ProbabilisticVideoDETR
-
-    window_size = getattr(args, "window_size", None)
-    if window_size is None:
-        model_lower = (args.model_name or "").lower()
-        if "win1" in model_lower:
-            window_size = 1
-        elif "win4" in model_lower:
-            window_size = 4
-        else:
-            window_size = 4
-
-    out_json = getattr(args, "output_json", None)
-    if not out_json:
-        bench_dir = "/workspace/results/benchmark"
-        os.makedirs(bench_dir, exist_ok=True)
-        out_json = os.path.join(bench_dir, f"{args.model_name}_e{args.epoch}.json")
-
-    print("=" * 85)
-    print(f"🚀 Running Evaluation Benchmark (Task Mode: {args.task.upper()})")
-    print(f"[*] Target Model    : {args.model_name} (Epoch {args.epoch})")
-    print(f"[*] Window Size     : {window_size}")
-    print(f"[*] Output Path     : {out_json}")
-    print(f"[*] Target Replays  : {args.replays}")
-    print("=" * 85)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Load dataset
-    print("[*] Loading dataset windows...")
-    try:
-        ds = CustomPennFudanDataset(
-            input_root=args.input_root,
-            label_root=args.label_root,
-            label_method=args.label_method,
-            training_ids=args.replays,
-            window_size=window_size,
-            include_components=getattr(args, "include_components", None),
-            interval=1,
-            training=False,
-            verbose=True,
-        )
-    except Exception as e:
-        local_input = os.path.join(root_dir, "data/input/dst")
-        local_label = os.path.join(root_dir, "data/label/dst")
-        ds = CustomPennFudanDataset(
-            input_root=local_input,
-            label_root=local_label,
-            label_method=args.label_method,
-            training_ids=args.replays,
-            window_size=window_size,
-            include_components=getattr(args, "include_components", None),
-            interval=1,
-            training=False,
-            verbose=True,
-        )
-
-    # Replay metrics computation
-    replay_results = []
-    base_avg: Dict[str, float] = {}
-
-    for replay_id in args.replays:
-        replay_id = str(replay_id)
-        coco_gt = load_coco_gt(args.label_root, replay_id, args.label_method)
-        preds_by_img = load_coco_preds(args.pred_root, args.model_name, args.epoch, replay_id, args.label_method)
-
-        ic_row = compute_ic_for_replay(
-            replay_id=replay_id,
-            mode="model",
-            coco_gt=coco_gt,
-            args=args,
-            preds_all=preds_by_img,
-            model_tag=f"{args.model_name}_e{args.epoch}",
-        )
-
-        multi_row = compute_multi_region_for_replay(
-            replay_id=replay_id,
-            coco_gt=coco_gt,
-            preds_by_img=preds_by_img,
-            multi_topk=getattr(args, "multi_topk", 3),
-        )
-
-        combined = dict(ic_row)
-        combined.update(multi_row)
-        combined["replay"] = replay_id
-        replay_results.append(combined)
-
-    df_res = pd.DataFrame(replay_results)
-    for col in df_res.select_dtypes(include=[np.number]).columns:
-        base_avg[col] = float(df_res[col].dropna().mean()) if not df_res[col].dropna().empty else float("nan")
-
-    # Display comparison if requested
-    print_section_header(f"BENCHMARK RESULTS SUMMARY: {args.model_name} (Epoch {args.epoch})")
-    cols = list(df_res.columns)
-    rb = ReportBlock(
-        title=f"Benchmark Summary ({args.model_name})",
-        columns=cols,
-        aligns=["left"] + ["right"] * (len(cols) - 1),
-    )
-    for _, r in df_res.iterrows():
-        rb.add_row(*[r.get(c) for c in cols])
-    rb.print()
-
-    # Save outputs
-    out_dir = os.path.dirname(out_json)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-    with open(out_json, "w", encoding="utf-8") as f:
-        json.dump({"replays": replay_results, "summary_averages": base_avg}, f, indent=2)
-    print(f"[*] Saved benchmark summary JSON: {out_json}")
-
-
-# =====================================================================
-# 6. Flexible CLI Parser & Main Entry Point
+# 5. CLI Parser & Main Entry Point
 # =====================================================================
 
 def parse_thresholds(raw_thresholds: Any) -> List[float]:
@@ -1249,41 +1129,34 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--multi-topk", type=int, default=3, help="Top-K predicted viewports to evaluate for Multi-Region metrics (default: 3, set 0 for all)")
 
     # IC metric kernel options
-    # Reproduce earlier evaluator behaviour, to re-derive numbers reported from it
-    # and measure each fix on its own. Both default to the corrected behaviour.
+    # Reproduce earlier evaluator behavior, to re-derive numbers reported from it
+    # and measure each fix on its own. Both default to the corrected behavior.
     p.add_argument(
         "--skip-missing-preds",
         action="store_true",
-        help="Drop frames with no prediction instead of scoring them 0 (pre-8de59a3/cf46716 behaviour)",
+        help="Drop frames with no prediction instead of scoring them 0 (pre-8de59a3/cf46716 behavior)",
     )
     p.add_argument(
         "--legacy-centroid",
         action="store_true",
-        help="Take prediction centroids from the stored, edge-clamped box size (pre-0782acd behaviour)",
+        help="Take prediction centroids from the stored, edge-clamped box size (pre-0782acd behavior)",
     )
     p.add_argument(
         "--missing-as-corner",
         action="store_true",
         help="Score a frame with no prediction as a viewport at the map corner instead of 0 "
-             "(the behaviour from cf46716 until this flag was added)",
+             "(the behavior from cf46716 until this flag was added)",
     )
     p.add_argument(
         "--legacy-anchor",
         action="store_true",
         help="Pass annotation centroids to the kernel evaluator where it expects top-left corners "
-             "(the behaviour until this flag was added; shifts every window by half a viewport)",
+             "(the behavior until this flag was added; shifts every window by half a viewport)",
     )
     p.add_argument("--ic-kernel", default="20,12")
     p.add_argument("--ic-grid", default="128,128")
     p.add_argument("--ic-maxcoord", default="3456,3720")
 
-    # Benchmark & Comparison options
-    p.add_argument("--benchmark", action="store_true", help="Run in End-to-End benchmark mode")
-    p.add_argument("--compare-proposed", action="store_true", help="Compare model against Proposed Video DETR+CVAE")
-    p.add_argument("--checkpoint", type=str, default=None)
-    p.add_argument("--window-size", type=int, default=None)
-    p.add_argument("--include-components", type=str, nargs="+", default=None)
-    p.add_argument("--output-json", type=str, default=None)
 
     # Legacy standalone evaluate.py options for compatibility
     p.add_argument("--gt", default=None)
@@ -1298,175 +1171,146 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def main():
-    args = parse_args()
+def run_file_mode(args: argparse.Namespace) -> None:
+    """The older file-to-file mode: score prediction files against GT files."""
+    th_list = parse_thresholds(args.score_thresholds)
+    all_rows, summary_json, csv_path, json_path = run_kernel_eval(
+        gt_path=args.gt,
+        gt_dir=args.gt_dir,
+        pred_files=args.pred,
+        pred_dir=args.pred_dir,
+        out_dir=args.out,
+        names=args.name,
+        kernel=args.ic_kernel,
+        grid=args.ic_grid,
+        maxcoord=args.ic_maxcoord,
+        score_thresholds=th_list,
+        run_tag=args.run_tag,
+    )
+    print_section_header("Kernel Metrics Summary by Score Threshold")
+    if all_rows:
+        cols = list(all_rows[0].keys())
+        rb = ReportBlock(title="Kernel IC Metrics", columns=cols, aligns=["left", "right"] + ["right"] * (len(cols) - 2))
+        for row in all_rows:
+            rb.add_row(*[row.get(c) for c in cols])
+        rb.add_note(f"Summary CSV  : {csv_path}")
+        rb.add_note(f"Summary JSON : {json_path}")
+        rb.print()
 
-    # Legacy file-to-file evaluate mode
-    if args.gt or args.gt_dir or (args.pred and not args.replays):
-        th_list = parse_thresholds(args.score_thresholds)
-        all_rows, summary_json, csv_path, json_path = run_kernel_eval(
-            gt_path=args.gt,
-            gt_dir=args.gt_dir,
-            pred_files=args.pred,
-            pred_dir=args.pred_dir,
-            out_dir=args.out,
-            names=args.name,
-            kernel=args.ic_kernel,
-            grid=args.ic_grid,
-            maxcoord=args.ic_maxcoord,
-            score_thresholds=th_list,
-            run_tag=args.run_tag,
-        )
-        print_section_header("Kernel Metrics Summary by Score Threshold")
-        if all_rows:
-            cols = list(all_rows[0].keys())
-            rb = ReportBlock(title="Kernel IC Metrics", columns=cols, aligns=["left", "right"] + ["right"] * (len(cols) - 2))
-            for row in all_rows:
-                rb.add_row(*[row.get(c) for c in cols])
-            rb.add_note(f"Summary CSV  : {csv_path}")
-            rb.add_note(f"Summary JSON : {json_path}")
-            rb.print()
-        return
 
-    # Benchmark E2E mode
-    if args.benchmark or args.compare_proposed:
-        if not args.replays:
-            args.replays = ["1725"]
-        run_e2e_benchmark(args)
-        return
+def _default_csv_out(args: argparse.Namespace) -> str:
+    """/workspace/results/<model-name>_e<epoch>.csv, or <mode>.csv for --mode gt."""
+    base_root = "/workspace/results"
+    os.makedirs(base_root, exist_ok=True)
+    if args.mode == "model" and args.model_name:
+        csv_name = f"{args.model_name}_e{args.epoch}.csv"
+    else:
+        csv_name = f"{args.mode}.csv"
+    return os.path.join(base_root, csv_name)
 
-    # Standard Unified Replay-level Evaluation
-    if not args.replays:
-        raise ValueError("Please specify replay IDs with --replays (e.g. --replays 275 1725 3613).")
 
-    if args.mode == "model" and (not args.model_name or args.epoch is None):
-        raise ValueError("mode=model requires both --model-name and --epoch.")
+NAN_MULTI_ROW = {
+    "cwo": float("nan"),
+    "m_cti": float("nan"),
+    "jerk": float("nan"),
+    "jump_rate": float("nan"),
+    "event_recall": float("nan"),
+    "pairwise_overlap": float("nan"),
+}
 
-    thresholds = parse_thresholds(args.score_thresholds)
-    print(f"[INFO] Score thresholds to evaluate: {thresholds}")
 
-    # Set default CSV output path
-    if not args.csv_out:
-        base_root = "/workspace/results"
-        os.makedirs(base_root, exist_ok=True)
-        if args.mode == "model" and args.model_name:
-            csv_name = f"{args.model_name}_e{args.epoch}.csv"
-        else:
-            csv_name = f"{args.mode}.csv"
-        args.csv_out = os.path.join(base_root, csv_name)
+def evaluate_replay(args: argparse.Namespace, replay_id: str, thresholds: List[float]) -> List[Dict]:
+    """The CSV rows of one replay, one per score threshold."""
+    print(f"\n[Replay] {replay_id}")
+    coco_gt = load_coco_gt(
+        label_root=args.label_root,
+        replay_id=replay_id,
+        label_method=args.label_method,
+    )
+    images = list(coco_gt.dataset.get("images", []))
+    if args.max_frames > 0:
+        images = images[: args.max_frames]
 
-    print(f"[INFO] Output CSV (replay-level rows): {args.csv_out}")
-
-    replay_rows: List[Dict] = []
-
-    for replay_id in args.replays:
-        replay_id = str(replay_id)
-        print(f"\n[Replay] {replay_id}")
-
-        coco_gt = load_coco_gt(
-            label_root=args.label_root,
+    preds_by_img: Optional[Dict[int, List[dict]]] = None
+    model_tag: Optional[str] = None
+    if args.mode == "model":
+        preds_by_img = load_coco_preds(
+            pred_root=args.pred_root,
+            model_name=args.model_name,
+            epoch=args.epoch,
             replay_id=replay_id,
             label_method=args.label_method,
         )
+        model_tag = f"{args.model_name}_e{args.epoch}"
 
-        images = list(coco_gt.dataset.get("images", []))
-        if args.max_frames > 0:
-            images = images[: args.max_frames]
-
-        preds_by_img: Optional[Dict[int, List[dict]]] = None
-        model_tag: Optional[str] = None
-
-        if args.mode == "model":
-            preds_by_img = load_coco_preds(
-                pred_root=args.pred_root,
-                model_name=args.model_name,
-                epoch=args.epoch,
-                replay_id=replay_id,
-                label_method=args.label_method,
-            )
-            model_tag = f"{args.model_name}_e{args.epoch}"
-
-        # 1. KBRS metric (computed once per replay if task in single/all)
-        if args.task in ["single", "all"]:
-            if args.skip_kbrs:
-                mean_density = float("nan")
-                mean_centered = float("nan")
-                mean_mixture = float("nan")
-                print(f"[Single-Region replay={replay_id}] KBRS skipped (--skip-kbrs)")
-            else:
-                mean_density, mean_centered, mean_mixture, _ = compute_kbrs_for_replay(
-                    replay_id=replay_id,
-                    mode=args.mode,
-                    coco_gt=coco_gt,
-                    args=args,
-                    preds_by_img=preds_by_img,
-                    model_tag=model_tag,
-                )
+    # 1. KBRS cue scores, once per replay (task single/all)
+    mean_density = mean_centered = mean_mixture = float("nan")
+    if args.task in ["single", "all"]:
+        if args.skip_kbrs:
+            print(f"[Single-Region replay={replay_id}] KBRS skipped (--skip-kbrs)")
         else:
-            mean_density = float("nan")
-            mean_centered = float("nan")
-            mean_mixture = float("nan")
-
-        # 2. Multi-Region metric (computed once per replay if task in multi/all)
-        if args.task in ["multi", "all"]:
-            multi_row = compute_multi_region_for_replay(
+            mean_density, mean_centered, mean_mixture, _ = compute_kbrs_for_replay(
                 replay_id=replay_id,
+                mode=args.mode,
                 coco_gt=coco_gt,
+                args=args,
                 preds_by_img=preds_by_img,
-                multi_topk=getattr(args, "multi_topk", 3),
+                model_tag=model_tag,
+            )
+
+    # 2. Multi-region metrics, once per replay (task multi/all)
+    if args.task in ["multi", "all"]:
+        multi_row = compute_multi_region_for_replay(
+            replay_id=replay_id,
+            coco_gt=coco_gt,
+            preds_by_img=preds_by_img,
+            multi_topk=getattr(args, "multi_topk", 3),
+        )
+    else:
+        multi_row = dict(NAN_MULTI_ROW)
+
+    # 3. Single-region IR / Intersection@ per score threshold
+    rows = []
+    for th in thresholds:
+        if args.task in ["single", "all"]:
+            ic_row = compute_ic_for_replay(
+                replay_id=replay_id,
+                mode=args.mode,
+                coco_gt=coco_gt,
+                args=args,
+                preds_all=preds_by_img,
+                model_tag=model_tag,
+                score_thresh=th,
+                skip_missing_preds=args.skip_missing_preds,
+                legacy_centroid=args.legacy_centroid,
+                missing_as_corner=args.missing_as_corner,
+                legacy_anchor=args.legacy_anchor,
             )
         else:
-            multi_row = {
-                "cwo": float("nan"),
-                "m_cti": float("nan"),
-                "jerk": float("nan"),
-                "jump_rate": float("nan"),
-                "event_recall": float("nan"),
-                "pairwise_overlap": float("nan"),
-            }
+            ic_row = {"kernel": "20x12", "score_thresh": float(th), "num_images": len(images)}
 
-        # 3. Single-Region IC metrics per threshold
-        for th in thresholds:
-            if args.task in ["single", "all"]:
-                ic_row = compute_ic_for_replay(
-                    replay_id=replay_id,
-                    mode=args.mode,
-                    coco_gt=coco_gt,
-                    args=args,
-                    preds_all=preds_by_img,
-                    model_tag=model_tag,
-                    score_thresh=th,
-                    skip_missing_preds=args.skip_missing_preds,
-                    legacy_centroid=args.legacy_centroid,
-                    missing_as_corner=args.missing_as_corner,
-                    legacy_anchor=args.legacy_anchor,
-                )
-            else:
-                ic_row = {"kernel": "20x12", "score_thresh": float(th), "num_images": len(images)}
+        row = dict(ic_row)
+        row.update(multi_row)
+        row.update({
+            "replay": replay_id,
+            "score_thresh": float(th),
+            "kernel": ic_row.get("kernel"),
+            "num_images": ic_row.get("num_images", len(images)),
+            "mean_density": mean_density,
+            "mean_centeredness": mean_centered,
+            "mean_mixture": mean_mixture,
+            "mode": args.mode,
+            "task": args.task,
+            "model_name": args.model_name if args.mode == "model" else None,
+            "epoch": args.epoch if args.mode == "model" else None,
+        })
+        rows.append(row)
+    return rows
 
-            # Combine row
-            final_row = dict(ic_row)
-            final_row.update(multi_row)
-            final_row.update({
-                "replay": replay_id,
-                "score_thresh": float(th),
-                "kernel": ic_row.get("kernel"),
-                "num_images": ic_row.get("num_images", len(images)),
-                "mean_density": mean_density,
-                "mean_centeredness": mean_centered,
-                "mean_mixture": mean_mixture,
-                "mode": args.mode,
-                "task": args.task,
-                "model_name": args.model_name if args.mode == "model" else None,
-                "epoch": args.epoch if args.mode == "model" else None,
-            })
-            replay_rows.append(final_row)
 
-    if not replay_rows:
-        print("[Info] No replay rows to write CSV.")
-        return
-
-    df_all = pd.DataFrame(replay_rows).sort_values(by=["replay", "score_thresh"])
+def write_summary(args: argparse.Namespace, rows: List[Dict]) -> None:
+    """Write the rows to --csv-out and print them as a table."""
+    df_all = pd.DataFrame(rows).sort_values(by=["replay", "score_thresh"])
     out_dir = os.path.dirname(args.csv_out)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -1483,6 +1327,34 @@ def main():
         rb.add_row(*[r.get(c) for c in cols])
     rb.add_note(f"Saved CSV : {args.csv_out}")
     rb.print()
+
+
+def main():
+    args = parse_args()
+
+    if args.gt or args.gt_dir or (args.pred and not args.replays):
+        run_file_mode(args)
+        return
+
+    if not args.replays:
+        raise ValueError("Please specify replay IDs with --replays (e.g. --replays 275 1725 3613).")
+    if args.mode == "model" and (not args.model_name or args.epoch is None):
+        raise ValueError("mode=model requires both --model-name and --epoch.")
+
+    thresholds = parse_thresholds(args.score_thresholds)
+    print(f"[INFO] Score thresholds to evaluate: {thresholds}")
+    if not args.csv_out:
+        args.csv_out = _default_csv_out(args)
+    print(f"[INFO] Output CSV (replay-level rows): {args.csv_out}")
+
+    rows: List[Dict] = []
+    for replay_id in args.replays:
+        rows.extend(evaluate_replay(args, str(replay_id), thresholds))
+
+    if not rows:
+        print("[Info] No replay rows to write CSV.")
+        return
+    write_summary(args, rows)
 
 
 if __name__ == "__main__":

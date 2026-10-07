@@ -1,4 +1,3 @@
-# src/metrics/modes.py
 """
 Human attention-mode diagnostics.
 ==================================
@@ -55,11 +54,9 @@ human ground truth comes from:
 
 Loading follows the rest of `src/metrics` and `src/evaluate.py`: ground truth
 goes through `pycocotools.coco.COCO`, and predictions are grouped by
-`image_id` the same way `evaluate.coco_to_kernel_labels` and
-`multi_region_eval.compute_multi_region_metrics` already do.
+`image_id` the same way `evaluate.coco_to_kernel_labels` already does.
 `scripts/mode_disagreement.py` resolves replay/model names to actual file
-paths via `evaluate.load_coco_gt` / `evaluate.load_coco_preds` (re-exported
-by `estimate.py` for backwards compatibility; same
+paths via `evaluate.load_coco_gt` / `evaluate.load_coco_preds` (the same
 `{label-root}/{replay}.rep/{label-method}.json` and
 `{pred-root}/{model}/model_{epoch}/{replay}.rep/{label-method}.json` layout
 used by `make estimate`); `predictions_from_dets` adapts the latter's output
@@ -134,7 +131,7 @@ def predictions_from_dets(
     size_wh: Optional[Tuple[float, float]] = None,
 ) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
     """Adapt the {image_id: [det, ...]} grouping returned by
-    `estimate.load_coco_preds` into the (boxes, scores) shape `analyse_method`
+    `evaluate.load_coco_preds` into the (boxes, scores) shape `analyse_method`
     expects, highest score first.
 
     `size_wh` anchors every predicted box at its stored top-left corner and
@@ -161,9 +158,8 @@ def load_predictions(
     """frame -> (boxes, scores), loaded directly from a prediction json file.
 
     Mirrors the preds_by_img grouping already used by
-    `evaluate.coco_to_kernel_labels` and
-    `multi_region_eval.compute_multi_region_metrics`. Prefer
-    `estimate.load_coco_preds` + `predictions_from_dets` when the file lives
+    `evaluate.coco_to_kernel_labels`. Prefer
+    `evaluate.load_coco_preds` + `predictions_from_dets` when the file lives
     at the project's usual `predictions/<model>/model_<epoch>/<replay>.rep/`
     layout, since that also handles score-threshold suffixed folders.
     See `predictions_from_dets` for `size_wh`.

@@ -1,45 +1,67 @@
-# src/train.py
+"""
+Train one model from the Hydra config (conf/config.yaml).
+
+    make train ARGS="architecture=director_centernet seed=456 id_string=..."
+
+run_training does, in this order (the order fixes the random stream, so a
+seed reproduces a run; do not reorder the steps):
+
+  1. seed everything                      _seed_everything
+  2. pick the device                      _select_device
+  3. name the run, start W&B              _start_run
+  4. build label / mode caches, loaders   _prepare_data
+  5. build the model                      _build_model
+  6. optimizer and LR schedule            _build_optimizer_and_schedule
+  7. resume from a checkpoint, if asked   _maybe_resume
+  8. train, checkpointing as it goes      train_model
+
+Everything the model is built from goes through _model_args, the one list of
+what build_model reads. Run identity (W&B tags, run_provenance.json next to
+the weights) is recorded so that a run can state which code and which knobs
+produced it.
+"""
 import json
 import os
+import secrets
 import subprocess
 import time
-import tqdm
-
-import random
-import secrets
-import numpy as np
-
-from types import SimpleNamespace
-
-import hydra
-from omegaconf import DictConfig, OmegaConf
-from hydra.core.hydra_config import HydraConfig
+from dataclasses import dataclass
 from typing import Optional
 
+import hydra
 import torch
-from torch.utils.data import Subset
-
+import tqdm
 import wandb
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig, OmegaConf
+from torch.utils.data import DataLoader, Subset
 from ultralytics import settings
 
 import config
-
-import detection.transforms as T
-from detection.engine_safe import train_one_epoch_safe as train_one_epoch
-
+from dataset.starcraft_windows import MODE_TARGET_CHOICES
 from dataset.label_cache import ensure_label_pickles
-from dataset.loader import load_data, make_loader
-from dataset.custom_penn_fudan import CustomPennFudanDataset
-
+from dataset.loader import load_data
+from detection.engine_safe import train_one_epoch_safe as train_one_epoch
 from models.factory import build_model
-
-
 from utils.logger import Logger
-from utils.synology_chat import send_message
 from utils.seed import set_global_seed
+from utils.synology_chat import send_message
 from utils.torch_compat import disable_inductor
 
 disable_inductor()
+
+NUM_CLASSES = 2  # background + viewport
+SGD_MOMENTUM = 0.9
+SGD_WEIGHT_DECAY = 0.0005
+# NaN handling in the training loop (detection/engine_safe.py)
+LR_BACKOFF_ON_NAN = 0.5
+MAX_CONSECUTIVE_NAN = 20
+PRINT_FREQ = 10
+
+
+# ---------------------------------------------------------------------------
+# Reading the config
+# ---------------------------------------------------------------------------
 
 def _is_kbrs_enabled(cfg) -> bool:
     kbrs = getattr(cfg, "kbrs", None)
@@ -49,19 +71,29 @@ def _is_kbrs_enabled(cfg) -> bool:
 
 
 def _get_choice(group: str) -> Optional[str]:
-    """
-    Hydra가 현재 job에서 선택한 config group의 이름을 가져온다.
-    예: group="dataset" -> "fold1"
-        group="model"   -> "kbrs"
-    """
+    """The option Hydra chose for a config group in this job, e.g. "fold1" for "dataset"."""
     try:
-        hc = HydraConfig.get()
-        # hc.runtime.choices 는 dict: {"dataset": "fold1", "model": "kbrs", ...}
-        return hc.runtime.choices.get(group)
+        return HydraConfig.get().runtime.choices.get(group)
     except Exception as e:
-        Logger.warning(f"[_get_choice] failed for group={group}: {e}")
+        Logger.warn(f"[_get_choice] failed for group={group}: {e}")
         return None
 
+
+def _mode_targets(cfg) -> str:
+    """cfg.mode_targets, validated. Only Mask R-CNN reads it: the heatmap
+    models take the ranked modes as their own targets already."""
+    value = str(cfg.get("mode_targets", "none") or "none")
+    if value not in MODE_TARGET_CHOICES:
+        raise ValueError(f"mode_targets must be one of {MODE_TARGET_CHOICES}, got {value!r}")
+    model_name = str(getattr(getattr(cfg, "architecture", None), "model_name", "")).lower()
+    if value != "none" and model_name != "maskrcnn":
+        raise ValueError(f"mode_targets={value!r} is implemented for maskrcnn only, not {model_name!r}")
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Run identity: W&B tags and run_provenance.json
+# ---------------------------------------------------------------------------
 
 def _git_state() -> dict:
     """HEAD commit and whether the working tree is dirty, or why we cannot tell.
@@ -107,10 +139,9 @@ def _model_family(model_name: str) -> str:
     """Coarse family for a model_name, so a whole line of work is filterable.
 
     `director_centernet` is a CenterNet variant, but filtering W&B on
-    "centernet" would not match it, and the same applies to every
-    deformable/video DETR name. The family tag sits alongside the exact
-    model_name rather than replacing it. Order matters below: rtdetr is
-    checked before the generic detr test.
+    "centernet" would not match it. The family tag sits alongside the exact
+    model_name rather than replacing it. (Older runs also used "rtdetr" and
+    "detr", for the architectures now in archive/legacy/.)
     """
     name = (model_name or "").lower()
     if "maskrcnn" in name or "mask_rcnn" in name:
@@ -147,19 +178,6 @@ def _host_tag() -> Optional[str]:
     if not devices or devices.lower() in ("all", "none", "void"):
         return host
     return f"{host}:{devices}"
-
-
-def _mode_targets(cfg) -> str:
-    """cfg.mode_targets, validated. Only Mask R-CNN reads it: the heatmap
-    models take the ranked modes as their own targets already."""
-    from dataset.custom_penn_fudan import MODE_TARGET_CHOICES
-    value = str(cfg.get("mode_targets", "none") or "none")
-    if value not in MODE_TARGET_CHOICES:
-        raise ValueError(f"mode_targets must be one of {MODE_TARGET_CHOICES}, got {value!r}")
-    model_name = str(getattr(getattr(cfg, "architecture", None), "model_name", "")).lower()
-    if value != "none" and model_name != "maskrcnn":
-        raise ValueError(f"mode_targets={value!r} is implemented for maskrcnn only, not {model_name!r}")
-    return value
 
 
 def _build_run_tags(cfg) -> list:
@@ -295,6 +313,10 @@ def _write_run_provenance(save_dir: str, model, id_string: str) -> None:
         Logger.warn(f"[Provenance] failed to write run_provenance.json: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Checkpoints
+# ---------------------------------------------------------------------------
+
 CHECKPOINT_FORMAT = 2
 
 
@@ -353,33 +375,47 @@ def load_checkpoint(path, model, optimizer=None, lr_scheduler=None, device=None)
     return epoch
 
 
+# ---------------------------------------------------------------------------
+# Training loop
+# ---------------------------------------------------------------------------
+
+def _epoch_log(epoch: int, train_stats) -> dict:
+    """The W&B scalars of one epoch: total loss, NaN counters, every loss_* term."""
+    log_dict = {
+        "epoch": epoch,
+        "Loss/train": train_stats.loss.global_avg,
+    }
+    for k in ("skipped", "nan", "grad_nonfinite", "grad_norm"):
+        m = getattr(train_stats, k, None)
+        if m is not None and hasattr(m, "global_avg"):
+            log_dict[f"Train/{k}"] = float(m.global_avg)
+    for k, meter in getattr(train_stats, "meters", {}).items():
+        if k.startswith("loss_") and hasattr(meter, "global_avg"):
+            log_dict[f"Loss/{k[5:]}"] = float(meter.global_avg)  # loss_classifier -> Loss/classifier
+    return log_dict
+
+
 def train_model(
     model,
     optimizer,
     lr_scheduler,
     data_loader_train,
-    data_loader_validation,
     device,
     num_epochs,
     save_dir,
-    use_kbrs: bool = False,
-    data_loader_test=None,
-    test_eval_every: int = 0,
     id_string: str = "",
     checkpoint_every: int = 10,
     start_epoch: int = 0,
 ):
+    """Train from start_epoch to num_epochs, logging every epoch to W&B and
+    saving a checkpoint every `checkpoint_every` epochs and at the last one."""
     _write_run_provenance(save_dir, model, id_string)
 
     Logger.info("[Stage] Starting training loop...")
     if start_epoch:
-        Logger.info(
-            f"[Stage] Resuming at epoch {start_epoch} of {num_epochs}"
-        )
+        Logger.info(f"[Stage] Resuming at epoch {start_epoch} of {num_epochs}")
     for epoch in tqdm.tqdm(range(start_epoch, num_epochs), initial=start_epoch,
                            total=num_epochs):
-        epoch_t0 = time.time()
-
         # Loss terms that ramp over training (currently only Director's
         # L_smooth) read the epoch off the module. Walking .modules() rather
         # than calling model.set_epoch() keeps this working through
@@ -388,240 +424,64 @@ def train_model(
             if hasattr(_module, "set_epoch"):
                 _module.set_epoch(epoch)
 
-        # ---- train ----
         t0 = time.time()
-        # --- NaN 회피 옵션 (cfg에 없으면 안전한 기본값 사용) ---
-        nan_log_path = os.path.join(save_dir, "nan_batches.jsonl")
-        grad_clip_norm = 0.0
-        lr_backoff = 0.5
-        max_consecutive_nan = 20
-        retry_fp32_on_nan = True
-
-        # hydra cfg가 있는 경우 덮어쓰기(없어도 동작)
-        try:
-            grad_clip_norm = float(getattr(config, "GRAD_CLIP_NORM", grad_clip_norm))
-        except Exception:
-            pass
-
         train_stats = train_one_epoch(
             model,
             optimizer,
             data_loader_train,
             device,
             epoch,
-            print_freq=10,
+            print_freq=PRINT_FREQ,
             scaler=None,
-            nan_log_path=nan_log_path,
+            nan_log_path=os.path.join(save_dir, "nan_batches.jsonl"),
             skip_nonfinite=True,
-            max_consecutive_nan=max_consecutive_nan,
-            grad_clip_norm=grad_clip_norm,
-            lr_backoff=lr_backoff,
-            retry_fp32_on_nan=retry_fp32_on_nan,
+            max_consecutive_nan=MAX_CONSECUTIVE_NAN,
+            grad_clip_norm=float(getattr(config, "GRAD_CLIP_NORM", 0.0)),
+            lr_backoff=LR_BACKOFF_ON_NAN,
+            retry_fp32_on_nan=True,
         )
-        t_train = time.time() - t0
-        Logger.info(f"[Time][epoch {epoch}] train_one_epoch: {t_train:.1f}s")
+        Logger.info(f"[Time][epoch {epoch}] train_one_epoch: {time.time() - t0:.1f}s")
 
         lr_scheduler.step()
 
-        # 로그
-        log_dict = {
-            "epoch": epoch,
-            "Loss/train": train_stats.loss.global_avg,
-        }
-        
-        for k in ("skipped", "nan", "grad_nonfinite", "grad_norm"):
-            m = getattr(train_stats, k, None)
-            if m is not None and hasattr(m, "global_avg"):
-                log_dict[f"Train/{k}"] = float(m.global_avg)
-
-        meters = getattr(train_stats, "meters", {})
-        for k, meter in meters.items():
-            # 'loss_xxx' 형태의 모든 지표를 자동으로 추출하여 기록
-            if k.startswith("loss_") and hasattr(meter, "global_avg"):
-                key_name = k[5:]  # 'loss_classifier' -> 'classifier'
-                log_dict[f"Loss/{key_name}"] = float(meter.global_avg)
-
-        # # ---- validation (매 epoch) ----
-        # eval_stats = None
-        # t_eval = 0.0
-        # if data_loader_validation is not None:
-        #     t1 = time.time()
-        #     eval_stats = evaluate(
-        #         model,
-        #         data_loader_validation,
-        #         device=device,
-        #         epoch=epoch,
-        #     )
-        #     t_eval = time.time() - t1
-        #     Logger.info(f"[Time][epoch {epoch}] evaluate(val): {t_eval:.1f}s")
-
-        # # ---- Validation IC metrics 로깅 ----
-        # if eval_stats is not None and hasattr(eval_stats, "aggregates"):
-        #     agg = eval_stats.aggregates
-        #     for key in ["ic@000", "ic@030", "ic@050", "ic_multi", "ic_ratio"]:
-        #         if key in agg:
-        #             log_dict[f"Eval/{key}"] = float(agg[key])
-
-        # # ---- Test set 평가 (N epoch마다, 전체 test set) ----
-        # t_test_eval = 0.0
-        # if (
-        #     data_loader_test is not None
-        #     and test_eval_every > 0
-        #     and (epoch + 1) % test_eval_every == 0
-        # ):
-        #     Logger.info(
-        #         f"[Stage] Test evaluation at epoch {epoch+1} "
-        #         f"(every {test_eval_every} epochs)"
-        #     )
-        #     t_te0 = time.time()
-        #     test_stats = evaluate(
-        #         model,
-        #         data_loader_test,
-        #         device=device,
-        #         epoch=epoch,
-        #     )
-        #     t_test_eval = time.time() - t_te0
-        #     Logger.info(f"[Time][epoch {epoch}] evaluate(test): {t_test_eval:.1f}s")
-
-        #     if hasattr(test_stats, "aggregates"):
-        #         t_agg = test_stats.aggregates
-        #         for key in ["ic@000", "ic@030", "ic@050", "ic_multi", "ic_ratio"]:
-        #             if key in t_agg:
-        #                 log_dict[f"Test/{key}"] = float(t_agg[key])
-
-        # # ---- KBRS epoch-level 통계 & 이미지 로그 ----
-        # t_kbrs = 0.0
-        # t_kbrs_img = 0.0
-        # if hasattr(model, "consume_epoch_kbrs"):
-        #     tk0 = time.time()
-        #     scalars, cache = model.consume_epoch_kbrs()
-        #     t_kbrs = time.time() - tk0
-
-        #     if scalars:
-        #         scalars = {**{k: v for k, v in scalars.items()}, "epoch": epoch}
-        #         log_dict.update(scalars)
-
-        #     if cache is not None:
-        #         ti0 = time.time()
-
-        #         def _minmax01(t, eps=1e-6):
-        #             t = t.float()
-        #             mn = t.amin(dim=(-2, -1), keepdim=True)
-        #             mx = t.amax(dim=(-2, -1), keepdim=True)
-        #             return (t - mn) / (mx - eps + 1e-12)
-
-        #         def _to_rgb(gray01):
-        #             return gray01.expand(3, -1, -1)
-
-        #         def _to_wandb_image(t3hw):
-        #             return t3hw.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
-
-        #         total = cache["score_total"]
-        #         comps = cache["comp_maps"]
-
-        #         wandb.log(
-        #             {
-        #                 "epoch": epoch,
-        #                 "kbrs_epoch/total": wandb.Image(
-        #                     _to_wandb_image(_to_rgb(_minmax01(total)))
-        #                 ),
-        #             },
-        #             commit=False,
-        #         )
-
-        #         for name, m in comps.items():
-        #             wandb.log(
-        #                 {
-        #                     "epoch": epoch,
-        #                     f"kbrs_epoch/{name}": wandb.Image(
-        #                         _to_wandb_image(_to_rgb(_minmax01(m)))
-        #                     ),
-        #                 },
-        #                 commit=False,
-        #             )
-
-        #         t_kbrs_img = time.time() - ti0
-
-        # ---- wandb 스칼라 로그 ----
         t_wandb = time.time()
-        wandb.log(log_dict, commit=True)
-        t_wandb = time.time() - t_wandb
-        Logger.info(f"[Time][epoch {epoch}] wandb.log (scalars): {t_wandb:.3f}s")
+        wandb.log(_epoch_log(epoch, train_stats), commit=True)
+        Logger.info(f"[Time][epoch {epoch}] wandb.log (scalars): {time.time() - t_wandb:.3f}s")
 
-        # ---- 체크포인트 저장 ----
-        # 매 에폭 저장은 30에폭 실행마다 ResNet-50 가중치를 30벌 남긴다.
-        # 실제로 읽는 것은 마지막 것뿐이고, 중간 것은 학습 곡선을 되짚을 때만
-        # 쓰이므로 10에폭 간격이면 충분하다. 마지막 에폭은 간격에 걸리지
-        # 않더라도 항상 저장한다 - 추론이 --epoch 로 그것을 찾는다.
-        t_ckpt = 0.0
+        # Saving every epoch would leave 30 ResNet-50 copies per run. Only the
+        # last one is read (inference finds it by --epoch), so intermediate
+        # ones are kept every `checkpoint_every` epochs for tracing the
+        # learning curve, and the last epoch is always saved.
         is_interval = checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0
         if is_interval or (epoch + 1) == num_epochs:
             tc0 = time.time()
             save_path = os.path.join(save_dir, f"model_{epoch+1:03d}.pth")
             save_checkpoint(save_path, model, optimizer, lr_scheduler, epoch + 1)
-            t_ckpt = time.time() - tc0
-            Logger.info(
-                f"[Info] Saved model checkpoint: {save_path} "
-                f"(time: {t_ckpt:.2f}s)"
-            )
+            Logger.info(f"[Info] Saved model checkpoint: {save_path} (time: {time.time() - tc0:.2f}s)")
 
-        # ---- 슬랙/시놀로지 알림 ----
-        t_msg = time.time()
         try:
             send_message(f"[{id_string}] Epoch {epoch+1} completed.")
         except Exception as e:
             Logger.error(f"Failed to send message: {e}")
-        t_msg = time.time() - t_msg
 
-        # # ---- epoch 전체 시간 요약 ----
-        # epoch_time = time.time() - epoch_t0
-        # Logger.info(
-        #     "[Time][epoch {e}] summary: "
-        #     "train={tr:.1f}s, val={ev:.1f}s, test={te:.1f}s, "
-        #     "kbrs_scalar={kb:.3f}s, kbrs_img={kbi:.3f}s, "
-        #     "wandb={wb:.3f}s, ckpt={ck:.2f}s, msg={msg:.2f}s, "
-        #     "total={tot:.1f}s".format(
-        #         e=epoch,
-        #         tr=t_train,
-        #         ev=t_eval,
-        #         te=t_test_eval,
-        #         kb=t_kbrs,
-        #         kbi=t_kbrs_img,
-        #         wb=t_wandb,
-        #         ck=t_ckpt,
-        #         msg=t_msg,
-        #         tot=epoch_time,
-        #     )
-        # )
 
-            
-            
-def _unwrap_subset(ds):
-    while isinstance(ds, Subset):
-        ds = ds.dataset
-    return ds
+# ---------------------------------------------------------------------------
+# Setup steps of run_training, in the order they run
+# ---------------------------------------------------------------------------
 
-def run_training(cfg: DictConfig):
-    """
-    Hydra DictConfig를 받아서 학습 전체를 수행.
-    (예전 argparse-style args를 완전히 대체)
-    """
-    settings.update({"wandb": True})
-    Logger.info("[Stage] Preparing environment...]")
-
-    # 1) seed 처리 (필요하면 여기서 generate + set)
+def _seed_everything(cfg) -> int:
+    """Seed Python, NumPy and torch from cfg.seed (drawing one if unset)."""
     seed = cfg.seed
     if seed is None:
-        generated = secrets.randbits(31)
-        seed = generated
-        cfg.seed = generated  # DictConfig에 써줘도 됨 (struct=False 가정)
-        Logger.info(f"[Seed] No seed provided in config; generated seed={generated}")
+        seed = secrets.randbits(31)
+        cfg.seed = seed
+        Logger.info(f"[Seed] No seed provided in config; generated seed={seed}")
     else:
         Logger.info(f"[Seed] Using seed={seed}")
 
     # torchvision's CUDA roi_align kernel is non-deterministic, so with
     # torch.use_deterministic_algorithms enabled `ops.roi_align` silently takes a
-    # pure-Python decomposition instead. That path materialises a
+    # pure-Python decomposition instead. That path materializes a
     # [K, C, PH, PW, IY, IX] intermediate: Mask R-CNN training asks for 5.5 GiB in
     # a single allocation and dies on a 32 GiB card, at batch 16 as well as 32.
     # inference.py already opts out for the same reason; training has to do the
@@ -638,71 +498,78 @@ def run_training(cfg: DictConfig):
             f"reproducible only up to the kernel's own non-determinism."
         )
     set_global_seed(int(seed), deterministic=not uses_roi_align)
+    return int(seed)
 
-    # 2) 디바이스
+
+def _select_device(cfg) -> torch.device:
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
     Logger.info(f"[Info] Using device: {device} (torch.cuda.is_available(): {torch.cuda.is_available()} / cfg.cuda: {cfg.cuda})")
+    return device
 
-    # 3) run tags / id_string
-    #
-    # These are built unconditionally. They used to live inside the
-    # `if not cfg.id_string` branch, so every run launched with an explicit
-    # id_string - which is every ablation - reached wandb.init with tags=[].
-    # The parameters were still in wandb's config, but nothing was filterable
-    # in the UI, which is the part that makes a sweep of near-identical runs
-    # readable.
+
+def _start_run(cfg) -> str:
+    """Name the run (cfg.id_string), create its directory and start W&B.
+    Returns the directory checkpoints and provenance go to."""
+    # Tags are built for every run, including those launched with an explicit
+    # id_string (every ablation); they used to be built only when id_string was
+    # empty, which left those runs unfilterable in W&B.
     run_tags = _build_run_tags(cfg)
-
     if not cfg.id_string:
         cfg.id_string = "_".join(run_tags + [time.strftime("%Y%m%d_%H%M%S")])
         Logger.info(f"[Info] Using id string: {cfg.id_string}")
     Logger.info(f"[Info] W&B tags: {run_tags}")
 
-
-    log_save_path = os.path.join(cfg.log_root, f"{cfg.id_string}/")
-    os.makedirs(log_save_path, exist_ok=True)
-    Logger.info(f"[Info] Log save path: {log_save_path}")
+    save_dir = os.path.join(cfg.log_root, f"{cfg.id_string}/")
+    os.makedirs(save_dir, exist_ok=True)
+    Logger.info(f"[Info] Log save path: {save_dir}")
 
     if wandb.run is not None:
         wandb.finish()
-
-    # Logger.info(f"CFG: \n{OmegaConf.to_yaml(cfg)}")
-
-    # 4) W&B init (DictConfig → dict 변환)
     wandb.init(
         project="starcraft",
         name=cfg.id_string,
         config=OmegaConf.to_container(cfg, resolve=True),
         tags=run_tags,
     )
+    return save_dir
 
-    # 5) 경로 설정
+
+@dataclass
+class TrainingData:
+    loader: DataLoader
+    in_channels: int   # channels per frame x frames per window
+    mode_targets: str  # cfg.mode_targets, validated
+
+
+def _prepare_data(cfg, seed: int) -> TrainingData:
+    """Build the label (and, if needed, mode) caches and the training loader.
+
+    The ranked-mode cache is needed by Director-CenterNet (its targets) and by
+    Mask R-CNN trained with mode_targets=hard/soft (its boxes).
+    """
     input_root = os.path.join(cfg.data_root, "input/dst")
     label_root = os.path.join(cfg.data_root, "label/dst")
-
-    # 6) 라벨 pickle 준비: train + test 전체
     train_replays = list(cfg.dataset.train_replays)
     test_replays = list(getattr(cfg.dataset, "test_replays", []) or [])
-    all_replays = [str(r) for r in (train_replays + test_replays)]
+    all_replays = sorted(set(str(r) for r in (train_replays + test_replays)))
 
     ensure_label_pickles(
         label_root=label_root,
         label_method=cfg.label_method,
-        replay_ids=sorted(set(all_replays)),
+        replay_ids=all_replays,
         num_workers=cfg.num_workers,
     )
     Logger.info("[Info] JSON to Pickle conversion completed.")
 
-    model_arch = str(getattr(cfg.architecture, "model_name", "")).lower()
-    is_director = "director" in model_arch
+    is_director = "director" in str(getattr(cfg.architecture, "model_name", "")).lower()
     mode_targets = _mode_targets(cfg)
-
-    if is_director or mode_targets != "none":
+    needs_modes = is_director or mode_targets != "none"
+    if needs_modes:
         from dataset.mode_cache import ensure_mode_cache
         ensure_mode_cache(
             label_root=label_root,
             label_method=cfg.label_method,
-            replay_ids=sorted(set(all_replays)),
+            replay_ids=all_replays,
             sigma=float(getattr(cfg, "mode_extraction_sigma", config.MODE_EXTRACTION_SIGMA)),
             min_sep=float(getattr(cfg, "mode_extraction_min_sep", config.MODE_EXTRACTION_MIN_SEP)),
             rel_threshold=float(getattr(cfg, "mode_extraction_rel_threshold", config.MODE_EXTRACTION_REL_THRESHOLD)),
@@ -710,8 +577,10 @@ def run_training(cfg: DictConfig):
             num_workers=cfg.num_workers,
         )
 
-    # 7) train + val 로더 (val은 test_replays에서 cfg.val_count 만큼)
-    data_loader_train, data_loader_validation, inner_ds = load_data(
+    # The validation loader (val_count windows of the test replays) is built
+    # but not evaluated during training; it is kept because building it is
+    # part of load_data's seeded split.
+    data_loader_train, data_loader_validation, _ = load_data(
         input_root=input_root,
         label_root=label_root,
         label_method=cfg.label_method,
@@ -724,137 +593,98 @@ def run_training(cfg: DictConfig):
         sample_ratio=cfg.sample_ratio,
         include_components=list(cfg.include_components),
         val_count=cfg.val_count,
-        seed=int(seed),
-        pair_mode=is_director,
-        use_mode_cache=is_director or mode_targets != "none",
+        seed=seed,
+        pair_mode=is_director,  # consecutive windows, for L_smooth
+        use_mode_cache=needs_modes,
         mode_targets=mode_targets,
     )
+    n_val = len(data_loader_validation.dataset) if data_loader_validation is not None else "(none)"
+    Logger.info(f"[Info] Data loaded: Train {len(data_loader_train.dataset)}, Validation {n_val}")
 
-    # 8) test 로더 (test_replays 전체)
-    test_loader = None
-    if test_replays:
-        test_dataset = CustomPennFudanDataset(
-            input_root,
-            label_root,
-            cfg.label_method,
-            training_ids=[str(r) for r in test_replays],
-            training=True,
-            window_size=cfg.window_size,
-            interval=cfg.interval,
-            include_components=list(cfg.include_components),
-            verbose=False,
-        )
-        test_loader = make_loader(
-            test_dataset,
-            batch_size=cfg.batch_size,
-            shuffle=False,
-            num_workers=cfg.num_workers,
-        )
-        Logger.info(f"[Info] Test dataset size (full): {len(test_dataset)}")
+    dataset = data_loader_train.dataset
+    while isinstance(dataset, Subset):
+        dataset = dataset.dataset
+    in_channels = len(dataset.channel_indices) * dataset.window_size
+    Logger.info(f"[Info] Input channels: {in_channels} (window size: {dataset.window_size})")
+    return TrainingData(data_loader_train, in_channels, mode_targets)
 
-    if data_loader_validation is not None:
-        Logger.info(
-            f"[Info] Data loaded: "
-            f"Train {len(data_loader_train.dataset)}, "
-            f"Validation {len(data_loader_validation.dataset)}"
-        )
-    else:
-        Logger.info(
-            f"[Info] Data loaded: Train {len(data_loader_train.dataset)}, Validation (none)"
-        )
 
-    Logger.info("[Stage] Initializing model...]")
-    num_classes = 2  # background + viewport
+def _loss_weights(cfg) -> dict:
+    """architecture.loss_weights, overridden by a top-level loss_weights.
 
-    # --- (1) loss_weights: dict 로 가정 (Hydra config 및 architecture yaml에서 설정) ---
+    The KBRS weight (plugins.kbrs.loss_weights) is not read here; KBRSWrapper
+    falls back to 0.25, the weight of every reported KBRS run.
+    """
     loss_weights = {}
-    arch_loss_weights = getattr(cfg.architecture, "loss_weights", None)
-    if arch_loss_weights is not None:
-        for name, weight in arch_loss_weights.items():
-            loss_weights[name] = float(weight)
-    if "loss_weights" in cfg and cfg.loss_weights is not None:
-        for name, weight in cfg.loss_weights.items():
-            loss_weights[name] = float(weight)
+    for source in (getattr(cfg.architecture, "loss_weights", None),
+                   cfg.loss_weights if "loss_weights" in cfg else None):
+        if source is not None:
+            for name, weight in source.items():
+                loss_weights[name] = float(weight)
+    return loss_weights
 
-    # --- (2) kbrs_params merge: 기본 KBRS_PARAMS 위에 config 덮어쓰기 ---
-    kbrs_params = None
-    if _is_kbrs_enabled(cfg):
-        kbrs_params = OmegaConf.to_container(cfg.kbrs.kbrs_params, resolve=True)
-        if "kbrs_params" in cfg and cfg.kbrs_params is not None:
-            from omegaconf import DictConfig as DC
-            if isinstance(cfg.kbrs_params, DC):
-                extra = OmegaConf.to_container(cfg.kbrs_params, resolve=True)
-            else:
-                extra = dict(cfg.kbrs_params)
-            kbrs_params.update(extra)
 
-    # --- (3) 입력 채널 계산 ---
-    train_ds = data_loader_train.dataset
-    inner_ds = _unwrap_subset(train_ds)
-    in_channels = len(inner_ds.channel_indices) * inner_ds.window_size
-    Logger.info(
-        f"[Info] Input channels: {in_channels} "
-        f"(window size: {inner_ds.window_size})"
-    )
+def _kbrs_params(cfg) -> Optional[dict]:
+    """plugins.kbrs.kbrs_params, overridden by a top-level kbrs_params; None without KBRS."""
+    if not _is_kbrs_enabled(cfg):
+        return None
+    kbrs_params = OmegaConf.to_container(cfg.kbrs.kbrs_params, resolve=True)
+    if "kbrs_params" in cfg and cfg.kbrs_params is not None:
+        extra = cfg.kbrs_params
+        kbrs_params.update(OmegaConf.to_container(extra, resolve=True) if isinstance(extra, DictConfig) else dict(extra))
+    return kbrs_params
 
-    # model = get_model_instance_segmentation(
-    #     num_classes=num_classes,
-    #     window_size=cfg.window_size,
-    #     in_channels=in_channels,
-    #     do_normalize=cfg.do_normalize,
-    #     normalize_mean=cfg.normalize_mean,
-    #     normalize_std=cfg.normalize_std,
-    #     resize_mode=cfg.resize_mode,
-    #     min_sizes=cfg.min_sizes,
-    #     max_size=cfg.max_size,
-    #     rpn_small_anchors=cfg.rpn_small_anchors if cfg.resize_mode == "keep" else False,
-    #     use_kbrs=cfg.kbrs.use_kbrs,
-    #     kbrs_params=kbrs_params,
-    #     loss_weights=loss_weights,
-    # )
-    
-    # factory.py가 요구하는 인자들을 cfg에 병합(Fallback)해줍니다.
-    # Hydra 설정에 없을 경우를 대비한 안전 장치입니다.
-    OmegaConf.set_struct(cfg, False)
 
-    cfg.model_name = getattr(cfg.architecture, "model_name", "maskrcnn")
-    cfg.rtdetr_version = getattr(cfg.architecture, "rtdetr_version", "v2")
-    cfg.rtdetr_size = getattr(cfg.architecture, "rtdetr_size", "l")
-    cfg.use_density_peak = getattr(cfg.architecture, "use_density_peak", getattr(cfg, "use_density_peak", False))
-    cfg.use_probabilistic_query = getattr(cfg.architecture, "use_probabilistic_query", getattr(cfg, "use_probabilistic_query", False))
-    cfg.in_channels = in_channels
-    cfg.num_classes = num_classes
-    cfg.kbrs_params = kbrs_params
-    cfg.loss_weights = loss_weights
-    cfg.soft_mode_cls = mode_targets == "soft"
+# What build_model reads from the architecture config, when it is set there.
+_ARCHITECTURE_KEYS = (
+    "centernet_down_ratio", "max_objs",
+    "k_max", "conf_threshold", "render_sigma", "u_observers",
+    "smooth_huber_delta", "smooth_warmup_start", "smooth_warmup_full",
+    "soft_center_radius", "peak_border_margin", "trainable_layers",
+    "head_conv", "dense_positives",
+)
 
-    # build_model reads these off the top level, so an architecture yaml that
-    # defines them is otherwise inert and the model silently falls back to the
-    # src/config.py defaults.
-    for _arch_key in (
-        "centernet_down_ratio", "max_objs",
-        "k_max", "conf_threshold", "render_sigma", "u_observers",
-        "smooth_huber_delta", "smooth_warmup_start", "smooth_warmup_full",
-        "soft_center_radius", "peak_border_margin", "trainable_layers",
-        "head_conv", "dense_positives",
-    ):
-        if hasattr(cfg.architecture, _arch_key):
-            setattr(cfg, _arch_key, getattr(cfg.architecture, _arch_key))
-    
-    # RPN 스몰 앵커 옵션 (Mask R-CNN 전용)
-    cfg.rpn_small_anchors = getattr(cfg, "rpn_small_anchors", False) if getattr(cfg, "resize_mode", "resize") == "keep" else False
 
-    model = build_model(cfg)
-    
-    Logger.info(
-        f"[Info] Model initialized with {num_classes} classes and "
-        f"{in_channels} input channels.]"
-    )
+def _model_args(cfg, in_channels: int, mode_targets: str) -> DictConfig:
+    """Everything build_model reads, in one place.
+
+    A key left out here takes build_model's default. Notably resize_mode is
+    never set, so Mask R-CNN resizes its input to 640x640 even though
+    conf/architecture/maskrcnn.yaml says "resize" (800); all v6 runs were
+    trained that way. A DictConfig (not a dict or namespace) is returned
+    because that is what the model received when it read these off the Hydra
+    config directly: loss_weights and kbrs_params reach it as DictConfigs.
+    """
+    args = {
+        "model_name": getattr(cfg.architecture, "model_name", "maskrcnn"),
+        "use_kbrs": cfg.use_kbrs,
+        "use_density_peak": getattr(cfg.architecture, "use_density_peak", getattr(cfg, "use_density_peak", False)),
+        "window_size": cfg.window_size,
+        "in_channels": in_channels,
+        "num_classes": NUM_CLASSES,
+        "kbrs_params": _kbrs_params(cfg),
+        "loss_weights": _loss_weights(cfg),
+        "soft_mode_cls": mode_targets == "soft",
+    }
+    for key in _ARCHITECTURE_KEYS:
+        if hasattr(cfg.architecture, key):
+            args[key] = getattr(cfg.architecture, key)
+    return OmegaConf.create(args)
+
+
+def _build_model(cfg, data: TrainingData, device) -> torch.nn.Module:
+    Logger.info("[Stage] Initializing model...")
+    model = build_model(_model_args(cfg, data.in_channels, data.mode_targets))
+    Logger.info(f"[Info] Model initialized with {NUM_CLASSES} classes and {data.in_channels} input channels.")
     model.to(device)
+    return model
 
+
+def _build_optimizer_and_schedule(cfg, model):
+    """SGD, and a cosine (default) or step LR schedule over max_epoch."""
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(
-        params, lr=cfg.learning_rate, momentum=0.9, weight_decay=0.0005
+        params, lr=cfg.learning_rate, momentum=SGD_MOMENTUM, weight_decay=SGD_WEIGHT_DECAY
     )
     # StepLR(step_size=3, gamma=0.1) stepped once per epoch, which over a
     # 30-epoch run drops the rate by a decade every three epochs: 5e-3 for
@@ -867,7 +697,7 @@ def run_training(cfg: DictConfig):
     #     had never actually been trained at the weight it is reported with.
     #   - the same holds, less sharply, for every optional objective, which is
     #     why the ablation lattice was flat to within seed noise.
-    #   - a randomly initialised decoder between the pretrained backbone and
+    #   - a randomly initialized decoder between the pretrained backbone and
     #     the heads cannot converge in six epochs, which is how the stride-2
     #     run collapsed to 66% frame coverage with a median peak score of
     #     0.275 against 0.572 at stride 4.
@@ -892,41 +722,53 @@ def run_training(cfg: DictConfig):
         f"[Info] LR schedule: {schedule}, base lr={cfg.learning_rate}, "
         f"max_epoch={cfg.max_epoch}"
     )
+    return optimizer, lr_scheduler
 
-    # Resume, if asked. The scheduler is restored rather than fast-forwarded,
-    # so the rate picks up exactly where it stopped; a fresh cosine restarted
-    # two thirds through a run would be four times too high. Momentum comes
-    # back with the optimizer state, so the continuation is faithful and a
-    # resumed run stays comparable to one that ran straight through.
-    start_epoch = 0
+
+def _maybe_resume(cfg, model, optimizer, lr_scheduler, device) -> int:
+    """Restore cfg.resume if set; returns the epoch to start from (0 otherwise).
+
+    The scheduler is restored rather than fast-forwarded, so the rate picks up
+    exactly where it stopped; a fresh cosine restarted two thirds through a run
+    would be four times too high. Momentum comes back with the optimizer state,
+    so the continuation is faithful and a resumed run stays comparable to one
+    that ran straight through.
+    """
     resume_path = getattr(cfg, "resume", None)
-    if resume_path:
-        if not os.path.isfile(resume_path):
-            raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
-        start_epoch = load_checkpoint(
-            resume_path, model, optimizer, lr_scheduler, device
+    if not resume_path:
+        return 0
+    if not os.path.isfile(resume_path):
+        raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
+    start_epoch = load_checkpoint(resume_path, model, optimizer, lr_scheduler, device)
+    if start_epoch >= int(cfg.max_epoch):
+        raise ValueError(
+            f"{resume_path} is already at epoch {start_epoch}, which is "
+            f"max_epoch ({cfg.max_epoch}); nothing left to run."
         )
-        if start_epoch >= int(cfg.max_epoch):
-            raise ValueError(
-                f"{resume_path} is already at epoch {start_epoch}, which is "
-                f"max_epoch ({cfg.max_epoch}); nothing left to run."
-            )
+    return start_epoch
 
-    test_eval_every = cfg.test_eval_every
 
-    # === 실제 학습 ===
+def run_training(cfg: DictConfig):
+    """Train one model as configured; see the module docstring for the steps."""
+    settings.update({"wandb": True})
+    Logger.info("[Stage] Preparing environment...")
+
+    seed = _seed_everything(cfg)
+    device = _select_device(cfg)
+    save_dir = _start_run(cfg)
+    data = _prepare_data(cfg, seed)
+    model = _build_model(cfg, data, device)
+    optimizer, lr_scheduler = _build_optimizer_and_schedule(cfg, model)
+    start_epoch = _maybe_resume(cfg, model, optimizer, lr_scheduler, device)
+
     train_model(
         model,
         optimizer,
         lr_scheduler,
-        data_loader_train,
-        data_loader_validation,
+        data.loader,
         device,
         cfg.max_epoch,
-        log_save_path,
-        use_kbrs=cfg.use_kbrs,
-        data_loader_test=test_loader,
-        test_eval_every=test_eval_every,
+        save_dir,
         id_string=cfg.id_string,
         checkpoint_every=int(getattr(cfg, "checkpoint_every", 10)),
         start_epoch=start_epoch,
@@ -936,26 +778,33 @@ def run_training(cfg: DictConfig):
     wandb.finish()
 
 
-@hydra.main(config_path="../conf", config_name="config", version_base=None)
-def main(cfg: DictConfig):
-    # ROCI lives in its own label file, so the toggle resolves to a label
-    # method name here, once, before anything reads it. Everything downstream -
-    # the dataset, the inference pass, the run's id_string - then follows
-    # without needing to know the flag exists, and a run is named after the
-    # targets it actually trained on.
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def prepare_cfg(cfg: DictConfig) -> None:
+    """Resolve the switches that select inputs, once, before anything reads cfg.
+
+    ROCI lives in its own label file, so the toggle becomes a label method
+    name here. Everything downstream - the dataset, the inference pass, the
+    run's id_string - then follows without needing to know the flag exists,
+    and a run is named after the targets it actually trained on.
+    """
     if cfg.get("roci", False) and not str(cfg.label_method).endswith("_roci"):
         cfg.label_method = f"{cfg.label_method}_roci"
 
-    # 디버깅용: 전체 config 출력
-    print(OmegaConf.to_yaml(cfg))
-    # 로그 레벨 설정
+
+@hydra.main(config_path="../conf", config_name="config", version_base=None)
+def main(cfg: DictConfig):
+    prepare_cfg(cfg)
+    print(OmegaConf.to_yaml(cfg))  # the full resolved config, at the top of the log
     Logger.set_level(cfg.log_level)
 
     try:
         Logger.info("[Entry] Starting training script...")
         run_training(cfg)
     except Exception as e:
-        # id_string이 아직 비어있을 수 있으므로 안전하게 재구성
+        # id_string may still be empty if the failure came before _start_run
         if not cfg.id_string:
             id_str = f"{cfg.label_method}_win{cfg.window_size}_b{cfg.batch_size}"
             if _is_kbrs_enabled(cfg):
@@ -969,7 +818,6 @@ def main(cfg: DictConfig):
         except Exception as send_error:
             Logger.error(f"Failed to send error message: {send_error}")
         raise
-
 
 
 if __name__ == "__main__":

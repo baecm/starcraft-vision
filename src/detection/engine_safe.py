@@ -1,3 +1,4 @@
+"""The training loop: train_one_epoch_safe, with NaN/Inf handling. utils.py has its logging helpers."""
 import json
 import math
 import os
@@ -10,7 +11,7 @@ from . import utils
 
 
 def _to_py(x: Any) -> Any:
-    """JSON 직렬화 가능한 형태로 최대한 변환."""
+    """Convert to something JSON can serialize, as far as possible."""
     if isinstance(x, (str, int, float, bool)) or x is None:
         return x
     if isinstance(x, torch.Tensor):
@@ -78,13 +79,15 @@ def train_one_epoch_safe(
     min_lr: float = 1e-6,
     retry_fp32_on_nan: bool = True,
 ):
-    """NaN/Inf를 만나도 학습을 "가능한 한" 계속 진행하는 train_one_epoch.
+    """One training epoch that keeps going through NaN/Inf where it can.
 
-    핵심 정책
-    - loss가 non-finite면: (선택) fp32로 한 번 재시도 → 그래도 non-finite면 배치 스킵 + 로그
-    - backward 이후 grad가 non-finite면: step 스킵 + 로그
-    - 스킵이 연속으로 너무 많이 발생하면 중단(무한루프 방지)
-    - (선택) gradient clipping / LR backoff 제공
+    - A non-finite loss skips the batch (logged). With AMP (a GradScaler
+      passed as `scaler`) it is first retried once in fp32; train.py passes
+      no scaler, so its runs are fp32 throughout and never retry.
+    - Non-finite gradients after backward skip the optimizer step (logged).
+    - Too many consecutive skips abort the epoch instead of looping forever.
+    - Optional gradient clipping, and an LR backoff after a non-finite batch.
+    Skipped batches are recorded in nan_log_path (JSON lines).
     """
 
     model.train()
@@ -96,7 +99,7 @@ def train_one_epoch_safe(
     metric_logger.add_meter("grad_norm", utils.SmoothedValue(window_size=1, fmt="{value:.4f}"))
     header = f"Epoch: [{epoch}]"
 
-    # MetricLogger가 첫 로그를 찍을 때(count=0) division by zero를 피하기 위해 초기값을 넣어둔다.
+    # Seed the meters so the first print (count=0) does not divide by zero.
     metric_logger.update(
         lr=float(optimizer.param_groups[0]["lr"]),
         skipped=0.0,
@@ -105,7 +108,7 @@ def train_one_epoch_safe(
         grad_norm=0.0,
     )
 
-    # warmup: 기존 engine.py와 동일
+    # linear LR warmup over epoch 0, as in the torchvision reference engine
     lr_scheduler = None
     if epoch == 0:
         warmup_factor = 1.0 / 1000
@@ -121,7 +124,7 @@ def train_one_epoch_safe(
     grad_nf_total = 0
 
     def _batch_meta(targets: List[Dict[str, Any]]) -> Dict[str, Any]:
-        # 최소한 image_id는 잡는다. (추가 meta는 dataset에서 넣어두면 같이 기록됨)
+        # image_id at least; any tracing keys the dataset adds are recorded too
         out = {"image_id": []}
         for t in targets:
             iid = t.get("image_id")
@@ -129,7 +132,7 @@ def train_one_epoch_safe(
                 out["image_id"].append(int(iid.detach().cpu().item()))
             else:
                 out["image_id"].append(_to_py(iid))
-        # 흔히 넣는 부가키들(rid/window/idx 등)이 있으면 같이 기록
+        # the usual tracing keys (rid, window, idx, ...), when present
         for k in ("rid", "window", "window_image_ids", "sample_idx", "idx"):
             vals = []
             ok = False
@@ -139,7 +142,7 @@ def train_one_epoch_safe(
                     vals.append(_to_py(t.get(k)))
             if ok:
                 out[k] = vals
-        # boxes 개수
+        # number of target boxes
         out["num_boxes"] = []
         for t in targets:
             b = t.get("boxes")
@@ -150,7 +153,7 @@ def train_one_epoch_safe(
         return out
 
     def _backoff_lr() -> Dict[str, float]:
-        # lr을 줄여서 폭발을 완화
+        # lower the LR to damp a blow-up
         new_lrs = {}
         for i, g in enumerate(optimizer.param_groups):
             old = float(g.get("lr", 0.0))
@@ -171,7 +174,7 @@ def train_one_epoch_safe(
             loss_dict = model(images, targets)
             losses = sum(loss for loss in loss_dict.values())
 
-        # logging용 reduce
+        # reduced across processes, for logging
         loss_dict_reduced = utils.reduce_dict(loss_dict)
         losses_reduced = sum(loss for loss in loss_dict_reduced.values())
         loss_value = float(losses_reduced.detach().cpu().item())
@@ -181,7 +184,7 @@ def train_one_epoch_safe(
             nan_total += 1
             consecutive_nan += 1
 
-            # fp32로 재시도(AMP가 켜져있을 때 특히 도움이 됨)
+            # retry in fp32 (helps mostly when AMP is on)
             if retry_fp32_on_nan and scaler is not None:
                 with torch.amp.autocast(device_type="cuda", enabled=False):
                     loss_dict2 = model(images, targets)
@@ -190,7 +193,7 @@ def train_one_epoch_safe(
                 losses2r = sum(loss for loss in loss_dict2r.values())
                 loss2 = float(losses2r.detach().cpu().item())
                 if math.isfinite(loss2):
-                    # fp32로는 괜찮으면 그 loss로 진행
+                    # finite in fp32: continue with that loss
                     loss_dict = loss_dict2
                     losses = losses2
                     loss_dict_reduced = loss_dict2r
@@ -198,7 +201,7 @@ def train_one_epoch_safe(
                     loss_value = loss2
                     consecutive_nan = 0
                 else:
-                    # 재시도도 실패: 스킵
+                    # the retry failed too: skip the batch
                     pass
 
             if not math.isfinite(loss_value):
@@ -211,7 +214,7 @@ def train_one_epoch_safe(
                     "loss_dict": _loss_dict_to_float(loss_dict_reduced),
                     "meta": _batch_meta(targets),
                 }
-                # 입력 통계(가벼운 것만)
+                # cheap input statistics
                 try:
                     rec["input_max_abs"] = [
                         float(img.detach().abs().amax().cpu().item()) for img in images
@@ -237,7 +240,7 @@ def train_one_epoch_safe(
                     )
                 continue
 
-        # 여기까지 오면 loss는 finite
+        # the loss is finite from here on
         consecutive_nan = 0
 
         # 3) backward + grad checks
@@ -245,7 +248,7 @@ def train_one_epoch_safe(
         grad_norm = None
         if scaler is not None:
             scaler.scale(losses).backward()
-            # unscale -> clip/검사 가능
+            # unscale first, so the gradients can be clipped and checked
             try:
                 scaler.unscale_(optimizer)
             except Exception:
@@ -267,7 +270,7 @@ def train_one_epoch_safe(
                 _backoff_lr()
                 skipped_total += 1
                 optimizer.zero_grad(set_to_none=True)
-                scaler.update()  # scale 조정(가능하면)
+                scaler.update()  # adjust the scale
                 metric_logger.update(skipped=float(skipped_total), grad_nonfinite=float(grad_nf_total))
                 metric_logger.update(lr=optimizer.param_groups[0]["lr"])
                 continue

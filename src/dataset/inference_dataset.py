@@ -1,4 +1,3 @@
-# src/dataset/inference_dataset.py
 import os
 import numpy as np
 from typing import Iterable, Sequence, Optional

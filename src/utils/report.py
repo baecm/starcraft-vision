@@ -1,4 +1,3 @@
-# src/utils/report.py
 """
 Pretty console reporting helpers.
 

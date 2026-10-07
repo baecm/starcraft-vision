@@ -1,4 +1,3 @@
-# src/dataset/splits.py
 from __future__ import annotations
 
 from typing import List, Sequence, Tuple, Optional
@@ -8,8 +7,7 @@ import torch
 
 def _make_generator(seed: Optional[int] = None) -> Optional[torch.Generator]:
     """
-    선택적인 seed를 받아 torch.Generator를 생성.
-    seed가 None이면 None을 반환해서 기본 전역 RNG를 사용하게 함.
+    A torch.Generator seeded with `seed`, or None (the global RNG) when seed is None.
     """
     if seed is None:
         return None
@@ -24,12 +22,12 @@ def train_val_split_indices(
     seed: Optional[int] = None,
 ) -> Tuple[List[int], List[int]]:
     """
-    전체 n_samples에서 val_count 만큼을 validation에 할당하는 인덱스 스플릿 함수.
+    Split range(n_samples) into train and val indices, val_count of them for val.
 
     Args:
-        n_samples: 전체 샘플 수
-        val_count: validation으로 사용할 샘플 수
-        seed: (선택) 랜덤 시드
+        n_samples: number of samples
+        val_count: number of validation samples
+        seed: optional seed
 
     Returns:
         (train_indices, val_indices)
@@ -37,7 +35,7 @@ def train_val_split_indices(
     if n_samples <= 0:
         return [], []
 
-    # val_count가 0이거나 전체 이상이면 val을 만들지 않음
+    # no validation set when val_count is 0 or covers everything
     if val_count <= 0 or val_count >= n_samples:
         return list(range(n_samples)), []
 
@@ -59,15 +57,15 @@ def subsample_indices(
     seed: Optional[int] = None,
 ) -> List[int]:
     """
-    주어진 인덱스들에서 ratio 비율만큼 서브샘플링.
+    A random subset of `indices` of size max(1, int(len * ratio)), in random order.
 
     Args:
-        indices: 원본 인덱스 시퀀스
+        indices: the indices to sample from
         ratio: 0.0 < ratio <= 1.0
-        seed: (선택) 랜덤 시드
+        seed: optional seed
 
     Returns:
-        서브샘플링된 인덱스 리스트
+        the sampled indices
     """
     if not indices:
         return []

@@ -1,3 +1,11 @@
+"""
+Train, then run inference on the test replays with the checkpoint just written (make run).
+
+The inference half is driven through the same argument parser as
+src/inference.py, with its options derived from the Hydra config here.
+Note: unlike train.py, this entry point does not apply prepare_cfg, so
+roci=true is ignored under make run; use make train for ROCI runs.
+"""
 from __future__ import annotations
 
 import os
@@ -12,10 +20,10 @@ from cli import parse_inference_args
 def _build_inference_argv_from_cfg(cfg: DictConfig) -> list[str]:
     argv: list[str] = []
 
-    # 1. Dataset & Paths (데이터 및 경로)
+    # 1. Replays and paths
     test_replays = cfg.get("test_replays")
     if not test_replays:
-        raise ValueError("[Error] cfg.test_replays가 비어 있습니다. Inference를 수행할 리플레이가 필요합니다.")
+        raise ValueError("[Error] cfg.test_replays is empty; inference needs replays to run on.")
     
     argv.extend(["--replays"] + [str(r) for r in test_replays])
     argv.extend([
@@ -23,7 +31,7 @@ def _build_inference_argv_from_cfg(cfg: DictConfig) -> list[str]:
         "--output-dir", str(cfg.prediction_root),
     ])
 
-    # 2. Model & Checkpoint Info (모델 및 체크포인트 정보)
+    # 2. Which checkpoint
     argv.extend([
         "--model-root", str(cfg.model_root),
         "--model-name", str(cfg.id_string),
@@ -34,10 +42,6 @@ def _build_inference_argv_from_cfg(cfg: DictConfig) -> list[str]:
     # These used to be omitted, so inference fell back to guessing the
     # architecture from id_string and to config.py defaults for the rest.
     arch_cfg = cfg.get("architecture", {})
-    argv.extend([
-        "--rtdetr-version", str(arch_cfg.get("rtdetr_version", "v1")),
-        "--rtdetr-size", str(arch_cfg.get("rtdetr_size", "l")),
-    ])
     if arch_cfg.get("model_name"):
         argv.extend(["--architecture", str(arch_cfg.get("model_name"))])
     if arch_cfg.get("k_max") is not None:
@@ -45,7 +49,7 @@ def _build_inference_argv_from_cfg(cfg: DictConfig) -> list[str]:
     if arch_cfg.get("conf_threshold") is not None:
         argv.extend(["--conf-threshold", str(arch_cfg.get("conf_threshold"))])
 
-    # 3. KBRS & Preprocessing Settings (전처리 및 공통 설정)
+    # 3. Input settings
     argv.extend([
         "--label-method", str(cfg.label_method),
         "--window-size", str(cfg.window_size),
@@ -55,19 +59,19 @@ def _build_inference_argv_from_cfg(cfg: DictConfig) -> list[str]:
     if cfg.get("include_components"):
         argv.extend(["--include-components"] + list(cfg.include_components))
 
-    # 4. Hyperparameters (추론 하이퍼파라미터)
+    # 4. Batching and the score filter
     argv.extend([
         "--batch-size", str(cfg.get("inference_batch_size", cfg.batch_size)),
         "--workers", str(cfg.num_workers),
         "--score-threshold", str(cfg.get("score_threshold", 0.5)),
     ])
 
-    # 5. Run Name (저장될 폴더명)
-    # inference_run_name이 없으면 기본값으로 "id_string/model_00X" 형태 생성
+    # 5. Output folder under --output-dir
+    # defaults to <id_string>/model_<max_epoch>
     run_name = cfg.get("inference_run_name") or os.path.join(cfg.id_string, f"model_{cfg.max_epoch:03d}")
     argv.extend(["--run-name", str(run_name)])
 
-    # 6. Flags (CUDA, KBRS, Seed)
+    # 6. Flags
     if cfg.get("cuda", True):
         argv.append("--cuda")
         

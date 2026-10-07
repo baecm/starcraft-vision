@@ -23,7 +23,7 @@ StarCraft: Brood War 이스포츠 옵저버를 위한 **Multi-Region Viewport Pr
                                          │
                                          ▼
 +-----------------------------------------------------------------------------------+
-| 2. Continuous Frame Pairing Dataset (src/dataset/custom_penn_fudan.py)           |
+| 2. Continuous Frame Pairing Dataset (src/dataset/starcraft_windows.py)           |
 |    - pair_mode=True: fetches (X_t, X_{t+1}) windows within same replay            |
 |    - Supports trajectory smoothness (L_smooth) under random batch shuffling       |
 +-----------------------------------------------------------------------------------+
@@ -107,9 +107,9 @@ $$L = L_{hcm} + \lambda_{off} L_{off} + \lambda_{sz} L_{size} + \lambda_{rmc} L_
 
 ---
 
-### (4) 연속 프레임 페어링 샘플러 ([`src/dataset/custom_penn_fudan.py`](../src/dataset/custom_penn_fudan.py), [`src/dataset/loader.py`](../src/dataset/loader.py))
+### (4) 연속 프레임 페어링 샘플러 ([`src/dataset/starcraft_windows.py`](../src/dataset/starcraft_windows.py), [`src/dataset/loader.py`](../src/dataset/loader.py))
 - 기존 `DataLoader`는 `shuffle=True`로 프레임들을 무작위로 섞기 때문에, 배치 내에서 연속 프레임을 추출할 수 없었습니다.
-- `CustomPennFudanDataset`에 `pair_mode=True` 옵션을 추가하여 각 샘플 로드 시 동일 replay 내의 연속된 다음 윈도우 $(t, t+1)$ 텐서와 모드 정보를 함께 로드하도록 구현했습니다:
+- `StarCraftWindowDataset`에 `pair_mode=True` 옵션을 추가하여 각 샘플 로드 시 동일 replay 내의 연속된 다음 윈도우 $(t, t+1)$ 텐서와 모드 정보를 함께 로드하도록 구현했습니다:
   - `target["next_image"]`: 다음 프레임 윈도우 텐서
   - `target["next_modes"]`: 다음 프레임 순위 모드 메타데이터
   - `target["next_valid"]`: 실제 후속 윈도우 존재 여부. replay의 마지막 윈도우는 후속이 없어 자기 자신과 페어링되므로(텐서 shape 유지 목적), 이 플래그가 `False`가 되어 $L_{smooth}$의 `valid_mask`에서 제외됩니다. 이것이 없으면 replay마다 변위 0인 가짜 쌍이 손실에 섞입니다.

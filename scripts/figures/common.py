@@ -43,7 +43,7 @@ from matplotlib import font_manager, patches
 from scipy.ndimage import gaussian_filter
 
 import config
-from estimate import load_coco_gt, load_coco_preds
+from evaluate import load_coco_gt, load_coco_preds
 from metrics.modes import (
     analyse_method,
     box_center,

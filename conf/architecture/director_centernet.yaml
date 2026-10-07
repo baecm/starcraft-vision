@@ -1,4 +1,3 @@
-# conf/architecture/director_centernet.yaml
 model_name: director_centernet
 score_threshold: 0.1
 centernet_down_ratio: 4      # heatmap output stride in tiles; 4|2|1 (32x32 | 64x64 | 128x128).

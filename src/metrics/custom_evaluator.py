@@ -1,4 +1,17 @@
-# src/metrics/custom_evaluator.py
+"""
+Single-region intersection ratio (IR) and Intersection@{any, 0.3, 0.5}.
+
+eval_intersection_run is the evaluator behind evaluate.py's per-replay IR
+and ic@ numbers (the single-region tables of the thesis and the KBRS paper).
+It reproduces the original evaluation script, including its conventions:
+positions are top-left corners in map pixels scaled to the tile grid
+(max_x / max_y), and the window is x_len x y_len tiles. Its flags re-enable
+the faults fixed in 2026-08..10 (see thesis/tog-revision-notes.md), which is
+how the originally reported numbers are reproduced exactly.
+
+intersection_ratio is the mask-based definition that
+metrics.modes.coverage_of reimplements with array slices.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,73 +19,16 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pycocotools.mask as mask_util
-from pycocotools.coco import COCO
-
-# ----------------------------------------------------------------------
-# Dataclass: per-image 결과 구조
-# ----------------------------------------------------------------------
 
 
 @dataclass
 class ImageIR:
+    """Per-frame result of eval_intersection_run."""
     image_id: int
     width: int
     height: int
     ir: float  # intersection ratio
-    overlap_count: int  # GT와 겹치는 예측 개수 or nonzero pixel count in legacy
-
-
-# ----------------------------------------------------------------------
-# 내부 유틸리티: RLE / bbox / window 계산 (modern path)
-# ----------------------------------------------------------------------
-
-
-def _poly_to_rle(poly, h: int, w: int) -> dict:
-    if isinstance(poly, dict) and "counts" in poly:
-        rle = poly
-        if isinstance(rle["counts"], list):
-            rle = mask_util.frPyObjects(rle, h, w)
-        return rle
-    if isinstance(poly, list):
-        rles = mask_util.frPyObjects(poly, h, w)
-        rle = mask_util.merge(rles)
-        return rle
-    raise ValueError(f"Unsupported segmentation format: {type(poly)}")
-
-
-def _anno_to_rle(anno: dict, h: int, w: int) -> dict:
-    if "segmentation" in anno and anno["segmentation"] is not None:
-        seg = anno["segmentation"]
-        if isinstance(seg, list):
-            rle = _poly_to_rle(seg, h, w)
-        elif isinstance(seg, dict):
-            rle = seg
-            if isinstance(seg.get("counts", None), list):
-                rle = mask_util.frPyObjects(rle, h, w)
-        else:
-            raise ValueError("Unknown segmentation type in annotation.")
-        return rle
-
-    if "bbox" in anno and anno["bbox"] is not None:
-        x, y, wbox, hbox = anno["bbox"]
-        x0 = max(0, int(np.floor(x)))
-        y0 = max(0, int(np.floor(y)))
-        x1 = min(w, int(np.ceil(x + wbox)))
-        y1 = min(h, int(np.ceil(y + hbox)))
-        if x1 <= x0 or y1 <= y0:
-            return mask_util.encode(np.asfortranarray(np.zeros((h, w), dtype=np.uint8)))
-        m = np.zeros((h, w), dtype=np.uint8)
-        m[y0:y1, x0:x1] = 1
-        rle = mask_util.encode(np.asfortranarray(m))
-        return rle
-
-    raise ValueError("Annotation lacks both 'segmentation' and 'bbox'.")
-
-
-def _union_rles(rles: List[dict], h: int, w: int) -> dict:
-    if not rles:
-        return mask_util.encode(np.asfortranarray(np.zeros((h, w), dtype=np.uint8)))
-    return mask_util.merge(rles)
+    overlap_count: int  # nonzero tiles in the predicted window (an approximation kept from the original script)
 
 
 def _area(rle: dict) -> float:
@@ -83,67 +39,8 @@ def _intersect(rle1: dict, rle2: dict) -> dict:
     return mask_util.merge([rle1, rle2], intersect=True)
 
 
-def _bbox_from_rle(rle: dict) -> Tuple[int, int, int, int]:
-    bb = mask_util.toBbox(rle)  # (x,y,w,h) float
-    x, y, w, h = bb
-    x0 = int(np.floor(x))
-    y0 = int(np.floor(y))
-    x1 = int(np.ceil(x + w))
-    y1 = int(np.ceil(y + h))
-    return x0, y0, x1, y1
-
-
-def _centroid_from_rle(rle: dict) -> Tuple[float, float]:
-    x0, y0, x1, y1 = _bbox_from_rle(rle)
-    return (x0 + x1) / 2.0, (y0 + y1) / 2.0
-
-
-def _window_mask(
-    center_x: float,
-    center_y: float,
-    win_w: int,
-    win_h: int,
-    H: int,
-    W: int,
-) -> Tuple[dict, float, Tuple[int, int, int, int]]:
-    half_w = win_w // 2
-    half_h = win_h // 2
-    x0 = int(np.round(center_x)) - half_w
-    y0 = int(np.round(center_y)) - half_h
-    x1 = x0 + win_w
-    y1 = y0 + win_h
-
-    x0 = max(0, x0)
-    y0 = max(0, y0)
-    x1 = min(W, x1)
-    y1 = min(H, y1)
-
-    if x1 <= x0 or y1 <= y0:
-        m = np.zeros((H, W), dtype=np.uint8)
-        return mask_util.encode(np.asfortranarray(m)), 0.0, (x0, y0, x1, y1)
-
-    m = np.zeros((H, W), dtype=np.uint8)
-    m[y0:y1, x0:x1] = 1
-    return mask_util.encode(np.asfortranarray(m)), float((x1 - x0) * (y1 - y0)), (
-        x0,
-        y0,
-        x1,
-        y1,
-    )
-
-
-def _window_center(window_source: str, P: Optional[dict], G: dict) -> Tuple[float, float]:
-    if window_source == "pred" and P is not None:
-        return _centroid_from_rle(P)
-    return _centroid_from_rle(G)
-
-
-# ----------------------------------------------------------------------
-# Intersection ratio 및 kernel 기반 score (modern path)
-# ----------------------------------------------------------------------
-
-
 def intersection_ratio(P: dict, G: dict, denom: str) -> float:
+    """|P & G| / |denominator| for two RLE masks; denom is 'gt', 'pred' or 'union'."""
     inter = _intersect(P, G)
     inter_area = _area(inter)
     if denom == "gt":
@@ -159,38 +56,8 @@ def intersection_ratio(P: dict, G: dict, denom: str) -> float:
     return float(inter_area / D)
 
 
-def kernel_scores(
-    center_x: float,
-    center_y: float,
-    win_w: int,
-    win_h: int,
-    H: int,
-    W: int,
-    T_mask: dict,
-) -> Tuple[float, float, float]:
-    Wmask, Warea, (x0, y0, x1, y1) = _window_mask(center_x, center_y, win_w, win_h, H, W)
-    if Warea <= 0:
-        return 0.0, 0.0, 0.0
-
-    TinW = _intersect(T_mask, Wmask)
-    t_area = _area(TinW)
-    density = float(t_area / Warea)
-
-    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-    if t_area <= 0:
-        centeredness = 0.0
-    else:
-        tcx, tcy = _centroid_from_rle(TinW)
-        dist = float(np.hypot(tcx - cx, tcy - cy))
-        half_diag = float(np.hypot((x1 - x0), (y1 - y0)) / 2.0)
-        centeredness = max(0.0, 1.0 - (dist / half_diag)) if half_diag > 0 else 0.0
-
-    mixture = density * centeredness
-    return density, centeredness, mixture
-
-
 # ----------------------------------------------------------------------
-# Legacy evaluator: labels-arr 기반 (original legacy behavior)
+# The IR evaluator (a port of the original evaluation script)
 # ----------------------------------------------------------------------
 def eval_intersection_run(
     labels_tests: Sequence[Sequence[Sequence[Dict[str, Any]]]],
@@ -344,6 +211,3 @@ def eval_intersection_run(
     return per_image, aggregates
 
 
-# alias for compatibility
-def eval_run(*args, **kwargs):
-    return eval_intersection_run(*args, **kwargs)

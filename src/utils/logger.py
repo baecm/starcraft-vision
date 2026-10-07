@@ -1,4 +1,3 @@
-# src/utils/logger.py
 class Logger:
     _level = "log"
     _levels = ["none", "log", "debug"]

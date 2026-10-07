@@ -1,4 +1,3 @@
-# src/utils/time_measure.py
 from contextlib import contextmanager
 
 import time

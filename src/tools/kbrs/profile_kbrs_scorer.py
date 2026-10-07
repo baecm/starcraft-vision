@@ -1,4 +1,3 @@
-# src/profile_kbrs_forward.py
 # 목적:
 # - "input 1장 기준" KBRS scorer 호출 시간(= model.kbrs_scorer(fmap_for_kbrs))을 측정
 # - batch size를 1/8/16/32로 바꿔가며 ms/call, ms/img 통계 출력

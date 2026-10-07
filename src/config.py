@@ -1,4 +1,3 @@
-# src/config.py
 import sys
 from enum import Enum
 
@@ -132,7 +131,6 @@ PARAM_ALIAS_MAP = {
     "ds=": "dataset=",
     "kbrs=": "plugins/kbrs=",
     "density_peak=": "plugins/density_peak=",
-    "probabilistic_query=": "plugins/probabilistic_query=",
     "loss=": "plugins/kbrs/loss=",
     "kbrs_loss=": "plugins/kbrs/loss=",
     "score=": "plugins/kbrs/score=",

@@ -1,4 +1,3 @@
-# src/models/plugins/kbrs/feature_scorer.py
 """
 The KBRS scorer exactly as it trained the models of the saliency-prior paper
 (ToG-2026-0161): src/model/kbrs.py and src/model/kbrs_kernel.py at e949efa.

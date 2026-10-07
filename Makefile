@@ -40,7 +40,7 @@ PYDEBUG_SERVICE  ?= pydebug
 
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
-		zeppelin benchmark mode-disagreement mode-disagreement-fg inference-fg train-fg test probe probe-resolution \
+		zeppelin mode-disagreement mode-disagreement-fg inference-fg train-fg test probe probe-resolution \
 		budget-allocation qualitative-figures-fg figure-fg run-registry analysis
 
 # 디렉토리 생성
@@ -173,12 +173,6 @@ probe:
 
 probe-resolution:
 	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/probe_resolution.py"
-
-benchmark:
-	CONTAINER_NAME=benchmark_$$(date +%Y%m%d_%H%M%S); \
-	nohup docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/run_benchmark.py $(ARGS)" \
-		> logs/$$CONTAINER_NAME.log 2>&1 & \
-	echo $$CONTAINER_NAME > $(PID_DIR)/benchmark.cid
 
 # Example:
 # make mode-disagreement ARGS="--replays 275 1725 3613 4520 4664 --label-method all_correct \

@@ -1,4 +1,3 @@
-# src/cli.py
 import argparse
 import os
 import sys
@@ -120,18 +119,6 @@ def build_inference_parser() -> argparse.ArgumentParser:
         "--use-kbrs",
         action="store_true",
         help="Use KBRS if available in the model.",
-    )
-    group_model.add_argument(
-        "--rtdetr-version",
-        type=str,
-        default="v1",
-        help="RT-DETR version (v1 or v2).",
-    )
-    group_model.add_argument(
-        "--rtdetr-size",
-        type=str,
-        default="l",
-        help="RT-DETR model size (s, m, l, x).",
     )
     group_model.add_argument(
         "--architecture",

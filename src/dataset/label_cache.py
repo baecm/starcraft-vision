@@ -1,4 +1,3 @@
-# src/dataset/label_cache.py
 from __future__ import annotations
 
 import json
@@ -17,7 +16,7 @@ from utils.logger import Logger
 
 def _process_json_worker(args: tuple[str, str, str]) -> str:
     """
-    Worker for COCO JSON → pickle 변환.
+    Worker: convert one replay's COCO JSON labels to a pickle.
     """
     rid, label_root, label_method = args
     json_path = os.path.join(label_root, f"{rid}.rep", f"{label_method}.json")
@@ -33,7 +32,7 @@ def _process_json_worker(args: tuple[str, str, str]) -> str:
             coco = json.load(f)
 
         # ========================================================
-        # [수정 추가] image_id 별로 묶어서 annotator_id(0~4) 부여
+        # Number the observers of each frame: annotator_id 0..U-1
         # ========================================================
         raw_annotations = coco.get("annotations", [])
         grouped_by_image = defaultdict(list)
@@ -43,18 +42,18 @@ def _process_json_worker(args: tuple[str, str, str]) -> str:
             
         processed_annotations = []
         for image_id, anns in grouped_by_image.items():
-            # JSON에 기록된 순서가 뒤죽박죽일 수 있으므로 id 기준으로 한 번 정렬
+            # the JSON order is not guaranteed, so order by annotation id first
             anns = sorted(anns, key=lambda x: x.get("id", 0))
             
             for idx, ann in enumerate(anns):
-                ann["annotator_id"] = idx  # 0, 1, 2, 3, 4 부여
+                ann["annotator_id"] = idx  # 0, 1, 2, 3, 4
                 processed_annotations.append(ann)
                 
-        # 처리된 라벨로 교체
+        # replace with the numbered annotations
         coco["annotations"] = processed_annotations
         # ========================================================
 
-        # 최소 필드 보정
+        # fill in the COCO fields a consumer may expect
         coco.setdefault("info", {"description": "auto-generated", "version": "1.0"})
         coco.setdefault("licenses", [])
         coco.setdefault("categories", [{"id": 1, "name": "viewport"}])
@@ -65,7 +64,7 @@ def _process_json_worker(args: tuple[str, str, str]) -> str:
             "licenses": coco["licenses"],
             "categories": coco["categories"],
             "images": coco["images"],
-            "annotations": coco["annotations"],  # annotator_id가 포함된 데이터가 저장됨
+            "annotations": coco["annotations"],  # with annotator_id
         }
 
         with open(pkl_path, "wb") as f:
@@ -84,18 +83,18 @@ def ensure_label_pickles(
     verbose: bool = True,
 ) -> None:
     """
-    COCO JSON 라벨에서 pickle 캐시를 생성/보장하는 유틸.
+    Make sure every replay has a pickle cache of its COCO JSON labels.
 
-    - JSON 파일이 없으면: "Skipped ...: no JSON found."
-    - pickle 이 이미 있으면: "Skipped ...: pickle already exists."
-    - 둘 다 아니면: JSON → pickle 변환
+    - no JSON: "Skipped ...: no JSON found."
+    - pickle already there: "Skipped ...: pickle already exists."
+    - otherwise: convert the JSON to a pickle
 
     Args:
-        label_root: label/dst 루트 디렉토리
-        label_method: 라벨링 메서드 이름 (예: "legacy", "kbrs", ...)
-        replay_ids: 처리할 리플레이 ID 리스트
-        num_workers: multiprocessing Pool 프로세스 개수
-        verbose: Logger 에 진행 상황을 남길지 여부
+        label_root: the label/dst root
+        label_method: label file name without extension (e.g. "all_correct")
+        replay_ids: replays to process
+        num_workers: multiprocessing Pool size
+        verbose: log progress
     """
     def log(msg: str) -> None:
         if verbose:
@@ -131,7 +130,7 @@ def ensure_label_pickles(
             )
         )
 
-    # 통계 집계
+    # summary counts
     success_count = sum(1 for r in results if r.startswith("Success"))
     skipped_exist_count = sum(1 for r in results if "pickle already exists" in r)
     skipped_no_json_count = sum(1 for r in results if "no JSON found" in r)

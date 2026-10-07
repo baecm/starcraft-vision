@@ -1,4 +1,3 @@
-# src/model/factory.py
 from __future__ import annotations
 import os
 import torch
@@ -16,10 +15,7 @@ except ModuleNotFoundError:
 from .backbones import (
     CenterNetBackbone,
     DirectorCenterNet,
-    DeformableDETRBackbone,
-    ProbabilisticVideoDETR,
     build_maskrcnn_backbone,
-    build_rtdetr_backbone,
 )
 from .plugins import KBRSHook
 from .utils import pick_feature_map
@@ -83,7 +79,16 @@ class KBRSWrapper(nn.Module):
 
 def build_model(args: Any) -> nn.Module:
     """
-    Unified Factory Entrypoint to build object detection models with optional plugins (KBRS, Density Peak, Probabilistic Query).
+    Build a model from a flat namespace of options (train.py and inference.py
+    each assemble one), optionally wrapped with the KBRS auxiliary loss.
+
+    model_name selects the architecture:
+      maskrcnn            the proposal-detector observer (KBRS, ROCI and the
+                          mode-target control are all built on it)
+      director            Director-CenterNet, the ranked multi-region heatmap model
+      centernet           plain CenterNet, the heatmap baseline
+    RT-DETR, Deformable DETR and the video DETR variants were moved to
+    archive/legacy/ in 2026-10.
     """
     model_name = getattr(args, "model_name", "centernet").lower()
     use_kbrs = getattr(args, "use_kbrs", False)
@@ -94,27 +99,19 @@ def build_model(args: Any) -> nn.Module:
     kbrs_params = getattr(args, "kbrs_params", {}) or {}
 
     use_dp = getattr(args, "use_density_peak", False) or (model_name == "centernet_density_peak")
-    use_pq = getattr(args, "use_probabilistic_query", False) or ("probabilistic" in model_name)
 
-    # ------------------------------------------------------------------
-    # Model Construction
-    # ------------------------------------------------------------------
     if model_name == "maskrcnn":
         model = build_maskrcnn_backbone(
             num_classes=num_classes,
             window_size=window_size,
             in_channels=in_channels,
+            # Neither train.py nor inference.py sets resize_mode, so every
+            # Mask R-CNN built here (all v6 runs included) resizes its input to 640x640,
+            # whatever conf/architecture/maskrcnn.yaml says. Changing this
+            # default changes the model; keep it for comparability.
             resize_mode=getattr(args, "resize_mode", "fixed_square"),
             do_normalize=getattr(args, "do_normalize", False),
             soft_mode_cls=getattr(args, "soft_mode_cls", False),
-        )
-
-    elif model_name == "rtdetr":
-        model = build_rtdetr_backbone(
-            num_classes=num_classes,
-            version=getattr(args, "rtdetr_version", "v1"),
-            model_size=getattr(args, "rtdetr_size", "l"),
-            in_channels=in_channels
         )
 
     elif model_name in ["centernet", "centernet_density_peak"]:
@@ -148,34 +145,9 @@ def build_model(args: Any) -> nn.Module:
             dense_positives=getattr(args, "dense_positives", config.DIRECTOR_DENSE_POSITIVES),
         )
 
-    elif model_name in ["probabilistic_video_detr", "video_detr", "deformable_video_detr_cvae"]:
-        per_frame_c = getattr(args, "single_frame_channels", None)
-        if per_frame_c is None:
-            per_frame_c = in_channels // max(1, window_size) if in_channels > window_size else in_channels
-        model = ProbabilisticVideoDETR(
-            in_channels=per_frame_c,
-            feat_dim=getattr(args, "feat_dim", 128),
-            num_raters=getattr(args, "num_raters", 5),
-            latent_dim=getattr(args, "latent_dim", 64),
-            num_queries=getattr(args, "num_queries", 3),
-            num_heads=getattr(args, "num_heads", 8),
-            num_decoder_layers=getattr(args, "num_decoder_layers", 3),
-            grid_size=getattr(args, "grid_size", (128, 128)),
-            use_cvae=getattr(args, "use_cvae", True),
-        )
-
-    elif model_name in ["deformable_detr", "deformable_video_detr", "deformable_video_detr_probabilistic"]:
-        model = DeformableDETRBackbone(
-            num_classes=num_classes,
-            in_channels=in_channels,
-            window_size=window_size,
-            num_queries=getattr(args, "num_queries", 100),
-            use_probabilistic_query=use_pq,
-            loss_weights=loss_weights
-        )
-
     else:
-        raise ValueError(f"Unknown model_name: {model_name}. Supported: 'maskrcnn', 'rtdetr', 'centernet', 'deformable_detr', 'probabilistic_video_detr'")
+        raise ValueError(f"Unknown model_name: {model_name}. Supported: 'maskrcnn', 'director', 'centernet' "
+                         f"(the DETR variants are in archive/legacy/)")
 
     if use_kbrs:
         kbrs_params = dict(kbrs_params or {})
@@ -194,7 +166,6 @@ def build_model(args: Any) -> nn.Module:
         "[PLUGINS ATTACHED SUMMARY]",
         f"  - KBRS Plugin          : {'[ENABLED]' if use_kbrs else '[DISABLED]'}",
         f"  - Density Peak Plugin  : {'[ENABLED]' if (model_name.startswith('centernet') and use_dp) else ('[DISABLED]' if model_name.startswith('centernet') else '[N/A]')}",
-        f"  - Probabilistic Query  : {'[ENABLED]' if ('detr' in model_name and use_pq) else ('[DISABLED]' if 'detr' in model_name else '[N/A]')}",
         "======================================================================"
     ]
     for line in log_lines:

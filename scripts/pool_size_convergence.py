@@ -190,7 +190,7 @@ def main() -> int:
     ap.add_argument("--num-observers", type=int, default=5)
     add_mode_args(ap)
     ap.add_argument("--frame-stride", type=int, default=1,
-                    help="analyse every n-th frame; 1 keeps all, as the thesis tables do")
+                    help="analyze every n-th frame; 1 keeps all, as the thesis tables do")
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--sweep", action="store_true")
     ap.add_argument("--sweep-min-sep", type=float, nargs="+", default=[8.0, 12.0, 16.0, 20.0])

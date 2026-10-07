@@ -4,18 +4,15 @@ defaults:
   - architecture: maskrcnn
   - plugins/kbrs: disabled
   - plugins/density_peak: disabled
-  - plugins/probabilistic_query: disabled
   - plugins/kbrs/loss: kbrs025
   - optional plugins/kbrs/score: null
   - _self_ 
 
 use_kbrs: ${plugins.kbrs.use_kbrs}
 use_density_peak: ${plugins.density_peak.use_density_peak}
-use_probabilistic_query: ${plugins.probabilistic_query.use_probabilistic_query}
 
 kbrs: ${plugins.kbrs}
 density_peak: ${plugins.density_peak}
-probabilistic_query: ${plugins.probabilistic_query}
 # ===== Data & Replays =====
 train_replays: ${dataset.train_replays}
 test_replays: ${dataset.test_replays}
@@ -25,7 +22,7 @@ include_components: [worker, ground, air, building, vision]
 # preprocessing writes only when generated with --roci. Changing this requires
 # training from scratch; it cannot be applied to an existing checkpoint.
 roci: false
-# Mask R-CNN box targets (src/dataset/custom_penn_fudan.py, MODE_TARGET_CHOICES).
+# Mask R-CNN box targets (src/dataset/starcraft_windows.py, MODE_TARGET_CHOICES).
 # none: the five observer viewports. hard: one viewport-sized box per ranked
 # mode. soft: the same boxes with support / U as the class target. hard and
 # soft test whether the detector's redundant/empty boxes come from five

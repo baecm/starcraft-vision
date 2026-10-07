@@ -1,4 +1,3 @@
-# conf/kbrs/enabled.yaml
 use_kbrs: true
 loss_weights:
   loss_rpn_box_reg: ${oc.select:kbrs_loss.loss_rpn_box_reg,1.0}

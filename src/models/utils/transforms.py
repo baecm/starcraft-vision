@@ -1,4 +1,3 @@
-# src/model/utils/transforms.py
 import torch
 from torchvision.models.detection.transform import GeneralizedRCNNTransform
 

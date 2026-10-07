@@ -13,7 +13,7 @@ import torch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
 import config
-from dataset.custom_penn_fudan import CustomPennFudanDataset
+from dataset.starcraft_windows import StarCraftWindowDataset
 from models.backbones import maskrcnn as maskrcnn_module
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 
@@ -32,7 +32,7 @@ def _m_info():
 
 
 def test_one_box_per_mode_viewport_sized_and_inside_map():
-    t = CustomPennFudanDataset._make_target_from_modes(_m_info(), H, W, image_id=7)
+    t = StarCraftWindowDataset._make_target_from_modes(_m_info(), H, W, image_id=7)
     boxes = t["boxes"].numpy()
     assert boxes.shape == (3, 4)
     # every box is the full viewport: shifted at the edges, never cropped
@@ -52,7 +52,7 @@ def test_one_box_per_mode_viewport_sized_and_inside_map():
 
 
 def test_frame_without_modes_gives_empty_target():
-    t = CustomPennFudanDataset._make_target_from_modes(None, H, W, image_id=7)
+    t = StarCraftWindowDataset._make_target_from_modes(None, H, W, image_id=7)
     assert t["boxes"].shape == (0, 4)
     assert t["masks"].shape == (0, H, W)
     assert t["mode_weight"].numel() == 0
@@ -75,8 +75,8 @@ def _build(soft: bool):
 def _batch():
     images = [torch.rand(36, H, W), torch.rand(36, H, W)]
     targets = [
-        CustomPennFudanDataset._make_target_from_modes(_m_info(), H, W, image_id=1),
-        CustomPennFudanDataset._make_target_from_modes(None, H, W, image_id=2),
+        StarCraftWindowDataset._make_target_from_modes(_m_info(), H, W, image_id=1),
+        StarCraftWindowDataset._make_target_from_modes(None, H, W, image_id=2),
     ]
     return images, targets
 

@@ -1,4 +1,3 @@
-# src/losses/director_losses.py
 from __future__ import annotations
 
 import math
