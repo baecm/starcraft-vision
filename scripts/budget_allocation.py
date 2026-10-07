@@ -10,7 +10,7 @@ regions on frames whose target has more modes. beta_n on its own is a
 statistic; this script measures what it costs. A frame whose target has n
 ranked modes and for which a method emits fewer than n regions has observers
 that cannot be served no matter where those regions are placed - the failure is
-capacity, not localisation. Conditioning everything on n separates the two and
+capacity, not localization. Conditioning everything on n separates the two and
 usually produces a crossover: the method with the larger budget on easy frames
 wins there and loses on the hard ones.
 
@@ -22,6 +22,12 @@ Two cautions, both of which the output marks rather than hides:
 - OC@delta is only comparable across methods when each is scored on the number
   of regions it actually emitted, so the column used is OC at
   K = min(n_pred, 5) per frame rather than a fixed K.
+
+The OC column here is a mean over ANSWERED frames: a declined frame has an
+empty OC cell in the CSV and is left out (counted in "missing_oc"). The other
+scripts score a declined frame 0 (coverage-penalized), so their OC is not
+this one. n_pred, the under-emission rate and beta_n do count declined
+frames, as zero regions.
 
 Usage:
   python3 scripts/budget_allocation.py --dir results/mode_disagreement/th_sweep \
@@ -37,6 +43,10 @@ import os
 from collections import defaultdict
 from typing import Dict, List, Optional
 
+from analysis_common import weighted_slope
+
+# Frames with 1..MAX_N modes enter (as for beta_n everywhere), and OC is read
+# from the columns OC1..OC<MAX_N> that mode_disagreement.py writes.
 MAX_N = 5
 
 
@@ -46,13 +56,14 @@ def _read(path: str) -> List[Dict[str, str]]:
 
 
 def _oc_at(row: Dict[str, str], k: int) -> Optional[float]:
+    """OC_k@0.5 of the row, or None when the cell is empty (a declined frame)."""
     col = f"OC{k}@0.5"
     if col not in row or row[col] in (None, ""):
         return None
     return float(row[col])
 
 
-def analyse(rows: List[Dict[str, str]], k_cap: Optional[int]) -> Dict:
+def allocation_by_n_modes(rows: List[Dict[str, str]], k_cap: Optional[int]) -> Dict:
     frames = defaultdict(int)
     n_pred_sum = defaultdict(float)
     under = defaultdict(int)
@@ -97,14 +108,10 @@ def analyse(rows: List[Dict[str, str]], k_cap: Optional[int]) -> Dict:
     # the headline statistic are computed from the same rows.
     pts = [(n, v["n_pred"], v["frames"]) for n, v in per_n.items()]
     w = sum(f for _, _, f in pts)
-    mx = sum(n * f for n, _, f in pts) / w
-    my = sum(p * f for _, p, f in pts) / w
-    num = sum(f * (n - mx) * (p - my) for n, p, f in pts)
-    den = sum(f * (n - mx) ** 2 for n, _, f in pts)
 
     return {
         "per_n": per_n,
-        "beta_n": num / den if den else float("nan"),
+        "beta_n": weighted_slope(pts),
         "n_pred": sum(v["n_pred"] * v["frames"] for v in per_n.values()) / w,
         "frames": w,
         "missing_oc": missing_oc,
@@ -141,7 +148,7 @@ def main() -> int:
     results = {}
     for label, path in found.items():
         rows = _read(path)
-        results[label] = analyse(rows, caps.get(label))
+        results[label] = allocation_by_n_modes(rows, caps.get(label))
 
     out_rows = []
     for label, res in results.items():

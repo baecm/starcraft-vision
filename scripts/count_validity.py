@@ -7,7 +7,7 @@ Is the count response beta_n made of useful regions? beta_n is the weighted
 slope of E[n_hat | n] on the number of modes n, and it says nothing about
 where the regions go. Here every emitted region of a frame (highest score
 first, no cap, as beta_n counts them) is classified against the frame's
-ranked modes, with the overlap `aux_on_modes.py` uses:
+ranked modes (analysis_common.classify_regions):
 
   new   it covers (>= delta) a mode no higher-ranked region covers
   dup   its best mode is already covered by a higher-ranked region
@@ -31,6 +31,8 @@ often than the same number of regions placed without looking at the frame.
 All frames with 1..5 modes enter, as in `budget_allocation.py`. A declined
 frame has n_hat = 0.
 
+Reported in: thesis tab:mrvp:countsplit, and the ESWA paper.
+
 Usage
 -----
 python scripts/count_validity.py --replays 275 1725 3613 4520 4664 \
@@ -41,140 +43,130 @@ python scripts/count_validity.py --replays 275 1725 3613 4520 4664 \
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from collections import defaultdict
 
 import numpy as np
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(_ROOT, "src"))
-sys.path.insert(0, _ROOT)
-
-from evaluate import load_coco_gt, load_coco_preds  # noqa: E402
-from metrics.modes import (  # noqa: E402
-    _rect_overlap_ratio,
-    box_from_center,
-    extract_modes,
-    gt_boxes_by_frame,
-    image_size,
-    infer_region_size,
-    predictions_from_dets,
+from analysis_common import (
+    MAX_MODES_FOR_SLOPE,
+    add_mode_args,
+    add_prediction_args,
+    add_replay_args,
+    classify_regions,
+    load_regions,
+    load_replay_gt,
+    mode_params,
+    parse_model_spec,
+    per_viewport_set,
+    weighted_slope,
 )
+from metrics.modes import box_from_center, extract_modes
 
-MAX_N = 5
+# Per-n accumulators: n_hat = new + dup + off, and the chance baselines' new.
 PARTS = ("n_hat", "new", "dup", "off", "new_uniform", "new_prior")
 
 
-def parse_model(spec: str):
-    name, rest = spec.split("=", 1)
-    th = None
-    if "@" in rest:
-        rest, th = rest.split("@", 1)
-    return name, rest, th
+def count_new(boxes, mode_boxes, gt, delta) -> int:
+    return classify_regions(boxes, mode_boxes, gt.height, gt.width, delta).count("new")
 
 
-def classify(boxes, mode_boxes, h, w, delta):
-    """(new, dup, off) counts for regions in score order."""
-    covered, new, dup, off = set(), 0, 0, 0
-    for box in boxes:
-        covs = np.array([_rect_overlap_ratio(box, mb, h, w) for mb in mode_boxes])
-        best = int(np.argmax(covs))
-        if covs[best] < delta:
-            off += 1
-        elif best in covered:
-            dup += 1
-        else:
-            new += 1
-        covered |= set(np.nonzero(covs >= delta)[0].tolist())
-    return new, dup, off
+def uniform_regions(rng, k: int, gt) -> np.ndarray:
+    """k viewport-sized regions with top-left corners uniform over the map."""
+    rh, rw = gt.viewport_hw
+    boxes = np.zeros((k, 4))
+    if k:
+        boxes[:, 0] = rng.uniform(0, max(0, gt.width - rw), k)
+        boxes[:, 1] = rng.uniform(0, max(0, gt.height - rh), k)
+        boxes[:, 2], boxes[:, 3] = rw, rh
+    return boxes
 
 
-def slope(per_n: dict, key: str) -> float:
-    pts = [(n, v[key] / v["frames"], v["frames"]) for n, v in per_n.items() if v["frames"]]
-    wsum = sum(f for _, _, f in pts)
-    mx = sum(n * f for n, _, f in pts) / wsum
-    my = sum(y * f for _, y, f in pts) / wsum
-    num = sum(f * (n - mx) * (y - my) for n, y, f in pts)
-    den = sum(f * (n - mx) ** 2 for n, _, f in pts)
-    return num / den if den else float("nan")
+def prior_regions(rng, k: int, pool: np.ndarray) -> np.ndarray:
+    """k regions drawn (with replacement) from the method's regions in this replay."""
+    return pool[rng.integers(0, len(pool), k)] if k and len(pool) else np.zeros((0, 4))
+
+
+def accumulate_replay(per_n, gt, regions, mode_boxes_by_frame, delta, rng) -> None:
+    """Add one model's frames of one replay to per_n[n][part].
+
+    The two chance draws use the same rng in a fixed order (uniform, then
+    prior, frame by frame), so a run is reproducible from --seed.
+    """
+    all_regions = (np.concatenate([b for b, _ in regions.values() if len(b)])
+                   if regions else np.zeros((0, 4)))
+    for frame, mode_boxes in mode_boxes_by_frame.items():
+        n = len(mode_boxes)
+        if n < 1 or n > MAX_MODES_FOR_SLOPE:
+            continue
+        boxes = regions.get(frame, (np.zeros((0, 4)), None))[0]
+        k = len(boxes)
+        kinds = classify_regions(boxes, mode_boxes, gt.height, gt.width, delta)
+        uniform = uniform_regions(rng, k, gt)
+        prior = prior_regions(rng, k, all_regions)
+
+        acc = per_n[n]
+        acc["frames"] += 1
+        acc["n_hat"] += k
+        acc["new"] += kinds.count("new")
+        acc["dup"] += kinds.count("dup")
+        acc["off"] += kinds.count("off")
+        acc["new_uniform"] += count_new(uniform, mode_boxes, gt, delta)
+        acc["new_prior"] += count_new(prior, mode_boxes, gt, delta)
+
+
+def part_slope(per_n, part: str) -> float:
+    """beta of one part: the weighted slope of its per-n mean."""
+    return weighted_slope([(n, acc[part] / acc["frames"], acc["frames"])
+                           for n, acc in per_n.items() if acc["frames"]])
+
+
+def report(models, per_n_by_model) -> None:
+    print("method\tframes\t" + "\t".join(f"mean_{p}" for p in PARTS) + "\t"
+          + "\t".join(f"beta_{p}" for p in PARTS))
+    for spec in models:
+        per_n = per_n_by_model[spec.name]
+        frames = sum(acc["frames"] for acc in per_n.values())
+        means = [sum(acc[p] for acc in per_n.values()) / frames for p in PARTS]
+        betas = [part_slope(per_n, p) for p in PARTS]
+        print("\t".join([spec.name, f"{int(frames)}"] + [f"{m:.3f}" for m in means]
+                        + [f"{b:+.4f}" for b in betas]), flush=True)
+
+    print("\nper n: method n frames " + " ".join(PARTS))
+    for spec in models:
+        per_n = per_n_by_model[spec.name]
+        for n in sorted(per_n):
+            acc = per_n[n]
+            print(spec.name, n, int(acc["frames"]), " ".join(f"{acc[p] / acc['frames']:.3f}" for p in PARTS))
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--replays", nargs="+", default=["275", "1725", "3613", "4520", "4664"])
-    ap.add_argument("--label-root", default="/workspace/data/label/dst")
-    ap.add_argument("--label-method", default="all_correct")
-    ap.add_argument("--pred-root", default="/workspace/predictions")
-    ap.add_argument("--model", action="append", required=True, metavar="NAME=MODEL_NAME[@THRESHOLD]")
-    ap.add_argument("--epoch", type=int, default=30)
+    add_replay_args(ap)
+    add_prediction_args(ap)
+    ap.add_argument("--model", action="append", required=True, metavar="NAME=MODEL_NAME[:EPOCH][@THRESHOLD]")
     ap.add_argument("--delta", type=float, default=0.5)
-    ap.add_argument("--sigma", type=float, default=4.0)
-    ap.add_argument("--min-sep", type=float, default=12.0)
-    ap.add_argument("--rel-threshold", type=float, default=0.35)
-    ap.add_argument("--max-modes", type=int, default=5)
-    ap.add_argument("--seed", type=int, default=0)
+    add_mode_args(ap)
+    ap.add_argument("--seed", type=int, default=0, help="seed of the chance baselines")
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
-    models = [parse_model(s) for s in args.model]
-    per_n = {name: defaultdict(lambda: defaultdict(float)) for name, _, _ in models}
+    models = [parse_model_spec(s, args.epoch) for s in args.model]
+    per_n_by_model = {spec.name: defaultdict(lambda: defaultdict(float)) for spec in models}
 
-    for rep in args.replays:
-        coco = load_coco_gt(args.label_root, rep, args.label_method)
-        h, w = image_size(coco)
-        gt = gt_boxes_by_frame(coco)
-        size_hw = infer_region_size(gt)
-        rh, rw = size_hw
-        cache, modes_by_frame = {}, {}
-        for f, boxes in gt.items():
-            key = boxes.tobytes()
-            if key not in cache:
-                m = extract_modes(boxes, h, w, args.sigma, args.min_sep, args.rel_threshold, args.max_modes)
-                cache[key] = [box_from_center(c, size_hw, h, w) for c in m.centers]
-            modes_by_frame[f] = cache[key]
+    for replay in args.replays:
+        gt = load_replay_gt(args.label_root, replay, args.label_method)
+        mode_boxes_by_frame = per_viewport_set(
+            gt.viewports_by_frame,
+            lambda viewports: [box_from_center(c, gt.viewport_hw, gt.height, gt.width)
+                               for c in extract_modes(viewports, gt.height, gt.width, *mode_params(args)).centers])
+        for spec in models:
+            regions = load_regions(args.pred_root, spec.model, spec.epoch, replay,
+                                   args.label_method, spec.threshold, gt.viewport_wh)
+            accumulate_replay(per_n_by_model[spec.name], gt, regions, mode_boxes_by_frame, args.delta, rng)
+            print(f"done {replay} {spec.name}", file=sys.stderr, flush=True)
 
-        for name, model_name, th in models:
-            dets = load_coco_preds(args.pred_root, model_name, args.epoch, rep, args.label_method, th)
-            preds = predictions_from_dets(dets, (rw, rh))
-            pool = np.concatenate([b for b, _ in preds.values() if len(b)]) if preds else np.zeros((0, 4))
-            for f, mode_boxes in modes_by_frame.items():
-                n = len(mode_boxes)
-                if n < 1 or n > MAX_N:
-                    continue
-                boxes = preds.get(f, (np.zeros((0, 4)), None))[0]
-                k = len(boxes)
-                new, dup, off = classify(boxes, mode_boxes, h, w, args.delta)
-                uni = np.zeros((k, 4))
-                if k:
-                    uni[:, 0] = rng.uniform(0, max(0, w - rw), k)
-                    uni[:, 1] = rng.uniform(0, max(0, h - rh), k)
-                    uni[:, 2], uni[:, 3] = rw, rh
-                pri = pool[rng.integers(0, len(pool), k)] if k and len(pool) else np.zeros((0, 4))
-                v = per_n[name][n]
-                v["frames"] += 1
-                v["n_hat"] += k
-                v["new"] += new
-                v["dup"] += dup
-                v["off"] += off
-                v["new_uniform"] += classify(uni, mode_boxes, h, w, args.delta)[0]
-                v["new_prior"] += classify(pri, mode_boxes, h, w, args.delta)[0]
-            print(f"done {rep} {name}", file=sys.stderr, flush=True)
-
-    print("method\tframes\t" + "\t".join(f"mean_{p}" for p in PARTS) + "\t"
-          + "\t".join(f"beta_{p}" for p in PARTS))
-    for name, _, _ in models:
-        d = per_n[name]
-        fr = sum(v["frames"] for v in d.values())
-        means = [sum(v[p] for v in d.values()) / fr for p in PARTS]
-        betas = [slope(d, p) for p in PARTS]
-        print("\t".join([name, f"{int(fr)}"] + [f"{m:.3f}" for m in means] + [f"{b:+.4f}" for b in betas]),
-              flush=True)
-    print("\nper n: method n frames " + " ".join(PARTS))
-    for name, _, _ in models:
-        for n in sorted(per_n[name]):
-            v = per_n[name][n]
-            print(name, n, int(v["frames"]), " ".join(f"{v[p] / v['frames']:.3f}" for p in PARTS))
+    report(models, per_n_by_model)
 
 
 if __name__ == "__main__":

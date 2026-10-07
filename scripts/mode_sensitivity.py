@@ -29,23 +29,24 @@ python scripts/mode_sensitivity.py \
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from collections import defaultdict
 
 import numpy as np
 from scipy.ndimage import gaussian_filter, maximum_filter
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(_ROOT, "src"))
-sys.path.insert(0, _ROOT)
-
-from evaluate import load_coco_gt  # noqa: E402
-from metrics.modes import box_mask, gt_boxes_by_frame, image_size  # noqa: E402
+from analysis_common import add_replay_args, load_replay_gt
+from metrics.modes import box_mask
 
 
 def ranked_support(masks, smoothed, theta, sep, max_modes):
-    """Supports of the ranked modes, as extract_modes computes them."""
+    """Supports of the ranked modes, as extract_modes computes them.
+
+    A copy of the second half of metrics.modes.extract_modes, split off so
+    that the smoothing (the first half) runs once per sigma rather than once
+    per (sigma, theta, D). tests/test_mode_sensitivity.py checks that the two
+    agree; change both together.
+    """
     peak = smoothed >= maximum_filter(smoothed, size=3, mode="constant")
     peak &= smoothed >= theta * smoothed.max()
     rows, cols = np.nonzero(peak)
@@ -65,9 +66,7 @@ def ranked_support(masks, smoothed, theta, sep, max_modes):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--replays", nargs="+", default=["275", "1725", "3613", "4520", "4664"])
-    ap.add_argument("--label-root", default="/workspace/data/label/dst")
-    ap.add_argument("--label-method", default="all_correct")
+    add_replay_args(ap)
     ap.add_argument("--sigmas", type=float, nargs="+", default=[2.0, 4.0, 6.0])
     ap.add_argument("--thetas", type=float, nargs="+", default=[0.25, 0.35, 0.50])
     ap.add_argument("--seps", type=float, nargs="+", default=[8.0, 12.0, 16.0, 20.0])
@@ -83,9 +82,9 @@ def main() -> None:
     stats = {c: defaultdict(float) for c in configs}
 
     for rep in args.replays:
-        coco = load_coco_gt(args.label_root, rep, args.label_method)
-        h, w = image_size(coco)
-        by_frame = gt_boxes_by_frame(coco)
+        gt = load_replay_gt(args.label_root, rep, args.label_method)
+        h, w = gt.height, gt.width
+        by_frame = gt.viewports_by_frame
         frames = sorted(by_frame)
         f0, span = frames[0], frames[-1] - frames[0] + 1
         cache = {}

@@ -15,7 +15,8 @@ Frames fall into three groups:
 beta_n is the slope of the emitted region count on the number of modes
 (equal to the weighted fit of Eq. countslope), computed on all frames, on
 uni + m2 and on uni + m1. A declined frame counts as zero regions and scores
-0 on IR and OC3, as everywhere else in the evaluation.
+0 on IR and OC3, as everywhere else in the evaluation (budget_allocation.py
+is the exception: its OC column is over answered frames).
 
 Usage
 -----
@@ -31,10 +32,7 @@ import argparse
 import numpy as np
 import pandas as pd
 
-
-def slope(x: np.ndarray, y: np.ndarray) -> float:
-    x = x - x.mean()
-    return float((x * (y - y.mean())).sum() / (x * x).sum())
+from analysis_common import frame_slope
 
 
 def main() -> None:
@@ -53,9 +51,9 @@ def main() -> None:
         group = np.where(n_modes <= 1, "uni", np.where(df["support_top2"] >= 2, "m2", "m1"))
 
         print(path)
-        print(f"  beta_all={slope(n_modes, n_pred):+.3f}"
-              f"  beta_uni+m2={slope(n_modes[group != 'm1'], n_pred[group != 'm1']):+.3f}"
-              f"  beta_uni+m1={slope(n_modes[group != 'm2'], n_pred[group != 'm2']):+.3f}")
+        print(f"  beta_all={frame_slope(n_modes, n_pred):+.3f}"
+              f"  beta_uni+m2={frame_slope(n_modes[group != 'm1'], n_pred[group != 'm1']):+.3f}"
+              f"  beta_uni+m1={frame_slope(n_modes[group != 'm2'], n_pred[group != 'm2']):+.3f}")
         for g in ("uni", "m1", "m2"):
             sel = group == g
             print(f"  {g}: frames={sel.sum()} share={sel.mean():.3f} n_pred={n_pred[sel].mean():.2f}"

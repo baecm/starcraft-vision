@@ -55,36 +55,20 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
-root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-src_dir = os.path.join(root_dir, "src")
-for p in (root_dir, src_dir):
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
-from evaluate import load_coco_gt, load_coco_preds  # noqa: E402
-from metrics.modes import (  # noqa: E402
+from analysis_common import (
     _rect_overlap_ratio,
-    box_center,
-    gt_boxes_by_frame,
-    image_size,
-    infer_region_size,
-    predictions_from_dets,
+    add_prediction_args,
+    add_replay_args,
+    load_regions,
+    load_replay_gt,
+    parse_model_spec,
 )
-
-
-def parse_spec(spec: str, default_epoch: int) -> Tuple[str, str, int, float | None]:
-    name, _, rest = spec.partition("=")
-    if not rest:
-        raise ValueError(f"--model wants NAME=MODEL[:EPOCH][@THRESHOLD], got {spec!r}")
-    model, _, thr = rest.partition("@")
-    model, _, ep = model.partition(":")
-    return name, model, int(ep) if ep else default_epoch, float(thr) if thr else None
+from metrics.modes import box_center
 
 
 def load_mode_counts(path: str) -> Dict[Tuple[str, int], int]:
@@ -154,13 +138,10 @@ def summarise(df: pd.DataFrame, name: str, scope: str = "all") -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--replays", nargs="+", required=True)
+    add_replay_args(ap, required=True)
+    add_prediction_args(ap)
     ap.add_argument("--model", action="append", required=True,
                     metavar="NAME=MODEL[:EPOCH][@THRESHOLD]")
-    ap.add_argument("--epoch", type=int, default=30)
-    ap.add_argument("--label-root", default="/workspace/data/label/dst")
-    ap.add_argument("--label-method", default="all_correct")
-    ap.add_argument("--pred-root", default="/workspace/predictions")
     ap.add_argument("--delta", type=float, default=0.5)
     ap.add_argument("--k", type=int, default=3, help="regions scored per frame")
     ap.add_argument("--modes-csv", default=None,
@@ -172,27 +153,21 @@ def main() -> None:
     args = ap.parse_args()
 
     modes_by_frame = load_mode_counts(args.modes_csv) if args.modes_csv else {}
-    models = [parse_spec(s, args.epoch) for s in args.model]
-    per_method: Dict[str, List[pd.DataFrame]] = {n: [] for n, _, _, _ in models}
+    models = [parse_model_spec(s, args.epoch) for s in args.model]
+    per_method: Dict[str, List[pd.DataFrame]] = {spec.name: [] for spec in models}
 
     for replay in args.replays:
-        coco = load_coco_gt(args.label_root, replay, args.label_method)
-        gt = gt_boxes_by_frame(coco)
-        height, width = image_size(coco)
-        size_hw = infer_region_size(gt)
-        print(f"[Replay] {replay}: {len(gt)} gt frames, viewport {size_hw}", flush=True)
+        gt = load_replay_gt(args.label_root, replay, args.label_method)
+        print(f"[Replay] {replay}: {len(gt.viewports_by_frame)} gt frames, viewport {gt.viewport_hw}", flush=True)
 
         for name, model, epoch, thr in models:
-            dets = load_coco_preds(pred_root=args.pred_root, model_name=model,
-                                   epoch=epoch, replay_id=replay,
-                                   label_method=args.label_method,
-                                   score_threshold=thr)
-            if not dets:
+            pred_by_frame = load_regions(args.pred_root, model, epoch, replay,
+                                         args.label_method, thr, gt.viewport_wh)
+            if not pred_by_frame:
                 print(f"  [!] {name}: no predictions, skipping", flush=True)
                 continue
-            pred_by_frame = predictions_from_dets(dets, (size_hw[1], size_hw[0]))
-            frames = sorted(f for f in pred_by_frame if f in gt)
-            rows = analyse_replay(pred_by_frame, frames, height, width, args.delta, args.k)
+            frames = sorted(f for f in pred_by_frame if f in gt.viewports_by_frame)
+            rows = analyse_replay(pred_by_frame, frames, gt.height, gt.width, args.delta, args.k)
             if rows:
                 d = pd.DataFrame(rows)
                 d.insert(0, "replay", replay)
@@ -203,7 +178,7 @@ def main() -> None:
             print(f"  {name}: {len(rows)} consecutive pairs", flush=True)
 
     out = []
-    for name, _, _, _ in models:
+    for name in per_method:
         if not per_method[name]:
             continue
         df = pd.concat(per_method[name], ignore_index=True)
@@ -228,7 +203,7 @@ def main() -> None:
     print("prepared_rate  : of those, the fraction whose destination an auxiliary "
           "region was already covering")
     if args.out:
-        os.makedirs(os.path.dirname(args.out), exist_ok=True)
+        os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
         summary.to_csv(args.out, index=False)
         print(f"\nwrote {args.out}")
 

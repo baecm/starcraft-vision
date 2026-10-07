@@ -41,7 +41,7 @@ PYDEBUG_SERVICE  ?= pydebug
 .PHONY: pydebug-up pydebug-logs stop-pydebug \
         debugger tunnel-debug stop-tunnel-debug \
 		zeppelin benchmark mode-disagreement mode-disagreement-fg inference-fg train-fg test probe probe-resolution \
-		budget-allocation qualitative-figures-fg figure-fg run-registry
+		budget-allocation qualitative-figures-fg figure-fg run-registry analysis
 
 # 디렉토리 생성
 ifneq ($(OS),Windows_NT)
@@ -165,7 +165,7 @@ debug:
 	docker compose -f $(COMPOSE_FILE) run --name $$CONTAINER_NAME --rm debugger debug $(ARGS);
 
 test:
-	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/tests/test_director_losses.py"
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "cd /workspace && for t in tests/test_*.py; do echo \"== \$$t\"; PYTHONPATH=/workspace:/workspace/src python3 \$$t || exit 1; done"
 
 probe:
 	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/probe_director.py"
@@ -201,6 +201,15 @@ mode-disagreement:
 #                   make mode-disagreement-fg ARGS="..."' > logs/chain.log 2>&1 &
 mode-disagreement-fg:
 	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/mode_disagreement.py $(ARGS)"
+
+# Any analysis script in scripts/, by its name without .py, in the foreground.
+# scripts/README.md lists what each one answers and where it is reported.
+# Reads predictions only, so it needs no GPU. Example:
+# make analysis SCRIPT=count_validity ARGS="--model dcn=dc_full_b16_f1_s123_v6 \
+#   --model mrcnn_th09=maskrcnn_win4_vanilla_f1_s123_v6@0.9"
+analysis:
+	@test -n "$(SCRIPT)" || { echo "usage: make analysis SCRIPT=<script in scripts/, without .py> ARGS=\"...\""; exit 1; }
+	docker compose -f $(COMPOSE_FILE) run --rm debugger debug -c "PYTHONPATH=/workspace:/workspace/src python3 /workspace/scripts/$(SCRIPT).py $(ARGS)"
 
 # Reads the frames_*.csv that mode-disagreement wrote. Example:
 # make budget-allocation ARGS="--dir /workspace/results/mode_disagreement/th_sweep \

@@ -5,7 +5,7 @@ pool_size_convergence.py
 
 Thesis ch. 8, `sec:att:convergence`: does the mode structure of the aggregated
 spectator distribution still change as spectators are added, or has it
-levelled off by U = 5?
+leveled off by U = 5?
 
 No larger pool exists, so the five spectators are subsampled down to
 U in {2, 3, 4, 5}: every subset of each size (10 + 10 + 5 + 1), with modes
@@ -59,15 +59,21 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
-from estimate import load_coco_gt  # noqa: E402
-from metrics.modes import extract_modes, gt_boxes_by_frame, image_size  # noqa: E402
+from analysis_common import add_mode_args, add_replay_args, load_replay_gt
+from metrics.modes import extract_modes
 
+# support_k is reported for the top K_MAX modes
 K_MAX = 3
 
 
 def pairwise_agreement(obs: np.ndarray) -> float:
-    """Mean over pairs of intersection / viewport area, boxes as [x, y, w, h]."""
+    """Mean over pairs of intersection / viewport area, boxes as [x, y, w, h].
+
+    Computed on the continuous boxes, not clipped to the map, unlike
+    metrics.modes._rect_overlap_ratio (integer slices clipped at the edge)
+    that every other overlap in the analysis uses. The two differ only for
+    viewports that extend past the map edge.
+    """
     vals = []
     for a, b in itertools.combinations(obs, 2):
         iw = max(0.0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
@@ -76,7 +82,8 @@ def pairwise_agreement(obs: np.ndarray) -> float:
     return float(np.mean(vals)) if vals else np.nan
 
 
-def _sums(n_obs: int) -> Dict[str, float]:
+def _empty_accumulator() -> Dict[str, float]:
+    """Running sums for one observer subset; pool_subsets turns them into means."""
     d = {"frames": 0, "agreement": 0.0, "n_modes": 0.0, "multimodal": 0.0,
          "held2": 0.0, "single2": 0.0, "tie": 0.0, "tie22": 0.0}
     for k in range(1, K_MAX + 1):
@@ -87,16 +94,16 @@ def _sums(n_obs: int) -> Dict[str, float]:
 
 def process_replay(job: Tuple) -> Tuple[List[dict], List[dict]]:
     replay, args = job
-    coco = load_coco_gt(args.label_root, replay, args.label_method)
-    height, width = image_size(coco)
-    gt = gt_boxes_by_frame(coco)
+    replay_gt = load_replay_gt(args.label_root, replay, args.label_method)
+    height, width = replay_gt.height, replay_gt.width
+    gt = replay_gt.viewports_by_frame
     frames = sorted(gt)[:: args.frame_stride]
     n_total = args.num_observers
 
     subsets = [
         s for u in range(2, n_total + 1) for s in itertools.combinations(range(n_total), u)
     ]
-    acc = {s: _sums(len(s)) for s in subsets}
+    acc = {s: _empty_accumulator() for s in subsets}
     sweep_acc: Dict[Tuple[float, float], Dict[str, float]] = {}
     grid = [(d, t) for d in args.sweep_min_sep for t in args.sweep_rel_threshold] if args.sweep else []
 
@@ -178,15 +185,10 @@ def by_U(per_subset: pd.DataFrame, keys: List[str]) -> pd.DataFrame:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--replays", type=str, nargs="+", required=True)
-    ap.add_argument("--label-root", default="/workspace/data/label/dst")
-    ap.add_argument("--label-method", default="all_correct")
+    add_replay_args(ap, required=True)
     ap.add_argument("--outdir", default="results/pool_size")
     ap.add_argument("--num-observers", type=int, default=5)
-    ap.add_argument("--sigma", type=float, default=4.0)
-    ap.add_argument("--min-sep", type=float, default=12.0)
-    ap.add_argument("--rel-threshold", type=float, default=0.35)
-    ap.add_argument("--max-modes", type=int, default=5)
+    add_mode_args(ap)
     ap.add_argument("--frame-stride", type=int, default=1,
                     help="analyse every n-th frame; 1 keeps all, as the thesis tables do")
     ap.add_argument("--workers", type=int, default=1)

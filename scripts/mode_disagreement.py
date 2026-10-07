@@ -11,12 +11,15 @@ metrics (in particular why `mode_flip_rate` is not the same thing as
 `evaluator.compute_m_cti`'s `jump_rate`).
 
 GT and prediction files are resolved the same way `evaluate.py` resolves
-them (`load_coco_gt` / `load_coco_preds`, re-exported by `estimate.py` for
-backwards compatibility):
+them (`load_coco_gt` / `load_coco_preds`):
   GT   : {label-root}/{replay}.rep/{label-method}.json
   pred : {pred-root}/{model_name}/model_{epoch:03d}/{replay}.rep/{label-method}.json
 so a run just needs replay ids plus the model folder names under
 `predictions/` - no hand-built paths.
+
+This script writes the per-frame CSVs that budget_allocation.py,
+split_by_second_mode.py, switch_preparation.py --modes-csv and the figure
+scripts read.
 
 Usage
 -----
@@ -41,73 +44,40 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
-from typing import Tuple
-
-# Add repository root and src to python path (same convention as
-# scripts/run_benchmark.py)
-root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-src_dir = os.path.join(root_dir, "src")
-if root_dir not in sys.path:
-    sys.path.insert(0, root_dir)
-if src_dir not in sys.path:
-    sys.path.insert(0, src_dir)
 
 import numpy as np
 import pandas as pd
 
-from estimate import load_coco_gt, load_coco_preds
+from analysis_common import (
+    add_mode_args,
+    add_prediction_args,
+    add_replay_args,
+    load_regions,
+    load_replay_gt,
+    parse_model_spec,  # noqa: F401  (re-exported: scripts/figures/common.py imports it from here)
+)
 from metrics.modes import (
     analyse_method,
     by_margin,
     by_n_modes,
     by_quartile,
     by_replay,
-    gt_boxes_by_frame,
-    image_size,
-    infer_region_size,
-    predictions_from_dets,
     primary_track_m_cti,
     summarise,
 )
 
 
-def parse_model_spec(spec: str, default_epoch: int) -> Tuple[str, str, int, object]:
-    """NAME=MODEL_NAME[:EPOCH][@THRESHOLD] -> (name, model, epoch, threshold).
-
-    The threshold names the prediction directory to read, `model_NNN_th<x>`,
-    which is where inference puts a run that set one. A sweep is therefore
-    addressed here rather than by copying directories: comparing a proposal
-    detector against a heatmap one is only meaningful at a matched region
-    count, and for the detector that count is set by this filter.
-    """
-    name, sep, rest = spec.partition("=")
-    if not sep:
-        raise ValueError(
-            f"--model spec must be NAME=MODEL_NAME[:EPOCH][@THRESHOLD], got: {spec!r}"
-        )
-    rest, _, th_str = rest.partition("@")
-    model_name, _, epoch_str = rest.partition(":")
-    epoch = int(epoch_str) if epoch_str else default_epoch
-    threshold = th_str if th_str else None
-    return name, model_name, epoch, threshold
-
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--replays", type=str, nargs="+", required=True,
-                    help="replay ids to pool into one fold-level result, e.g. 275 1725 3613 4520 4664")
-    ap.add_argument("--label-root", default="/workspace/data/label/dst")
-    ap.add_argument("--label-method", default="all_correct")
-    ap.add_argument("--pred-root", default="/workspace/predictions")
+    add_replay_args(ap, required=True)
+    add_prediction_args(ap)
     ap.add_argument("--model", action="append", required=True, metavar="NAME=MODEL_NAME[:EPOCH][@THRESHOLD]",
                     help="prediction source under --pred-root, repeatable "
                          "(e.g. maskrcnn=<dir>, director=<dir>:30). A @THRESHOLD "
                          "reads <dir>/model_NNN_th<x> instead, which is where "
                          "inference puts a run that set --score-threshold; that "
                          "is how a sweep is compared at a matched region count.")
-    ap.add_argument("--epoch", type=int, default=30,
-                    help="default epoch for --model specs that omit :EPOCH")
     ap.add_argument("--outdir", default="results",
                     help="where the CSVs go. Output names carry the method "
                          "but not whether --drop-one-observer was set, so a second run "
@@ -115,13 +85,7 @@ def main() -> None:
                          "the two runs separate directories. The summary "
                          "records which kind of run wrote it.")
     ap.add_argument("--delta", type=float, default=0.5)
-    ap.add_argument("--sigma", type=float, default=4.0,
-                    help="Gaussian sigma (tiles) for smoothing the coverage map")
-    ap.add_argument("--min-sep", type=float, default=12.0,
-                    help="minimum separation D between modes (tiles)")
-    ap.add_argument("--rel-threshold", type=float, default=0.35,
-                    help="peak floor as a fraction of the frame's maximum")
-    ap.add_argument("--max-modes", type=int, default=5)
+    add_mode_args(ap)
     ap.add_argument("--straddle-floor", type=float, default=0.15,
                     help="second-best mode coverage above which a miss counts "
                          "as straddling two modes rather than off-mode")
@@ -150,7 +114,7 @@ def main() -> None:
                          "prediction file instead of anchoring each box at its "
                          "top-left corner and forcing the GT viewport size. Only "
                          "for reproducing older numbers: a box clipped at the map "
-                         "edge is stored narrower, which drags its computed centre "
+                         "edge is stored narrower, which drags its computed center "
                          "toward that edge and inflates corner statistics.")
     args = ap.parse_args()
 
@@ -166,24 +130,20 @@ def main() -> None:
     for replay in args.replays:
         replay = str(replay)
         print(f"[Replay] {replay}")
-        coco_gt = load_coco_gt(args.label_root, replay, args.label_method)
-        height, width = image_size(coco_gt)
-        gt_by_frame = gt_boxes_by_frame(coco_gt)
+        gt = load_replay_gt(args.label_root, replay, args.label_method)
+        height, width = gt.height, gt.width
+        gt_by_frame = gt.viewports_by_frame
         if not gt_by_frame:
             print(f"  [!] no GT frames for replay {replay}, skipping")
             continue
-        size_hw = tuple(args.region_size) if args.region_size else infer_region_size(gt_by_frame)
+        size_hw = tuple(args.region_size) if args.region_size else gt.viewport_hw
         # GT viewports all share one size, so it is also the size every
         # prediction denotes; box_slices/box_center take (x, y, w, h).
         pred_size_wh = None if args.raw_pred_size else (size_hw[1], size_hw[0])
 
         for name, model_name, epoch, threshold in models:
-            dets_by_img = load_coco_preds(
-                pred_root=args.pred_root, model_name=model_name, epoch=epoch,
-                replay_id=replay, label_method=args.label_method,
-                score_threshold=threshold,
-            )
-            pred_by_frame = predictions_from_dets(dets_by_img, pred_size_wh)
+            pred_by_frame = load_regions(args.pred_root, model_name, epoch, replay,
+                                         args.label_method, threshold, pred_size_wh)
             if not pred_by_frame:
                 print(f"  [!] {name}: no predictions for replay {replay}, skipping")
                 continue

@@ -13,7 +13,7 @@ Metrics over all frames of the given replays, an unanswered frame scoring 0:
   regions  mean regions emitted
   IR       intersection ratio of the primary with the union of viewports
   OC3      fraction of spectators with >= delta of their viewport covered
-  beta_n   slope of the region count on the number of modes
+  beta_n   slope of the region count on the number of modes (all frames)
   aux_new  share of auxiliary regions covering a new mode (multimodal frames)
 
 Usage
@@ -26,113 +26,110 @@ python scripts/hybrid_regions.py \
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from collections import defaultdict
 
 import numpy as np
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(_ROOT, "src"))
-sys.path.insert(0, _ROOT)
-
-from evaluate import load_coco_gt, load_coco_preds  # noqa: E402
-from metrics.modes import (  # noqa: E402
+from analysis_common import (
     _rect_overlap_ratio,
-    box_from_center,
-    box_mask,
-    extract_modes,
-    gt_boxes_by_frame,
-    image_size,
-    infer_region_size,
-    predictions_from_dets,
+    add_mode_args,
+    add_prediction_args,
+    add_replay_args,
+    frame_slope,
+    load_regions,
+    load_replay_gt,
+    mode_params,
+    parse_run_spec,
+    per_viewport_set,
 )
+from metrics.modes import box_from_center, box_mask, extract_modes
 
 
-def split_spec(spec: str):
-    name, _, th = spec.partition("@")
-    return name, (th or None)
+def region_lists(primary_boxes, aux_boxes, aux_scores, gt, args) -> dict:
+    """The region lists compared on one frame, by variant name."""
+    variants = {f"proposal_top{k}": primary_boxes[:k] for k in range(1, args.k_max + 1)}
+    for tau in args.aux_taus:
+        if len(primary_boxes):
+            extra = [aux_boxes[i] for i in range(len(aux_boxes))
+                     if aux_scores[i] >= tau
+                     and _rect_overlap_ratio(aux_boxes[i], primary_boxes[0], gt.height, gt.width) < args.delta]
+            variants[f"hybrid_aux>={tau:g}"] = np.array([primary_boxes[0]] + extra[: args.k_max - 1])
+        else:
+            variants[f"hybrid_aux>={tau:g}"] = primary_boxes
+    return variants
+
+
+def score_frame(st, boxes, viewports, union, mode_boxes, gt, delta) -> None:
+    """Add one frame's IR, OC3 and auxiliary placement to the accumulator st."""
+    h, w = gt.height, gt.width
+    st["frames"] += 1
+    st["regions"] += len(boxes)
+    if len(boxes) == 0:
+        return
+    primary_mask = box_mask(boxes[0], h, w)
+    st["IR"] += (primary_mask & union).sum() / primary_mask.sum()
+    served = sum(max(_rect_overlap_ratio(b, vp, h, w) for b in boxes) >= delta for vp in viewports)
+    st["OC3"] += served / len(viewports)
+    if len(mode_boxes) >= 2:
+        covered = set()
+        for rank, b in enumerate(boxes):
+            coverage = np.array([_rect_overlap_ratio(b, mb, h, w) for mb in mode_boxes])
+            if rank > 0:
+                best = int(np.argmax(coverage))
+                st["aux"] += 1
+                st["new"] += coverage[best] >= delta and best not in covered
+            covered |= set(np.nonzero(coverage >= delta)[0].tolist())
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--replays", nargs="+", default=["275", "1725", "3613", "4520", "4664"])
-    ap.add_argument("--label-root", default="/workspace/data/label/dst")
-    ap.add_argument("--label-method", default="all_correct")
-    ap.add_argument("--pred-root", default="/workspace/predictions")
+    add_replay_args(ap)
+    add_prediction_args(ap)
     ap.add_argument("--primary", required=True, metavar="MODEL[@THRESHOLD]")
     ap.add_argument("--aux", required=True, metavar="MODEL[@THRESHOLD]")
     ap.add_argument("--aux-taus", type=float, nargs="+", default=[0.1, 0.2])
-    ap.add_argument("--epoch", type=int, default=30)
     ap.add_argument("--k-max", type=int, default=3)
     ap.add_argument("--delta", type=float, default=0.5)
+    add_mode_args(ap)
     args = ap.parse_args()
 
-    p_name, p_th = split_spec(args.primary)
-    a_name, a_th = split_spec(args.aux)
+    primary_model, primary_th = parse_run_spec(args.primary)
+    aux_model, aux_th = parse_run_spec(args.aux)
     acc = defaultdict(lambda: defaultdict(float))
-    xs, ys = defaultdict(list), defaultdict(list)
+    n_modes, n_regions = defaultdict(list), defaultdict(list)  # per variant, per frame
+    empty = (np.zeros((0, 4)), np.zeros(0))
 
-    for rep in args.replays:
-        coco = load_coco_gt(args.label_root, rep, args.label_method)
-        h, w = image_size(coco)
-        gt = gt_boxes_by_frame(coco)
-        size_hw = infer_region_size(gt)
-        swh = (size_hw[1], size_hw[0])
-        prim = predictions_from_dets(load_coco_preds(args.pred_root, p_name, args.epoch, rep, args.label_method, p_th), swh)
-        aux = predictions_from_dets(load_coco_preds(args.pred_root, a_name, args.epoch, rep, args.label_method, a_th), swh)
-        empty = (np.zeros((0, 4)), np.zeros(0))
-        cache = {}
-        for f, obs in gt.items():
-            key = obs.tobytes()
-            if key not in cache:
-                m = extract_modes(obs, h, w, 4.0, 12.0, 0.35, 5)
-                union = np.zeros((h, w), bool)
-                for b in obs:
-                    union |= box_mask(b, h, w)
-                cache[key] = (m.centers, union)
-            centers, union = cache[key]
-            n = len(centers)
-            mboxes = [box_from_center(c, size_hw, h, w) for c in centers]
+    for replay in args.replays:
+        gt = load_replay_gt(args.label_root, replay, args.label_method)
+        h, w = gt.height, gt.width
+        primary = load_regions(args.pred_root, primary_model, args.epoch, replay, args.label_method,
+                               primary_th, gt.viewport_wh)
+        aux = load_regions(args.pred_root, aux_model, args.epoch, replay, args.label_method,
+                           aux_th, gt.viewport_wh)
 
-            pb = prim.get(f, empty)[0]
-            ab, ascore = aux.get(f, empty)
-            variants = {f"proposal_top{k}": pb[:k] for k in range(1, args.k_max + 1)}
-            for t in args.aux_taus:
-                if len(pb):
-                    extra = [ab[i] for i in range(len(ab))
-                             if ascore[i] >= t and _rect_overlap_ratio(ab[i], pb[0], h, w) < args.delta]
-                    variants[f"hybrid_aux>={t:g}"] = np.array([pb[0]] + extra[: args.k_max - 1])
-                else:
-                    variants[f"hybrid_aux>={t:g}"] = pb
+        def centers_and_union(viewports):
+            m = extract_modes(viewports, h, w, *mode_params(args))
+            union = np.zeros((h, w), bool)
+            for b in viewports:
+                union |= box_mask(b, h, w)
+            return m.centers, union
 
-            for name, boxes in variants.items():
-                st = acc[name]
-                st["frames"] += 1
-                st["regions"] += len(boxes)
-                xs[name].append(n)
-                ys[name].append(len(boxes))
-                if len(boxes) == 0:
-                    continue
-                pm = box_mask(boxes[0], h, w)
-                st["IR"] += (pm & union).sum() / pm.sum()
-                served = sum(max(_rect_overlap_ratio(b, o, h, w) for b in boxes) >= args.delta for o in obs)
-                st["OC3"] += served / len(obs)
-                if n >= 2:
-                    covered = set()
-                    for r, b in enumerate(boxes):
-                        covs = np.array([_rect_overlap_ratio(b, mb, h, w) for mb in mboxes])
-                        if r > 0:
-                            best = int(np.argmax(covs))
-                            st["aux"] += 1
-                            st["new"] += covs[best] >= args.delta and best not in covered
-                        covered |= set(np.nonzero(covs >= args.delta)[0].tolist())
-        print(f"done {rep}", file=sys.stderr, flush=True)
+        modes = per_viewport_set(gt.viewports_by_frame, centers_and_union)
+        for frame, viewports in gt.viewports_by_frame.items():
+            centers, union = modes[frame]
+            mode_boxes = [box_from_center(c, gt.viewport_hw, h, w) for c in centers]
+            primary_boxes = primary.get(frame, empty)[0]
+            aux_boxes, aux_scores = aux.get(frame, empty)
+            for name, boxes in region_lists(primary_boxes, aux_boxes, aux_scores, gt, args).items():
+                n_modes[name].append(len(centers))
+                n_regions[name].append(len(boxes))
+                score_frame(acc[name], boxes, viewports, union, mode_boxes, gt, args.delta)
+        print(f"done {replay}", file=sys.stderr, flush=True)
 
     print("variant\tregions\tIR\tOC3\tbeta_n\taux_new")
     for name, st in acc.items():
-        x, y = np.array(xs[name], float), np.array(ys[name], float)
-        beta = ((x - x.mean()) * (y - y.mean())).sum() / ((x - x.mean()) ** 2).sum()
+        beta = frame_slope(np.array(n_modes[name], float), np.array(n_regions[name], float))
         fr = st["frames"]
         print(f"{name}\t{st['regions'] / fr:.2f}\t{st['IR'] / fr:.4f}\t{st['OC3'] / fr:.4f}\t"
               f"{beta:+.3f}\t{st['new'] / max(1, st['aux']):.3f}")
