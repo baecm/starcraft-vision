@@ -11,7 +11,19 @@ with
   multi-region    CWO, M-CTI, jerk, jump rate, event recall, pairwise overlap
                   (compute_multi_region_for_replay -> metrics.evaluator)
 --task single|multi|all picks which. --mode gt scores the observers
-themselves instead of a model.
+themselves instead of a model, and --mode feature computes the KBRS cue maps
+over the whole input instead of at predicted windows.
+
+CSV columns and the names the papers use for them:
+  ic_ratio    IR, the mean intersection ratio of the top prediction
+  ic@000      Intersection@any  (fraction of frames with IR > 0)
+  ic@030      Intersection@0.3
+  ic@050      Intersection@0.5
+  ic_multi    mean number of observers covering a tile of the predicted window
+  missing_preds, evaluated_frames
+              frames with no prediction above the threshold (scored 0, i.e.
+              coverage-penalized), and frames scored
+The column names are kept as they are because existing result CSVs use them.
 
 The flags --skip-missing-preds, --legacy-centroid, --missing-as-corner and
 --legacy-anchor re-enable the evaluator faults fixed in 2026-08..10, which
@@ -42,6 +54,39 @@ from utils.report import ReportBlock, print_section_header
 # Ensure unbuffered stdout in container/redirection environments
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
+
+# The IR evaluator works in the coordinates of the original evaluation script:
+# a camera position is the screen's top-left corner in map pixels, from 0 to
+# MAXCOORD. max_x = 3456 is the 4096 px map less the 640 px screen; max_y is
+# the original script's value. Positions on the tile grid are scaled into it.
+IC_KERNEL_WH = (20, 12)           # viewport (width, height) in tiles
+IC_GRID_WH = (128, 128)           # tile map (width, height)
+IC_MAXCOORD_XY = (3456.0, 3720.0)  # largest top-left position, map pixels
+
+
+def _pair(value: Any, default: Tuple, cast) -> Tuple:
+    """A (w, h)-style pair from "20,12", a 2-sequence, or None (the default)."""
+    if value is None:
+        return default
+    if isinstance(value, (list, tuple)):
+        return cast(value[0]), cast(value[1])
+    if isinstance(value, str) and "," in value:
+        a, b = value.split(",")
+        return cast(a), cast(b)
+    raise ValueError(f"expected 'a,b' or a pair, got {value!r}")
+
+
+def _nan_ic_metrics() -> Dict[str, float]:
+    """The IR / Intersection@ columns of a row with nothing to score."""
+    return {
+        "ic@000": float("nan"),
+        "ic@030": float("nan"),
+        "ic@050": float("nan"),
+        "ic_multi": float("nan"),
+        "ic_ratio": float("nan"),
+        "median_ir": float("nan"),
+        "p90_ir": float("nan"),
+    }
 
 
 # =====================================================================
@@ -90,9 +135,6 @@ def _centroid_from_coco_ann(
         return _center(x, y, w, h)
 
     return float(img_w) / 2.0, float(img_h) / 2.0
-
-
-centroid_from_coco_ann = _centroid_from_coco_ann
 
 
 def _topleft_from_coco_ann(ann: dict, img_w: int, img_h: int) -> Tuple[float, float]:
@@ -265,13 +307,7 @@ def eval_kernel_from_coco(
             "score_thresh": float(score_thresh),
             "kernel": f"{x_len}x{y_len}",
             "num_images": 0,
-            "ic@000": float("nan"),
-            "ic@030": float("nan"),
-            "ic@050": float("nan"),
-            "ic_multi": float("nan"),
-            "ic_ratio": float("nan"),
-            "median_ir": float("nan"),
-            "p90_ir": float("nan"),
+            **_nan_ic_metrics(),
             "total_frames": stats.get("total_frames", 0),
             "missing_preds": stats.get("missing_preds", 0),
             "no_gt_anns": stats.get("no_gt_anns", 0),
@@ -331,8 +367,17 @@ def eval_kernel_from_coco(
 
 
 # =====================================================================
-# 2. KBRS metric calculation (density / centeredness / mixture)
+# 2. KBRS cue scores at predicted windows (density / centeredness / mixture)
 # =====================================================================
+# A diagnostic, not the training-time KBRS of models/plugins/kbrs: it reads
+# the raw input frame (.npy), takes the maximum over all channels, binarizes
+# it at --threshold, and scores a window of --window tiles centered on each
+# prediction (or each observer, --mode gt):
+#   density       fraction of occupied tiles in the window
+#   centeredness  Gaussian-weighted (sigma = h/4) occupancy, clipped to [0, 1]
+#   mixture       density x centeredness
+# Because every channel counts, any channel that covers the whole map makes
+# every window fully occupied and all three scores 1.
 
 def make_gaussian_kernel(h: int, w: int, sigma: Optional[float] = None) -> np.ndarray:
     if sigma is None:
@@ -554,17 +599,10 @@ def compute_kbrs_for_replay(
     preds_by_img: Optional[Dict[int, List[dict]]] = None,
     model_tag: Optional[str] = None,
 ) -> Tuple[float, float, float, int]:
-    window_val = getattr(args, "window", "20,12")
-    if isinstance(window_val, str):
-        win_w, win_h = map(int, window_val.split(","))
-    else:
-        win_w, win_h = map(int, window_val)
-
-    stride_val = getattr(args, "stride", "1,1")
-    if isinstance(stride_val, str):
-        stride_x, stride_y = map(int, stride_val.split(","))
-    else:
-        stride_x, stride_y = map(int, stride_val)
+    """Mean KBRS cue scores of one replay (see the section comment), and the
+    number of frames scored."""
+    win_w, win_h = _pair(getattr(args, "window", None), IC_KERNEL_WH, int)
+    stride_x, stride_y = _pair(getattr(args, "stride", None), (1, 1), int)
 
     feature_ext = getattr(args, "feature_ext", ".npy")
     use_file_name = getattr(args, "use_file_name", False)
@@ -736,29 +774,9 @@ def compute_ic_for_replay(
     """
     Computes IC metrics for a replay sequence with a specified score threshold.
     """
-    ic_kernel_val = getattr(args, "ic_kernel", "20,12")
-    if isinstance(ic_kernel_val, (list, tuple)):
-        ic_x_len, ic_y_len = int(ic_kernel_val[0]), int(ic_kernel_val[1])
-    elif isinstance(ic_kernel_val, str) and "," in ic_kernel_val:
-        ic_x_len, ic_y_len = map(int, ic_kernel_val.split(","))
-    else:
-        ic_x_len, ic_y_len = 20, 12
-
-    ic_grid_val = getattr(args, "ic_grid", "128,128")
-    if isinstance(ic_grid_val, (list, tuple)):
-        ic_grid_w, ic_grid_h = int(ic_grid_val[0]), int(ic_grid_val[1])
-    elif isinstance(ic_grid_val, str) and "," in ic_grid_val:
-        ic_grid_w, ic_grid_h = map(int, ic_grid_val.split(","))
-    else:
-        ic_grid_w, ic_grid_h = 128, 128
-
-    ic_max_val = getattr(args, "ic_maxcoord", "3456,3720")
-    if isinstance(ic_max_val, (list, tuple)):
-        ic_max_x, ic_max_y = float(ic_max_val[0]), float(ic_max_val[1])
-    elif isinstance(ic_max_val, str) and "," in ic_max_val:
-        ic_max_x, ic_max_y = map(float, ic_max_val.split(","))
-    else:
-        ic_max_x, ic_max_y = 3456.0, 3720.0
+    ic_x_len, ic_y_len = _pair(getattr(args, "ic_kernel", None), IC_KERNEL_WH, int)
+    ic_grid_w, ic_grid_h = _pair(getattr(args, "ic_grid", None), IC_GRID_WH, int)
+    ic_max_x, ic_max_y = _pair(getattr(args, "ic_maxcoord", None), IC_MAXCOORD_XY, float)
 
     images = list(coco_gt.dataset.get("images", []))
     max_frames = getattr(args, "max_frames", -1)
@@ -774,6 +792,13 @@ def compute_ic_for_replay(
         f"grid={ic_grid_w}x{ic_grid_h}, maxcoord=({ic_max_x},{ic_max_y}), "
         f"num_images={num_images}, num_preds={num_preds}, skip_missing={skip_missing_preds})"
     )
+    # returned when there is nothing to score (no observer boxes, or no predictions)
+    empty_row = {
+        "kernel": f"{ic_x_len}x{ic_y_len}",
+        "score_thresh": float(score_thresh),
+        "num_images": num_images,
+        **_nan_ic_metrics(),
+    }
 
     if mode == "gt":
         gt_dets: List[dict] = []
@@ -806,18 +831,7 @@ def compute_ic_for_replay(
             )
             return row
 
-        return {
-            "kernel": f"{ic_x_len}x{ic_y_len}",
-            "score_thresh": float(score_thresh),
-            "num_images": num_images,
-            "ic@000": float("nan"),
-            "ic@030": float("nan"),
-            "ic@050": float("nan"),
-            "ic_multi": float("nan"),
-            "ic_ratio": float("nan"),
-            "median_ir": float("nan"),
-            "p90_ir": float("nan"),
-        }
+        return empty_row
 
     if mode == "model" and preds_all:
         t_ic = time.time()
@@ -841,37 +855,36 @@ def compute_ic_for_replay(
         )
         return row
 
-    return {
-        "kernel": f"{ic_x_len}x{ic_y_len}",
-        "score_thresh": float(score_thresh),
-        "num_images": num_images,
-        "ic@000": float("nan"),
-        "ic@030": float("nan"),
-        "ic@050": float("nan"),
-        "ic_multi": float("nan"),
-        "ic_ratio": float("nan"),
-        "median_ir": float("nan"),
-        "p90_ir": float("nan"),
-    }
+    return empty_row
+
+
+NAN_MULTI_ROW = {
+    "cwo": float("nan"),
+    "m_cti": float("nan"),
+    "jerk": float("nan"),
+    "jump_rate": float("nan"),
+    "event_recall": float("nan"),
+    "pairwise_overlap": float("nan"),
+}
+
+# A frame with no prediction still needs a viewport for the sequence metrics
+# to stay aligned frame by frame; it is given this box, a 32x32-tile square at
+# the map corner (xyxy, tiles). It enters CWO and M-CTI as a real viewport.
+EMPTY_FRAME_BOX = [0.0, 0.0, 32.0, 32.0]
 
 
 def compute_multi_region_for_replay(
     replay_id: str,
     coco_gt: COCO,
     preds_by_img: Optional[Dict[int, List[dict]]],
-    grid_size: Tuple[int, int] = (128, 128),
+    grid_size: Tuple[int, int] = IC_GRID_WH,
     multi_topk: int = 3,
 ) -> Dict[str, float]:
+    """CWO, M-CTI (with jerk and jump rate), event recall and pairwise overlap
+    of the top-`multi_topk` predictions over one replay (metrics.evaluator)."""
     images = list(coco_gt.dataset.get("images", []))
     if not images:
-        return {
-            "cwo": float("nan"),
-            "m_cti": float("nan"),
-            "jerk": float("nan"),
-            "jump_rate": float("nan"),
-            "event_recall": float("nan"),
-            "pairwise_overlap": float("nan"),
-        }
+        return dict(NAN_MULTI_ROW)
 
     evaluator = MultiRegionEvaluator(
         grid_size=grid_size,
@@ -917,7 +930,7 @@ def compute_multi_region_for_replay(
                     img_boxes.append([x1, y1, x2, y2])
 
         if not img_boxes:
-            img_boxes = [[0.0, 0.0, 32.0, 32.0]]
+            img_boxes = [list(EMPTY_FRAME_BOX)]
         viewports_seq.append(np.array(img_boxes, dtype=np.float32))
 
         if img_to_anns is not None:
@@ -965,7 +978,7 @@ def compute_multi_region_for_replay(
 
 
 # =====================================================================
-# 4. Standalone File-based Kernel Evaluation (Legacy evaluate.py API)
+# 4. File-to-file mode: score prediction files against one GT file
 # =====================================================================
 
 def run_kernel_eval(
@@ -975,14 +988,15 @@ def run_kernel_eval(
     pred_dir: Optional[str] = None,
     out_dir: str = "./results",
     names: Optional[Sequence[str]] = None,
-    kernel: str = "20,12",
-    grid: str = "128,128",
-    maxcoord: str = "3456,3720",
+    kernel: Optional[str] = None,
+    grid: Optional[str] = None,
+    maxcoord: Optional[str] = None,
     score_thresholds: Sequence[float] = (0.0,),
-    per_image_csv: bool = False,
-    batch_size: int = 0,
     run_tag: str = "",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str, str]:
+    """IR / Intersection@ of each prediction file at each score threshold, against
+    gt_path (or the first .json in gt_dir). Writes summary[_<run_tag>].csv/.json
+    to out_dir and returns (rows, summary, csv path, json path)."""
     if gt_path is None:
         if gt_dir is None:
             raise ValueError("Either gt_path or gt_dir must be provided")
@@ -1004,9 +1018,9 @@ def run_kernel_eval(
     else:
         raise ValueError("Either pred_files or pred_dir must be provided")
 
-    x_len, y_len = map(int, kernel.split(","))
-    grid_w, grid_h = map(int, grid.split(","))
-    max_x, max_y = map(float, maxcoord.split(","))
+    x_len, y_len = _pair(kernel, IC_KERNEL_WH, int)
+    grid_w, grid_h = _pair(grid, IC_GRID_WH, int)
+    max_x, max_y = _pair(maxcoord, IC_MAXCOORD_XY, float)
 
     all_rows: List[Dict[str, Any]] = []
     summary_json: Dict[str, Any] = {}
@@ -1085,8 +1099,9 @@ def parse_thresholds(raw_thresholds: Any) -> List[float]:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Unified Evaluator for Single-Region Finding (KBRS, COCO IC), "
-            "Multi-Region Finding (CWO, M-CTI, Event Recall), & End-to-End Model Benchmarking."
+            "Replay-level evaluation of stored predictions: single-region IR and "
+            "Intersection@, KBRS cue scores, and multi-region metrics (CWO, M-CTI, "
+            "event recall). See the module docstring for the CSV columns."
         )
     )
 
@@ -1153,12 +1168,12 @@ def parse_args() -> argparse.Namespace:
         help="Pass annotation centroids to the kernel evaluator where it expects top-left corners "
              "(the behavior until this flag was added; shifts every window by half a viewport)",
     )
-    p.add_argument("--ic-kernel", default="20,12")
-    p.add_argument("--ic-grid", default="128,128")
-    p.add_argument("--ic-maxcoord", default="3456,3720")
+    # IR evaluator geometry; defaults IC_KERNEL_WH, IC_GRID_WH, IC_MAXCOORD_XY
+    p.add_argument("--ic-kernel", default=None, help="viewport w,h in tiles (default 20,12)")
+    p.add_argument("--ic-grid", default=None, help="tile map w,h (default 128,128)")
+    p.add_argument("--ic-maxcoord", default=None, help="largest top-left x,y in map pixels (default 3456,3720)")
 
-
-    # Legacy standalone evaluate.py options for compatibility
+    # File-to-file mode (run_kernel_eval)
     p.add_argument("--gt", default=None)
     p.add_argument("--gt-dir", default=None)
     p.add_argument("--pred", nargs="+", default=None)
@@ -1207,16 +1222,6 @@ def _default_csv_out(args: argparse.Namespace) -> str:
     else:
         csv_name = f"{args.mode}.csv"
     return os.path.join(base_root, csv_name)
-
-
-NAN_MULTI_ROW = {
-    "cwo": float("nan"),
-    "m_cti": float("nan"),
-    "jerk": float("nan"),
-    "jump_rate": float("nan"),
-    "event_recall": float("nan"),
-    "pairwise_overlap": float("nan"),
-}
 
 
 def evaluate_replay(args: argparse.Namespace, replay_id: str, thresholds: List[float]) -> List[Dict]:

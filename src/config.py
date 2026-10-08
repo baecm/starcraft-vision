@@ -1,8 +1,38 @@
+"""
+Project-wide constants, and the short aliases accepted on the command line.
+
+Sections:
+  map and input      tile map size, input channels and component groups
+  labels             label methods; the observers' viewport size
+  ranked modes       mode extraction parameters (metrics.modes.extract_modes)
+  ROCI               the target augmentation of Joo et al. (2023)
+  training           gradient clipping
+  Director-CenterNet defaults of the multi-region heatmap model
+  CLI aliases        resolve_cli_aliases
+
+Hydra (conf/) sets the run configuration; these are the defaults it falls
+back to and the constants it does not expose.
+"""
 import sys
 from enum import Enum
 
-GRAD_CLIP_NORM = 2.0
+# ---------------------------------------------------------------------------
+# Map and input
+# ---------------------------------------------------------------------------
 
+ORIGIN_SHAPE = (128, 128)  # the game map as a tile grid (square, so the order does not matter)
+TILE_SIZE = 32             # pixels per tile in the replay's own coordinates
+
+# Input channels per frame (the order of the preprocessed .npy arrays) and the
+# component names that select them (--include-components, include_components).
+# They are defined at the end of this file: Channel, COMPONENT_CHANNEL_MAP.
+
+# ---------------------------------------------------------------------------
+# Labels
+# ---------------------------------------------------------------------------
+
+# How preprocessing turns each observer's camera trace into a per-frame
+# viewport label; every reported run uses all_correct.
 LABEL_METHODS = [
     'legacy',
     'consider_previous',
@@ -10,21 +40,28 @@ LABEL_METHODS = [
     'all_correct',
 ]
 
+# Preprocessing output formats (src/preprocessing).
 OUTPUT_TYPES = ['coord', 'channel']
 
+# The observers' viewport in tiles. Both orders are kept because both are in
+# use: KERNEL_SHAPE (width, height) by preprocessing, VIEWPORT_SIZE_HW
+# (height, width) by the models, the dataset and the analysis.
 KERNEL_SHAPE = (20, 12)
-ORIGIN_SHAPE = (128, 128)
-TILE_SIZE = 32
+VIEWPORT_SIZE_HW = (12, 20)
+NUM_OBSERVERS_U = 5  # spectators per replay
 
-# Director-CenterNet & Mode Extraction defaults
-VIEWPORT_SIZE_HW = (12, 20)  # (height, width) in tiles
-MODE_EXTRACTION_SIGMA = 4.0
-MODE_EXTRACTION_MIN_SEP = 12.0
-MODE_EXTRACTION_REL_THRESHOLD = 0.35
+# ---------------------------------------------------------------------------
+# Ranked attention modes (metrics.modes.extract_modes)
+# ---------------------------------------------------------------------------
+
+MODE_EXTRACTION_SIGMA = 4.0          # Gaussian smoothing of the coverage map, tiles
+MODE_EXTRACTION_MIN_SEP = 12.0       # minimum separation D between modes, tiles
+MODE_EXTRACTION_REL_THRESHOLD = 0.35  # peak floor theta, relative to the frame's maximum
 MODE_EXTRACTION_MAX_MODES = 5
-NUM_OBSERVERS_U = 5
 
-# ===== ROCI (Region of Common Interest) target augmentation =====
+# ---------------------------------------------------------------------------
+# ROCI (Region of Common Interest) target augmentation
+# ---------------------------------------------------------------------------
 # Joo et al. (2023) add the regions the observers agree on as extra detection
 # targets. Off by default: turning it on changes the labels, so the generated
 # file is named "<method>_roci" and a model trained on it must be trained from
@@ -42,10 +79,22 @@ ROCI_MIN_DISTANCE = 7        # tiles between peaks
 ROCI_THRESHOLD = 1.1         # absolute, on the blurred coverage
 ROCI_MAX_REGIONS = 0         # 0 = unbounded, as in their code
 
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+
+# Global gradient-norm clip applied in the training loop (train.py passes it to
+# detection/engine_safe.py) for every model.
+GRAD_CLIP_NORM = 2.0
+
+# ---------------------------------------------------------------------------
+# Director-CenterNet
+# ---------------------------------------------------------------------------
+
 # Gaussian width for the rendered targets, in tiles. The heatmap grid samples
 # every `down_ratio` tiles, so 2.0 tiles is half a cell: adjacent cells fall to
 # exp(-2) = 0.135 and are trained as near-hard negatives, leaving the target a
-# delta with no soft neighbourhood. 4.0 tiles is one cell, which is what the
+# delta with no soft neighborhood. 4.0 tiles is one cell, which is what the
 # vanilla CenterNet baseline in this repo derives from its box size, and that
 # baseline reaches a higher IR than Director despite a far weaker backbone.
 DIRECTOR_RENDER_SIGMA = 4.0
@@ -59,7 +108,7 @@ DIRECTOR_TRAINABLE_LAYERS = 5
 # change - the receptive field is not the issue (two 3x3 convs already span
 # 5x5 cells = 20x20 tiles, wider than the 12x20-tile viewport).
 DIRECTOR_HEAD_CONV = 64
-# Place a focal positive at every observer's own viewport centre, not only at
+# Place a focal positive at every observer's own viewport center, not only at
 # the Top-1 mode. See _add_observer_positives in losses/director_losses.py.
 DIRECTOR_DENSE_POSITIVES = False
 # Which target the negative term of L_hcm is weighted by, (1 - Y)^beta:
@@ -70,7 +119,7 @@ DIRECTOR_DENSE_POSITIVES = False
 #             negatives and no cells are excluded from L_hcm
 # See human_consensus_match_loss in losses/director_losses.py.
 DIRECTOR_HCM_NEGATIVE_TARGET = "joint"
-DIRECTOR_K = 3
+DIRECTOR_K = 3  # regions decoded per frame (primary + auxiliaries)
 # The smallest meaningful mode amplitude is 1 observer out of U, i.e. 1/5 = 0.2
 # (the Gaussian is rendered on its assigned grid cell, so that is exact rather
 # than attenuated). tau has to sit clearly below it or a minority mode can
@@ -92,16 +141,20 @@ MAP_DIAGONAL_TILES = (ORIGIN_SHAPE[0] ** 2 + ORIGIN_SHAPE[1] ** 2) ** 0.5  # ~18
 DIRECTOR_SMOOTH_HUBER_DELTA = 5.0
 # Epochs [0, START) train with L_smooth off, then it ramps linearly to full
 # weight at FULL. Applying it from step 0 lets the model reach a frozen-camera
-# solution before the heatmap has learned anything worth stabilising.
+# solution before the heatmap has learned anything worth stabilizing.
 DIRECTOR_SMOOTH_WARMUP_START = 5
 DIRECTOR_SMOOTH_WARMUP_FULL = 10
 # Radius (in feature cells) of the softmax window used to build a heatmap-
-# differentiable primary centre for L_smooth. See DirectorCenterNet.
+# differentiable primary center for L_smooth. See DirectorCenterNet.
 DIRECTOR_SOFT_CENTER_RADIUS = 2
 # Feature cells dropped from the outside of the heatmap when picking peaks.
 # max_pool2d pads with -inf, so border cells face fewer competitors and become
 # local maxima far more often than interior ones.
 DIRECTOR_PEAK_BORDER_MARGIN = 1
+
+# ---------------------------------------------------------------------------
+# Input channels
+# ---------------------------------------------------------------------------
 
 
 class Channel(Enum):
@@ -129,6 +182,11 @@ COMPONENT_CHANNEL_MAP = {
     'terrain': [Channel.Terrain.value],
 }
 
+# ---------------------------------------------------------------------------
+# CLI aliases
+# ---------------------------------------------------------------------------
+
+# Short forms accepted by make train / make run (Hydra) and the inference CLI.
 PARAM_ALIAS_MAP = {
     "arch=": "architecture=",
     "arch.": "architecture.",

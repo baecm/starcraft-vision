@@ -158,8 +158,6 @@ def eval_intersection_run(
                 binary = (pred_tiles > 0).astype(np.float32)
                 intersection = float(binary.mean())
 
-            # KBRS-like centeredness/mixture using gaussian weighting on binary
-
             intersection_multi.append(intersect_multi)
             total_intersection.append(intersection)
             temp_intersect.append(intersection)
