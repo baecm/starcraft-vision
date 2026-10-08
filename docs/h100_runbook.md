@@ -8,11 +8,17 @@ launched from the tag **`h100-2026-10`**, so each run's W&B `git:` tag must equa
 git fetch --tags --force && git checkout h100-2026-10
 ```
 
-Before the first run on the machine, warm the page cache once (the first
-epoch otherwise waits on the CIFS share and runs about 10x slower):
+Before the first run of a fold on the machine, warm the page cache: read the
+fold's training replays once, so the first epoch does not wait on the CIFS
+share (it was 2 h 18 min against 1 h 28 min for later epochs in a DGX
+Mask R-CNN run). Run it from the repo root with the run's fold; it reads only
+the ten training replays, not the test replays, the KBRS cache or the audit
+directories under `data/`. It changes nothing, can be stopped at any time,
+and training can start while it runs. On a machine whose RAM cannot hold the
+ten replays it helps little; skip it there.
 
 ```bash
-find /mnt/nas/baecm/starcraft-vision/data -type f -print0 | xargs -0 -P 32 -n 64 cat > /dev/null
+FOLD=1; R=$(sed -n 's/^train_replays: *\[\(.*\)\]/\1/p' conf/dataset/fold$FOLD.yaml | tr -d ' ' | tr ',' ' '); (cd /mnt/nas/baecm/starcraft-vision/data/input/dst && for r in $R; do find $r.rep -type f -print0; done | xargs -0 -P 32 -n 64 cat > /dev/null)
 ```
 
 Check that the machine has the ImageNet ResNet-50 weights (in
