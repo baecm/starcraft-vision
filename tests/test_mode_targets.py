@@ -61,8 +61,8 @@ def test_frame_without_modes_gives_empty_target():
 def _build(soft: bool):
     # no pretrained weights: the test must run offline
     orig = maskrcnn_module.resnet_fpn_backbone
-    maskrcnn_module.resnet_fpn_backbone = lambda name, weights=None, **kw: resnet_fpn_backbone(
-        backbone_name=name, weights=None, **kw)
+    maskrcnn_module.resnet_fpn_backbone = lambda backbone_name, weights=None, **kw: resnet_fpn_backbone(
+        backbone_name=backbone_name, weights=None, **kw)
     try:
         torch.manual_seed(0)
         model = maskrcnn_module.build_maskrcnn_backbone(

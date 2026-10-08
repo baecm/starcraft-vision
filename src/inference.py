@@ -22,7 +22,6 @@ import json
 import multiprocessing
 import os
 import secrets
-import sys
 from types import SimpleNamespace
 
 import torch
@@ -495,10 +494,9 @@ def _predict_replay(model, args, replay_id: str, device) -> list:
     )
 
     results = []
-    min_interval = 0.1 if (sys.stderr.isatty() or sys.stdout.isatty()) else 5.0
     with torch.inference_mode():
         for images, metas in tqdm.tqdm(data_loader, desc="Running inference for replay", unit="batch",
-                                       mininterval=min_interval):
+                                       disable=None):  # terminal only; the log gets one line per replay
             images = [img.to(device, non_blocking=True) for img in images]
             outputs = model(images)
             for output, (_rid, frame_id) in zip(outputs, metas):

@@ -9,6 +9,11 @@ import torch
 
 from . import utils
 
+try:
+    from utils.logger import Logger
+except ModuleNotFoundError:
+    from src.utils.logger import Logger
+
 
 def _to_py(x: Any) -> Any:
     """Convert to something JSON can serialize, as far as possible."""
@@ -68,9 +73,10 @@ def train_one_epoch_safe(
     data_loader,
     device,
     epoch: int,
-    print_freq: int,
+    progress_interval_s: float,
     scaler: Optional[torch.amp.GradScaler] = None,
     *,
+    on_progress=None,
     nan_log_path: str = "",
     skip_nonfinite: bool = True,
     max_consecutive_nan: int = 20,
@@ -87,7 +93,10 @@ def train_one_epoch_safe(
     - Non-finite gradients after backward skip the optimizer step (logged).
     - Too many consecutive skips abort the epoch instead of looping forever.
     - Optional gradient clipping, and an LR backoff after a non-finite batch.
-    Skipped batches are recorded in nan_log_path (JSON lines).
+    Skipped batches are recorded in nan_log_path (JSON lines) and printed.
+
+    A progress line is printed every progress_interval_s seconds;
+    on_progress(metric_logger, i, seconds_per_iter) is called with each one.
     """
 
     model.train()
@@ -97,7 +106,7 @@ def train_one_epoch_safe(
     metric_logger.add_meter("nan", utils.SmoothedValue(window_size=1, fmt="{value:.0f}"))
     metric_logger.add_meter("grad_nonfinite", utils.SmoothedValue(window_size=1, fmt="{value:.0f}"))
     metric_logger.add_meter("grad_norm", utils.SmoothedValue(window_size=1, fmt="{value:.4f}"))
-    header = f"Epoch: [{epoch}]"
+    header = f"[Epoch {epoch + 1}]"  # 1-based, as in train.py's epoch summary
 
     # Seed the meters so the first print (count=0) does not divide by zero.
     metric_logger.update(
@@ -162,7 +171,19 @@ def train_one_epoch_safe(
             new_lrs[f"group{i}"] = new
         return new_lrs
 
-    for images, targets in metric_logger.log_every(data_loader, print_freq, header):
+    def _report_skip(step: int, reason: str) -> None:
+        # Printed as it happens; the batch details go to nan_log_path.
+        Logger.warn(
+            f"[NaN] epoch {epoch + 1} iter {step + 1}/{len(data_loader)}: {reason}; batch skipped, "
+            f"lr backed off to {optimizer.param_groups[0]['lr']:.6g} "
+            f"(skipped this epoch: {skipped_total})"
+        )
+
+    batches = metric_logger.log_every(
+        data_loader, progress_interval_s, header,
+        on_report=None if on_progress is None else (lambda i, s_per_it: on_progress(metric_logger, i, s_per_it)),
+    )
+    for step, (images, targets) in enumerate(batches):
         images = [img.to(device) for img in images]
         targets = [
             {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()}
@@ -228,6 +249,7 @@ def train_one_epoch_safe(
                 _append_jsonl(nan_log_path, {"ts": time.time(), "kind": "lr_backoff", "epoch": int(epoch), "new_lrs": new_lrs})
 
                 skipped_total += 1
+                _report_skip(step, f"non-finite loss ({loss_value})")
                 metric_logger.update(skipped=float(skipped_total), nan=float(nan_total))
                 metric_logger.update(loss=losses_reduced, **loss_dict_reduced)
                 metric_logger.update(lr=optimizer.param_groups[0]["lr"])
@@ -269,6 +291,7 @@ def train_one_epoch_safe(
                 _append_jsonl(nan_log_path, rec)
                 _backoff_lr()
                 skipped_total += 1
+                _report_skip(step, "non-finite gradients")
                 optimizer.zero_grad(set_to_none=True)
                 scaler.update()  # adjust the scale
                 metric_logger.update(skipped=float(skipped_total), grad_nonfinite=float(grad_nf_total))
@@ -294,6 +317,7 @@ def train_one_epoch_safe(
                 _append_jsonl(nan_log_path, rec)
                 _backoff_lr()
                 skipped_total += 1
+                _report_skip(step, "non-finite gradients")
                 optimizer.zero_grad(set_to_none=True)
                 metric_logger.update(skipped=float(skipped_total), grad_nonfinite=float(grad_nf_total))
                 metric_logger.update(lr=optimizer.param_groups[0]["lr"])

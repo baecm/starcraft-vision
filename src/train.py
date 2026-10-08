@@ -20,6 +20,7 @@ what build_model reads. Run identity (W&B tags, run_provenance.json next to
 the weights) is recorded so that a run can state which code and which knobs
 produced it.
 """
+import datetime
 import json
 import os
 import secrets
@@ -30,19 +31,17 @@ from typing import Optional
 
 import hydra
 import torch
-import tqdm
 import wandb
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, Subset
-from ultralytics import settings
 
 import config
 from dataset.starcraft_windows import MODE_TARGET_CHOICES
 from dataset.label_cache import ensure_label_pickles
 from dataset.loader import load_data
 from detection.engine_safe import train_one_epoch_safe as train_one_epoch
-from models.factory import build_model
+from models.factory import build_model, describe_model
 from utils.logger import Logger
 from utils.seed import set_global_seed
 from utils.synology_chat import send_message
@@ -56,7 +55,9 @@ SGD_WEIGHT_DECAY = 0.0005
 # NaN handling in the training loop (detection/engine_safe.py)
 LR_BACKOFF_ON_NAN = 0.5
 MAX_CONSECUTIVE_NAN = 20
-PRINT_FREQ = 10
+# One progress line per this many seconds: about 20 per Mask R-CNN epoch,
+# where printing every 10 iterations wrote 2.8 MB of log per run.
+PROGRESS_INTERVAL_S = 300
 
 
 # ---------------------------------------------------------------------------
@@ -380,12 +381,27 @@ def load_checkpoint(path, model, optimizer=None, lr_scheduler=None, device=None)
 # Training loop
 # ---------------------------------------------------------------------------
 
+def _meter_value(train_stats, name: str, attr: str = "global_avg") -> Optional[float]:
+    meter = train_stats.meters.get(name) if hasattr(train_stats, "meters") else None
+    if meter is None or not meter.count:
+        return None
+    return float(getattr(meter, attr))
+
+
 def _epoch_log(epoch: int, train_stats) -> dict:
-    """The W&B scalars of one epoch: total loss, NaN counters, every loss_* term."""
+    """The W&B scalars of one epoch.
+
+    Loss/*: epoch means of the total loss and of every loss_* term.
+    Train/*: lr used during the epoch, gradient norm, NaN counters.
+    Time/*, System/*: epoch time, speed, share of time waiting on data, peak
+    GPU memory - enough to compare machines and spot a slow NAS.
+    """
     log_dict = {
         "epoch": epoch,
         "Loss/train": train_stats.loss.global_avg,
     }
+    # Kept as before for comparability with earlier runs: the counters are
+    # cumulative within the epoch, so their global_avg is not a count.
     for k in ("skipped", "nan", "grad_nonfinite", "grad_norm"):
         m = getattr(train_stats, k, None)
         if m is not None and hasattr(m, "global_avg"):
@@ -393,7 +409,55 @@ def _epoch_log(epoch: int, train_stats) -> dict:
     for k, meter in getattr(train_stats, "meters", {}).items():
         if k.startswith("loss_") and hasattr(meter, "global_avg"):
             log_dict[f"Loss/{k[5:]}"] = float(meter.global_avg)  # loss_classifier -> Loss/classifier
+
+    extra = {
+        "Train/lr": _meter_value(train_stats, "lr", "value"),
+        "Train/skipped_batches": _meter_value(train_stats, "skipped", "value"),
+        "Time/epoch_s": getattr(train_stats, "total_time", None),
+        "Time/s_per_iter": getattr(train_stats, "seconds_per_iter", None),
+    }
+    s_it = getattr(train_stats, "seconds_per_iter", None)
+    data_s_it = getattr(train_stats, "data_seconds_per_iter", None)
+    if s_it and data_s_it is not None:
+        extra["Time/data_wait_frac"] = data_s_it / s_it
+    if torch.cuda.is_available():
+        extra["System/max_mem_GB"] = torch.cuda.max_memory_allocated() / 2**30
+    log_dict.update({k: v for k, v in extra.items() if v is not None})
     return log_dict
+
+
+def _epoch_summary(epoch: int, num_epochs: int, train_stats, run_eta_s: float) -> str:
+    """One line per epoch: time, losses, lr, gradient norm, skips, memory, run ETA."""
+    t = datetime.timedelta(seconds=int(getattr(train_stats, "total_time", 0)))
+    parts = [f"[Epoch {epoch + 1}/{num_epochs}] {t}", train_stats.loss_summary()]
+    lr = _meter_value(train_stats, "lr", "value")
+    if lr is not None:
+        parts.append(f"lr {lr:.6f}")
+    grad = _meter_value(train_stats, "grad_norm")
+    if grad is not None:
+        parts.append(f"grad(mean) {grad:.3g}")
+    skipped = _meter_value(train_stats, "skipped", "value")
+    if skipped:
+        parts.append(f"skipped {int(skipped)}")
+    if torch.cuda.is_available():
+        parts.append(f"mem {torch.cuda.max_memory_allocated() / 2**30:.1f}G")
+    parts.append(f"run ETA {datetime.timedelta(seconds=int(run_eta_s))}")
+    return "  ".join(parts)
+
+
+def _wandb_progress(epoch: int, iters_per_epoch: int):
+    """The within-epoch W&B logger passed to train_one_epoch: at each progress
+    line, the last 20 iterations' median loss, lr, gradient norm and speed,
+    against the global iteration ("iter")."""
+    def log(train_stats, i: int, s_per_iter: float) -> None:
+        record = {"iter": epoch * iters_per_epoch + i + 1, "Iter/s_per_iter": s_per_iter}
+        for name, key, attr in (("loss", "Iter/loss", "median"), ("lr", "Iter/lr", "value"),
+                                ("grad_norm", "Iter/grad_norm", "value")):
+            value = _meter_value(train_stats, name, attr)
+            if value is not None:
+                record[key] = value
+        wandb.log(record)
+    return log
 
 
 def train_model(
@@ -412,11 +476,17 @@ def train_model(
     saving a checkpoint every `checkpoint_every` epochs and at the last one."""
     _write_run_provenance(save_dir, model, id_string)
 
-    Logger.info("[Stage] Starting training loop...")
+    iters_per_epoch = len(data_loader_train)
+    Logger.info(
+        f"[Train] epochs {start_epoch + 1}-{num_epochs}, {iters_per_epoch} iterations per epoch "
+        f"(batch {data_loader_train.batch_size}, {data_loader_train.num_workers} loader workers); "
+        f"a progress line every {PROGRESS_INTERVAL_S // 60:.0f} min"
+    )
     if start_epoch:
-        Logger.info(f"[Stage] Resuming at epoch {start_epoch} of {num_epochs}")
-    for epoch in tqdm.tqdm(range(start_epoch, num_epochs), initial=start_epoch,
-                           total=num_epochs):
+        Logger.info(f"[Train] Resuming at epoch {start_epoch + 1} of {num_epochs}")
+    t_run = time.time()
+    last_save_path = None
+    for epoch in range(start_epoch, num_epochs):
         # Loss terms that ramp over training (currently only Director's
         # L_smooth) read the epoch off the module. Walking .modules() rather
         # than calling model.set_epoch() keeps this working through
@@ -424,16 +494,18 @@ def train_model(
         for _module in model.modules():
             if hasattr(_module, "set_epoch"):
                 _module.set_epoch(epoch)
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()  # per-epoch peak in the logs
 
-        t0 = time.time()
         train_stats = train_one_epoch(
             model,
             optimizer,
             data_loader_train,
             device,
             epoch,
-            print_freq=PRINT_FREQ,
+            progress_interval_s=PROGRESS_INTERVAL_S,
             scaler=None,
+            on_progress=_wandb_progress(epoch, iters_per_epoch),
             nan_log_path=os.path.join(save_dir, "nan_batches.jsonl"),
             skip_nonfinite=True,
             max_consecutive_nan=MAX_CONSECUTIVE_NAN,
@@ -441,13 +513,13 @@ def train_model(
             lr_backoff=LR_BACKOFF_ON_NAN,
             retry_fp32_on_nan=True,
         )
-        Logger.info(f"[Time][epoch {epoch}] train_one_epoch: {time.time() - t0:.1f}s")
 
         lr_scheduler.step()
 
-        t_wandb = time.time()
+        epochs_done = epoch + 1 - start_epoch
+        run_eta_s = (time.time() - t_run) / epochs_done * (num_epochs - epoch - 1)
+        Logger.info(_epoch_summary(epoch, num_epochs, train_stats, run_eta_s))
         wandb.log(_epoch_log(epoch, train_stats), commit=True)
-        Logger.info(f"[Time][epoch {epoch}] wandb.log (scalars): {time.time() - t_wandb:.3f}s")
 
         # Saving every epoch would leave 30 ResNet-50 copies per run. Only the
         # last one is read (inference finds it by --epoch), so intermediate
@@ -455,15 +527,19 @@ def train_model(
         # learning curve, and the last epoch is always saved.
         is_interval = checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0
         if is_interval or (epoch + 1) == num_epochs:
-            tc0 = time.time()
-            save_path = os.path.join(save_dir, f"model_{epoch+1:03d}.pth")
-            save_checkpoint(save_path, model, optimizer, lr_scheduler, epoch + 1)
-            Logger.info(f"[Info] Saved model checkpoint: {save_path} (time: {time.time() - tc0:.2f}s)")
+            last_save_path = os.path.join(save_dir, f"model_{epoch+1:03d}.pth")
+            save_checkpoint(last_save_path, model, optimizer, lr_scheduler, epoch + 1)
+            Logger.info(f"[Checkpoint] {last_save_path}")
 
         try:
             send_message(f"[{id_string}] Epoch {epoch+1} completed.")
         except Exception as e:
             Logger.error(f"Failed to send message: {e}")
+
+    total = datetime.timedelta(seconds=int(time.time() - t_run))
+    Logger.info(f"[Train] Done: epochs {start_epoch + 1}-{num_epochs} in {total}; last checkpoint {last_save_path}")
+    if wandb.run is not None:
+        wandb.run.summary["Time/train_total_h"] = (time.time() - t_run) / 3600
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +580,13 @@ def _seed_everything(cfg) -> int:
 
 def _select_device(cfg) -> torch.device:
     device = torch.device("cuda" if torch.cuda.is_available() and cfg.cuda else "cpu")
-    Logger.info(f"[Info] Using device: {device} (torch.cuda.is_available(): {torch.cuda.is_available()} / cfg.cuda: {cfg.cuda})")
+    if device.type == "cuda":
+        Logger.info(
+            f"[Env] device cuda: {torch.cuda.get_device_name(device)}, "
+            f"torch {torch.__version__}, CUDA {torch.version.cuda}, cuDNN {torch.backends.cudnn.version()}"
+        )
+    else:
+        Logger.info(f"[Env] device cpu (cuda available: {torch.cuda.is_available()}, cfg.cuda: {cfg.cuda}), torch {torch.__version__}")
     return device
 
 
@@ -517,12 +599,12 @@ def _start_run(cfg) -> str:
     run_tags = _build_run_tags(cfg)
     if not cfg.id_string:
         cfg.id_string = "_".join(run_tags + [time.strftime("%Y%m%d_%H%M%S")])
-        Logger.info(f"[Info] Using id string: {cfg.id_string}")
-    Logger.info(f"[Info] W&B tags: {run_tags}")
+        Logger.info(f"[Run] id_string: {cfg.id_string}")
+    Logger.info(f"[Run] W&B tags: {run_tags}")
 
     save_dir = os.path.join(cfg.log_root, f"{cfg.id_string}/")
     os.makedirs(save_dir, exist_ok=True)
-    Logger.info(f"[Info] Log save path: {save_dir}")
+    Logger.info(f"[Run] checkpoints to {save_dir}")
 
     if wandb.run is not None:
         wandb.finish()
@@ -532,6 +614,13 @@ def _start_run(cfg) -> str:
         config=OmegaConf.to_container(cfg, resolve=True),
         tags=run_tags,
     )
+    # Per-epoch charts against "epoch", within-epoch ones (Iter/*) against the
+    # global iteration, so the two kinds of log do not share one step axis.
+    wandb.define_metric("epoch")
+    wandb.define_metric("iter")
+    for prefix in ("Loss", "Train", "Time", "System"):
+        wandb.define_metric(f"{prefix}/*", step_metric="epoch")
+    wandb.define_metric("Iter/*", step_metric="iter")
     return save_dir
 
 
@@ -560,11 +649,13 @@ def _prepare_data(cfg, seed: int) -> TrainingData:
         replay_ids=all_replays,
         num_workers=cfg.num_workers,
     )
-    Logger.info("[Info] JSON to Pickle conversion completed.")
+    Logger.info("[Data] label pickle cache ready")
 
     is_director = "director" in str(getattr(cfg.architecture, "model_name", "")).lower()
     mode_targets = _mode_targets(cfg)
     needs_modes = is_director or mode_targets != "none"
+    if not is_director:
+        Logger.info(f"[Data] detector targets: {'viewport boxes' if mode_targets == 'none' else f'ranked modes ({mode_targets})'}")
     if needs_modes:
         from dataset.mode_cache import ensure_mode_cache
         ensure_mode_cache(
@@ -600,13 +691,13 @@ def _prepare_data(cfg, seed: int) -> TrainingData:
         mode_targets=mode_targets,
     )
     n_val = len(data_loader_validation.dataset) if data_loader_validation is not None else "(none)"
-    Logger.info(f"[Info] Data loaded: Train {len(data_loader_train.dataset)}, Validation {n_val}")
+    Logger.info(f"[Data] loaded: train {len(data_loader_train.dataset)}, validation {n_val}")
 
     dataset = data_loader_train.dataset
     while isinstance(dataset, Subset):
         dataset = dataset.dataset
     in_channels = len(dataset.channel_indices) * dataset.window_size
-    Logger.info(f"[Info] Input channels: {in_channels} (window size: {dataset.window_size})")
+    Logger.info(f"[Data] input channels: {in_channels} (window size: {dataset.window_size})")
     return TrainingData(data_loader_train, in_channels, mode_targets)
 
 
@@ -676,7 +767,10 @@ def _model_args(cfg, in_channels: int, mode_targets: str) -> DictConfig:
 def _build_model(cfg, data: TrainingData, device) -> torch.nn.Module:
     Logger.info("[Stage] Initializing model...")
     model = build_model(_model_args(cfg, data.in_channels, data.mode_targets))
-    Logger.info(f"[Info] Model initialized with {NUM_CLASSES} classes and {data.in_channels} input channels.")
+    Logger.info(f"[Model] initialized with {NUM_CLASSES} classes and {data.in_channels} input channels.")
+    effective = describe_model(model)
+    effective["mode_targets"] = data.mode_targets
+    wandb.config.update({"effective": effective}, allow_val_change=True)
     model.to(device)
     return model
 
@@ -720,7 +814,7 @@ def _build_optimizer_and_schedule(cfg, model):
     else:
         raise ValueError(f"Unknown lr_schedule '{schedule}'; use cosine or step.")
     Logger.info(
-        f"[Info] LR schedule: {schedule}, base lr={cfg.learning_rate}, "
+        f"[Optim] LR schedule: {schedule}, base lr={cfg.learning_rate}, "
         f"max_epoch={cfg.max_epoch}"
     )
     return optimizer, lr_scheduler
@@ -751,7 +845,6 @@ def _maybe_resume(cfg, model, optimizer, lr_scheduler, device) -> int:
 
 def run_training(cfg: DictConfig):
     """Train one model as configured; see the module docstring for the steps."""
-    settings.update({"wandb": True})
     Logger.info("[Stage] Preparing environment...")
 
     seed = _seed_everything(cfg)

@@ -112,21 +112,15 @@ def ensure_label_pickles(
 
     tasks = [(rid, label_root, label_method) for rid in replay_ids_list]
 
-    # with Pool(processes=max(1, num_workers)) as pool:
-    #     results = list(
-    #         tqdm.tqdm(
-    #             pool.imap_unordered(_process_json_worker, tasks),
-    #             total=len(tasks),
-    #             desc="Building label pickle cache",
-    #         )
-    #     )
-    
+    # The bar is drawn only on a terminal (disable=None); in a log file the
+    # summary line below says the same in one line.
     with ThreadPool(processes=max(1, num_workers)) as pool:
         results = list(
             tqdm.tqdm(
                 pool.imap_unordered(_process_json_worker, tasks),
                 total=len(tasks),
                 desc="Building label pickle cache",
+                disable=None,
             )
         )
 

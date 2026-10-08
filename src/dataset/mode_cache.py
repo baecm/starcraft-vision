@@ -161,7 +161,7 @@ def ensure_mode_cache(
                         pool.imap_unordered(_process_mode_worker, tasks),
                         total=len(tasks),
                         desc="ModeCache",
-                        disable=not verbose,
+                        disable=None if verbose else True,
                     )
                 )
         except Exception:
@@ -171,11 +171,11 @@ def ensure_mode_cache(
                         pool.imap_unordered(_process_mode_worker, tasks),
                         total=len(tasks),
                         desc="ModeCache (threaded)",
-                        disable=not verbose,
+                        disable=None if verbose else True,
                     )
                 )
     else:
-        results = [_process_mode_worker(t) for t in tqdm.tqdm(tasks, desc="ModeCache (seq)", disable=not verbose)]
+        results = [_process_mode_worker(t) for t in tqdm.tqdm(tasks, desc="ModeCache (seq)", disable=None if verbose else True)]
 
     n_success = sum(1 for r in results if r.startswith("Success"))
     n_skip = sum(1 for r in results if r.startswith("Skipped"))

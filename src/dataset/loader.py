@@ -89,19 +89,19 @@ def load_data(
     same split, subsample and shuffle order.
     """
     Logger.info("[Stage] Loading data...")
-    Logger.info(f"[Info] Input root: {input_root}")
-    Logger.info(f"[Info] Label root: {label_root}, method: {label_method}")
+    Logger.info(f"[Data] Input root: {input_root}")
+    Logger.info(f"[Data] Label root: {label_root}, method: {label_method}")
 
     train_ids: List[str] = [str(r) for r in train_replays]
     if not train_ids:
         raise ValueError("at least one train replay id must be provided (train_replays is empty).")
-    Logger.info(f"[Info] Train IDs: {train_ids}")
+    Logger.info(f"[Data] Train IDs: {train_ids}")
 
     val_ids: List[str] = [str(r) for r in val_replays] if val_replays is not None else []
     if val_ids:
-        Logger.info(f"[Info] Val/Test IDs: {val_ids}")
+        Logger.info(f"[Data] Val/Test IDs: {val_ids}")
     else:
-        Logger.info("[Info] Val/Test IDs not provided; will split from train set.")
+        Logger.info("[Data] Val/Test IDs not provided; will split from train set.")
 
     # --- full training dataset ---
     train_full = StarCraftWindowDataset(
@@ -119,8 +119,8 @@ def load_data(
     )
 
     n_train_full = len(train_full)
-    Logger.info(f"[Info] Full train dataset size: {n_train_full}")
-    Logger.info(f"[Info] Window size: {window_size}, Interval: {interval}")
+    Logger.info(f"[Data] Full train dataset size: {n_train_full}")
+    Logger.info(f"[Data] Window size: {window_size}, Interval: {interval}")
 
     # --- validation dataset ---
     if val_ids:
@@ -140,7 +140,7 @@ def load_data(
             mode_targets=mode_targets,
         )
         n_val_full = len(val_full)
-        Logger.info(f"[Info] Full val dataset size (from val_replays): {n_val_full}")
+        Logger.info(f"[Data] Full val dataset size (from val_replays): {n_val_full}")
 
         if val_count > 0 and n_val_full > val_count:
             # a seeded random subset of val_count windows
@@ -151,16 +151,16 @@ def load_data(
             )
             val_dataset = Subset(val_full, val_idx)
             Logger.info(
-                f"[Info] Sampled val dataset from val_replays: {len(val_dataset)} "
+                f"[Data] Sampled val dataset from val_replays: {len(val_dataset)} "
                 f"(val_count={val_count})"
             )
         elif val_count <= 0:
             val_dataset = val_full
-            Logger.info("[Info] Using all val_replays for validation (val_count <= 0).")
+            Logger.info("[Data] Using all val_replays for validation (val_count <= 0).")
         else:
             val_dataset = val_full
             Logger.info(
-                f"[Info] Using all val_replays for validation "
+                f"[Data] Using all val_replays for validation "
                 f"(val_count={val_count} >= n_val_full={n_val_full})."
             )
 
@@ -180,15 +180,15 @@ def load_data(
             train_dataset = Subset(train_full, train_idx)
             val_dataset = Subset(train_full, val_idx)
             Logger.info(
-                f"[Info] Split into Train {len(train_dataset)} / Val {len(val_dataset)} "
+                f"[Data] Split into Train {len(train_dataset)} / Val {len(val_dataset)} "
                 f"(val_count={val_count}) from train_replays."
             )
         else:
             if val_count <= 0:
-                Logger.info("[Info] No validation split (val_count <= 0).")
+                Logger.info("[Data] No validation split (val_count <= 0).")
             else:
                 Logger.info(
-                    f"[Info] No validation split from train_replays "
+                    f"[Data] No validation split from train_replays "
                     f"(val_count={val_count} >= n_train_full={n_train_full})."
                 )
 
@@ -202,7 +202,7 @@ def load_data(
         )
         train_dataset = Subset(train_dataset, sampled_idx)
         Logger.info(
-            f"[Info] Applied sampling to train data (ratio={sample_ratio}): "
+            f"[Data] Applied sampling to train data (ratio={sample_ratio}): "
             f"Train {len(train_dataset)}"
         )
 

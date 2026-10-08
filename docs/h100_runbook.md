@@ -19,7 +19,26 @@ Check that the machine has the ImageNet ResNet-50 weights (in
 `.torch_cache`, or network access to download them). Mask R-CNN stops if
 they are missing, but Director-CenterNet only logs `Failed to load ImageNet
 weights` and trains from an untrained backbone, which would make A3 a
-different experiment. Look for that line in the first Director log.
+different experiment. The first Director log must say `[Model]
+imagenet_backbone: True`.
+
+What to read in a training log (`logs/<container>.log`):
+
+- start-up: `[Env]` (GPU, torch, CUDA), `[Run] W&B tags`, `[Data] detector
+  targets`, the `[Model]` lines (the settings the model actually uses: input
+  size, KBRS weight and parameters, Director loss weights and
+  `hcm_negative_target`), `[Provenance] commit` (must not say DIRTY), and
+  `[Train]` (iterations per epoch, batch, loader workers);
+- every 5 minutes: `[Epoch e] i/n  eta ...  loss ... lr ... grad ... s/it
+  (data ...)  mem ...`; a data time close to s/it means the run waits on the
+  NAS;
+- every epoch: `[Epoch e/30] <time>  loss ...  lr ...  run ETA ...`;
+- any skipped batch at once: `[NaN] epoch e iter i: ...`.
+
+The same goes to W&B: epoch charts (`Loss/*`, `Train/lr`,
+`Time/s_per_iter`, `Time/data_wait_frac`, `System/max_mem_GB`) against
+`epoch`, within-epoch ones (`Iter/*`) against `iter`, and the model's
+settings under `effective` in the run config.
 
 Queue order: **A1 → A2** (thesis, first week), **A3** alongside when the
 Director runs fit next to a Mask R-CNN run, then **fold 2/3** (ToG only; drop
@@ -180,7 +199,8 @@ For each S in 123, 456, 789:
 make run ARGS="architecture=director_centernet batch_size=16 seed=S architecture.loss_weights.lambda_rmc=0 architecture.loss_weights.lambda_rep=0 architecture.loss_weights.lambda_sm=0 architecture.hcm_negative_target=primary id_string=dc_hcm_only_cornernet_b16_f1_sS_v6"
 ```
 
-W&B tags must show `loss:hcm_only` and `hcm_neg:primary`.
+W&B tags must show `loss:hcm_only` and `hcm_neg:primary`; the log must show
+`[Model] hcm_negative_target: primary` and `[Model] imagenet_backbone: True`.
 
 Analysis next to the existing ablation (`results/mode_disagreement/v6_f1_sS`):
 

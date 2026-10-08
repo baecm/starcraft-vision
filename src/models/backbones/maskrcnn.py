@@ -82,7 +82,7 @@ def build_maskrcnn_backbone(
     if in_channels is None:
         in_channels = 9 * window_size
 
-    backbone = resnet_fpn_backbone("resnet50", weights="DEFAULT")
+    backbone = resnet_fpn_backbone(backbone_name="resnet50", weights="DEFAULT")
     backbone.body.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
     _kaiming_init_conv(backbone.body.conv1)
 

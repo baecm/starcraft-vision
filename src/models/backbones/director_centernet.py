@@ -199,15 +199,20 @@ class DirectorCenterNet(nn.Module):
         # MLP, so a frozen layer1 costs it much less. Here the only feature map
         # the heatmap ever sees would be ImageNet weights applied to StarCraft
         # tile tensors, which are not natural images. We unfreeze it.
+        # A failed download does not stop the run, so whether the weights
+        # loaded is logged either way (and shown by factory.describe_model).
         try:
             self.backbone = resnet_fpn_backbone(
-                "resnet50", weights="DEFAULT", trainable_layers=trainable_layers
+                backbone_name="resnet50", weights="DEFAULT", trainable_layers=trainable_layers
             )
+            self.imagenet_weights_loaded = True
+            Logger.info("[DirectorCenterNet] ImageNet ResNet-50 weights loaded.")
         except Exception as e:
             Logger.warn(f"[DirectorCenterNet] Failed to load ImageNet weights ({e}), fallback to uninitialized backbone.")
             self.backbone = resnet_fpn_backbone(
-                "resnet50", weights=None, trainable_layers=trainable_layers
+                backbone_name="resnet50", weights=None, trainable_layers=trainable_layers
             )
+            self.imagenet_weights_loaded = False
 
         self.backbone.body.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         _kaiming_init_conv(self.backbone.body.conv1)

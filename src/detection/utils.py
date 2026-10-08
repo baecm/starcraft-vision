@@ -142,62 +142,63 @@ class MetricLogger:
     def add_meter(self, name, meter):
         self.meters[name] = meter
 
-    def log_every(self, iterable, print_freq, header=None):
-        i = 0
-        if not header:
-            header = ""
+    def loss_summary(self) -> str:
+        """'loss 0.5320 [classifier 0.0990 mask 0.3100 ...]': the epoch-to-date
+        mean of the total loss and of each term (the "loss_" prefix dropped)."""
+        terms = [
+            f"{name[len('loss_'):]} {meter.global_avg:.4f}"
+            for name, meter in self.meters.items()
+            if name.startswith("loss_") and meter.count
+        ]
+        total = self.meters["loss"].global_avg if "loss" in self.meters and self.meters["loss"].count else float("nan")
+        return f"loss {total:.4f} [{' '.join(terms)}]"
+
+    def log_every(self, iterable, print_interval_s, header=None, on_report=None):
+        """Yield from iterable, printing one progress line on the first
+        iteration and then at most once every print_interval_s seconds.
+
+        The line holds what is worth watching mid-epoch: position, ETA, the
+        epoch-to-date losses, lr, the last gradient norm, speed and memory.
+        Skipped batches are reported by the training loop as they happen.
+        on_report(i, seconds_per_iter), if given, is called at each printed
+        line (train.py sends the same numbers to W&B).
+        After the loop, total_time, seconds_per_iter and data_seconds_per_iter
+        hold the epoch's timing.
+        """
+        header = header or ""
+        n = len(iterable)
         start_time = time.time()
-        end = time.time()
-        iter_time = SmoothedValue(fmt="{avg:.4f}")
-        data_time = SmoothedValue(fmt="{avg:.4f}")
-        space_fmt = ":" + str(len(str(len(iterable)))) + "d"
-        if torch.cuda.is_available():
-            log_msg = self.delimiter.join(
-                [
-                    header,
-                    "[{0" + space_fmt + "}/{1}]",
-                    "eta: {eta}",
-                    "{meters}",
-                    "time: {time}",
-                    "data: {data}",
-                    "max mem: {memory:.0f}",
-                ]
-            )
-        else:
-            log_msg = self.delimiter.join(
-                [header, "[{0" + space_fmt + "}/{1}]", "eta: {eta}", "{meters}", "time: {time}", "data: {data}"]
-            )
-        MB = 1024.0 * 1024.0
-        for obj in iterable:
+        end = start_time
+        last_print = None
+        iter_time = SmoothedValue(window_size=50)
+        data_time = SmoothedValue(window_size=50)
+        for i, obj in enumerate(iterable):
             data_time.update(time.time() - end)
             yield obj
-            iter_time.update(time.time() - end)
-            if i % print_freq == 0 or i == len(iterable) - 1:
-                eta_seconds = iter_time.global_avg * (len(iterable) - i)
-                eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
+            now = time.time()
+            iter_time.update(now - end)
+            end = now
+            if last_print is None or now - last_print >= print_interval_s:
+                last_print = now
+                eta = datetime.timedelta(seconds=int(iter_time.global_avg * (n - i - 1)))
+                parts = [
+                    f"{header} {i + 1}/{n}",
+                    f"eta {eta}",
+                    self.loss_summary(),
+                ]
+                if "lr" in self.meters:
+                    parts.append(f"lr {self.meters['lr'].value:.6f}")
+                if "grad_norm" in self.meters:
+                    parts.append(f"grad {self.meters['grad_norm'].value:.3g}")
+                parts.append(f"{iter_time.avg:.2f} s/it (data {data_time.avg:.3f})")
                 if torch.cuda.is_available():
-                    print(
-                        log_msg.format(
-                            i,
-                            len(iterable),
-                            eta=eta_string,
-                            meters=str(self),
-                            time=str(iter_time),
-                            data=str(data_time),
-                            memory=torch.cuda.max_memory_allocated() / MB,
-                        )
-                    )
-                else:
-                    print(
-                        log_msg.format(
-                            i, len(iterable), eta=eta_string, meters=str(self), time=str(iter_time), data=str(data_time)
-                        )
-                    )
-            i += 1
-            end = time.time()
-        total_time = time.time() - start_time
-        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-        print(f"{header} Total time: {total_time_str} ({total_time / len(iterable):.4f} s / it)")
+                    parts.append(f"mem {torch.cuda.max_memory_allocated() / 2**30:.1f}G")
+                print("  ".join(parts), flush=True)
+                if on_report is not None:
+                    on_report(i, iter_time.avg)
+        self.total_time = time.time() - start_time
+        self.seconds_per_iter = iter_time.global_avg if iter_time.count else float("nan")
+        self.data_seconds_per_iter = data_time.global_avg if data_time.count else float("nan")
 
 
 def collate_fn(batch):

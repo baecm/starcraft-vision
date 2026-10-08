@@ -156,23 +156,53 @@ def build_model(args: Any) -> nn.Module:
         kbrs_params.setdefault("per_window", max(1, in_channels // max(1, window_size)))
         model = KBRSWrapper(base_model=model, kbrs_params=kbrs_params, loss_weights=loss_weights)
 
-    # ------------------------------------------------------------------
-    # Structured Model & Plugin Logging
-    # ------------------------------------------------------------------
-    log_lines = [
-        "======================================================================",
-        f"[MODEL BUILD] Architecture : {model_name.upper()}",
-        f"[MODEL BUILD] Input Chans  : {in_channels} (Window Size: {window_size})",
-        "----------------------------------------------------------------------",
-        "[PLUGINS ATTACHED SUMMARY]",
-        f"  - KBRS Plugin          : {'[ENABLED]' if use_kbrs else '[DISABLED]'}",
-        f"  - Density Peak Plugin  : {'[ENABLED]' if (model_name.startswith('centernet') and use_dp) else ('[DISABLED]' if model_name.startswith('centernet') else '[N/A]')}",
-        "======================================================================"
-    ]
-    for line in log_lines:
-        try:
-            Logger.info(line)
-        except Exception:
-            print(line)
-
+    if model_name.startswith("centernet"):
+        Logger.info(f"[Model] density peak plugin: {'on' if use_dp else 'off'}")
+    for key, value in describe_model(model).items():
+        Logger.info(f"[Model] {key}: {value}")
     return model
+
+
+def describe_model(model: nn.Module) -> dict:
+    """The settings the built model actually uses, read off the model itself.
+
+    Read back rather than taken from the config, because several config
+    values never reach the model (the KBRS weight is always 0.25, Mask R-CNN
+    always resizes to 640). train.py logs this at start-up and stores it in
+    the W&B config under "effective".
+    """
+    base = model.base_model if isinstance(model, KBRSWrapper) else model
+    out = {"architecture": type(base).__name__}
+
+    in_conv = getattr(getattr(getattr(base, "backbone", None), "body", None), "conv1", None)
+    if in_conv is not None:
+        out["input_channels"] = in_conv.in_channels
+
+    transform = getattr(base, "transform", None)  # Mask R-CNN
+    if transform is not None and hasattr(transform, "min_size"):
+        out["input_size"] = f"min_size {tuple(transform.min_size)}, max_size {transform.max_size}"
+    roi_heads = getattr(base, "roi_heads", None)
+    if roi_heads is not None:
+        out["soft_mode_cls"] = type(roi_heads).__name__ != "RoIHeads"
+
+    if hasattr(base, "hcm_negative_target"):  # Director-CenterNet
+        out["loss_weights"] = dict(base.loss_weights)
+        out["hcm_negative_target"] = base.hcm_negative_target
+        out["down_ratio"] = base.down_ratio
+        out["head_conv"] = base.head_conv
+        out["imagenet_backbone"] = getattr(base, "imagenet_weights_loaded", None)
+
+    if isinstance(model, KBRSWrapper):
+        hook = model.kbrs_hook
+        out["kbrs"] = {
+            "loss_weight": float(hook.loss_weights.get("loss_kbrs", 0.25)),
+            "component_weights": dict(hook.weights),
+            "region_size": list(hook.region_size),
+            "tau": hook.tau,
+            "gate_channels": len(hook.gate_channels),
+            "mixture_nonneg": hook.kbrs_params.get("mixture_nonneg"),
+            "feature_map": hook.feature_map_name,
+        }
+    else:
+        out["kbrs"] = "off"
+    return out
