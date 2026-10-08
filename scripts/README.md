@@ -26,6 +26,7 @@ one to its thesis and ESWA section.
 | `aux_on_modes.py` | Do auxiliary regions (top k only) land on new modes, in rank order? | GT + predictions | thesis `tab:mrvp:auxland` |
 | `hybrid_regions.py` | A proposal detector's primary plus a heatmap detector's auxiliaries, combined after the fact | GT + two models' predictions | thesis `tab:mrvp:hybrid` |
 | `mode_sensitivity.py` | How the mode structure depends on the extraction parameters (sigma, theta, D) | GT only | thesis `tab:att:sensitivity`; ESWA |
+| `kbrs_cue_scores.py` | KBRS cue scores (density, centeredness, mixture) at the observers' and each model's primary viewport, raw and per-frame normalized, from the input-frame KBRS cache | KBRS cache + GT + predictions | thesis `tab:kbrs:scores`, ToG |
 | `pool_size_convergence.py` | Has the mode structure leveled off at U = 5 spectators? Subsamples U = 2..5 | GT only | thesis `sec:att:convergence`; ESWA Limitations |
 | `reeval_missing_frames.py` | Single-region IR under each evaluator fix, to reproduce and correct earlier numbers | predictions | ToG revision notes, thesis ch. 7 |
 
